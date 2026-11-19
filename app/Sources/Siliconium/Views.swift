@@ -167,6 +167,7 @@ struct ContentView: View {
             state.settingsGame = nil
             if selection == .bo2c { state.refreshCampaign() }
             if selection == .bo2s { state.refreshSteamCampaign() }
+            if selection == .steam { state.refreshSteamLibrary() }
         }
         .alert("Something went wrong", isPresented: Binding(get: { state.error != nil }, set: { if !$0 { state.error = nil } })) {
             Button("OK") { state.error = nil }
@@ -305,6 +306,7 @@ struct GameDetail: View {
                 switch game {
                 case .waw, .bo1, .bo2, .iw5, .iw4, .iw6, .bo2c, .bo2s, .boiii: PlutoniumGameView(game: game)
                 case .bo3: BO3View()
+                case .steam: SteamLibraryView()
                 }
                 Spacer()
                 if let p = state.progress {
@@ -750,6 +752,213 @@ struct BO3View: View {
     }
 }
 
+
+// MARK: - Steam Library
+
+/// Steam for Windows in its own prefix: sign in once, download the games
+/// there. Steam runs them from its own (original) files.
+struct SteamLibraryView: View {
+    @EnvironmentObject var state: AppState
+
+    private var steamInstalled: Bool { state.steamCampaign["steam"] == "installed" }
+    private var signedIn: Bool { state.steamCampaign["signedin"] == "yes" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if !(state.engineInstalled && steamInstalled && signedIn) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Check(done: state.engineInstalled, title: "Siliconium engine",
+                          detail: "Downloads our engine, built from open source, and adds our patches. About 330 MB.") {
+                        Button("Install") { state.installEngine() }.disabled(state.progress != nil)
+                    }
+                    Check(done: steamInstalled, title: "Steam for Windows",
+                          detail: "Downloads Valve's Steam installer and installs it in its own Wine prefix, apart from the other games.") {
+                        Button("Install Steam") { state.setupSteam() }
+                            .disabled(!state.engineInstalled || state.progress != nil)
+                    }
+                    Check(done: signedIn, title: "Signed in to Steam",
+                          detail: "Sign in with your Steam account and tick Remember me, so Siliconium can open Steam in the background.") {
+                        Button("Open Steam") { state.openSteamLibrary() }.disabled(!steamInstalled)
+                    }
+                }
+                .padding(18)
+                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+            } else {
+                HStack(spacing: 12) {
+                    Button { state.openSteamLibrary() } label: {
+                        Label("Open Steam", systemImage: "arrow.up.forward.app")
+                    }
+                    if SteamTitle.catalog.contains(where: { (state.steamLibrary[$0.id]?.state ?? "missing") == "missing" }) {
+                        Button { state.downloadAllSteamGames() } label: {
+                            Label("Download all", systemImage: "arrow.down.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(state.progress != nil)
+                        .help("Asks Steam to download every game here, with its multiplayer, zombies and the DLC you own")
+                    }
+                    Text("Downloads keep going while Steam is open in the background.")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+                }
+            }
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(SteamTitle.catalog) { title in
+                        SteamTitleRow(title: title, steamReady: steamInstalled)
+                    }
+                }
+            }
+        }
+        .task {
+            // Steam's downloads move on their own: keep the states current
+            while !Task.isCancelled {
+                state.refreshSteamLibrary()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+}
+
+struct SteamTitleRow: View {
+    @EnvironmentObject var state: AppState
+    let title: SteamTitle
+    let steamReady: Bool
+
+    private var entry: AppState.SteamEntry? { state.steamLibrary[title.id] }
+    private var gameState: String { entry?.state ?? "missing" }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            SteamTile(title: title, size: 44)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(title.title).font(.system(size: 14, weight: .semibold))
+                    Text(title.year).font(.system(size: 11).monospacedDigit()).opacity(0.5)
+                }
+                HStack(spacing: 5) {
+                    Circle().fill(dotColor).frame(width: 6, height: 6)
+                    Text(statusText).font(.system(size: 11)).opacity(0.65)
+                }
+                if let parts = entry?.parts, parts.count > 1 || (entry?.dlc ?? 0) > 0 {
+                    HStack(spacing: 5) {
+                        if parts.count > 1 {
+                            ForEach(parts, id: \.name) { part in PartChip(name: part.name, state: part.state) }
+                        }
+                        if let dlc = entry?.dlc, dlc > 0 {
+                            Text("+\(dlc) DLC")
+                                .font(.system(size: 10, weight: .semibold))
+                                .padding(.horizontal, 7).padding(.vertical, 2)
+                                .background(Color(red: 0.76, green: 0.70, blue: 1).opacity(0.25), in: Capsule())
+                                .help("DLC you own (map packs and more), downloaded by Steam with the game")
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+                if gameState == "installed", let note = title.note {
+                    Text(note).font(.system(size: 10)).opacity(0.5)
+                }
+            }
+            .foregroundStyle(.white)
+            Spacer()
+            switch gameState {
+            case "installed":
+                if entry?.parts.contains(where: { $0.state == "missing" }) == true {
+                    Button("Download the rest") { state.downloadSteamGame(title.id) }
+                        .help("Downloads the parts not in Steam yet (if your account owns them)")
+                }
+                ForEach(Array(title.modes.enumerated()), id: \.element.id) { index, mode in
+                    if index == 0 {
+                        Button { state.playSteam(title, mode) } label: { Label(mode.title, systemImage: mode.symbol) }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(state.running != nil || state.progress != nil)
+                    } else {
+                        Button { state.playSteam(title, mode) } label: { Label(mode.title, systemImage: mode.symbol) }
+                            .disabled(state.running != nil || state.progress != nil)
+                    }
+                }
+                Menu {
+                    if let f = entry?.folder, !f.isEmpty {
+                        Button("Show the game's folder") { NSWorkspace.shared.open(URL(fileURLWithPath: f)) }
+                    }
+                    if let game = title.linked, let folder = entry?.folder, !folder.isEmpty {
+                        Button("Use this download in \(game.client) (\(game.title) tab)") { state.useSteamFolder(game, folder) }
+                    }
+                    Button("Store page") { state.openSteamStore(title.id) }
+                } label: { Image(systemName: "ellipsis.circle") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            case "downloading":
+                Button("Open Steam") { state.openSteamLibrary() }
+            default:
+                Button("Store") { state.openSteamStore(title.id) }.disabled(!steamReady)
+                Button("Download") { state.downloadSteamGame(title.id) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!steamReady)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var statusText: String {
+        switch gameState {
+        case "installed": "Downloaded"
+        case "downloading": "Downloading in Steam"
+        default: "Not downloaded"
+        }
+    }
+    private var dotColor: Color {
+        switch gameState {
+        case "installed": Color(red: 0.30, green: 0.82, blue: 0.48)
+        case "downloading": Color(red: 0.35, green: 0.75, blue: 1)
+        default: .white.opacity(0.35)
+        }
+    }
+}
+
+/// A part of a Steam game (Campaign, Multiplayer, Zombies), each its own Steam app.
+struct PartChip: View {
+    let name: String
+    let state: String
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: state == "installed" ? "checkmark" : state == "downloading" ? "arrow.down" : "minus")
+                .font(.system(size: 8, weight: .bold))
+            Text(name).font(.system(size: 10, weight: .semibold))
+        }
+        .padding(.horizontal, 7).padding(.vertical, 2)
+        .foregroundStyle(.white.opacity(state == "missing" ? 0.5 : 0.95))
+        .background(color.opacity(0.25), in: Capsule())
+    }
+    private var color: Color {
+        switch state {
+        case "installed": Color(red: 0.30, green: 0.82, blue: 0.48)
+        case "downloading": Color(red: 0.35, green: 0.75, blue: 1)
+        default: .white.opacity(0.4)
+        }
+    }
+}
+
+/// The catalog game's tile, in the style of ElementTile.
+struct SteamTile: View {
+    let title: SteamTitle
+    var size: CGFloat
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+        ZStack {
+            shape.fill(LinearGradient(colors: [title.colors[0].opacity(0.92), title.colors[1]],
+                                      startPoint: .topLeading, endPoint: .bottomTrailing))
+            shape.fill(LinearGradient(colors: [.white.opacity(0.18), .clear], startPoint: .top, endPoint: .center))
+            shape.strokeBorder(.white.opacity(0.2), lineWidth: 1)
+            Text(title.badge)
+                .font(.system(size: size * (title.badge.count > 2 ? 0.30 : 0.38), weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1).minimumScaleFactor(0.6)
+                .padding(.horizontal, size * 0.08)
+        }
+        .frame(width: size, height: size)
+    }
+}
 
 struct BigButton: View {
     let title: String

@@ -84,9 +84,10 @@ engine="$home/engine"
 export WINEPREFIX="$home/prefix" CX_ROOT="$engine" WINESERVER="$engine/bin/wineserver"
 # Black Ops II's campaign has its own prefix; its game folder was made
 # Steam-free by bo2-campaign.sh (no Steam runs in it)
-if [ "${1:-}" = bo2c ] || [ "${1:-}" = bo2s ]; then
-  # bo2s: Steam for Windows in its own prefix (bo2-steam.sh), which starts the game
-  if [ "${1:-}" = bo2s ]; then export WINEPREFIX="$home/prefix-steam"; else export WINEPREFIX="$home/prefix-bo2c"; fi
+if [ "${1:-}" = bo2c ] || [ "${1:-}" = bo2s ] || [ "${1:-}" = steam ]; then
+  # bo2s and the Steam Library (steam): Steam for Windows in its own prefix
+  # (steam.sh), which starts the game
+  if [ "${1:-}" = bo2c ]; then export WINEPREFIX="$home/prefix-bo2c"; else export WINEPREFIX="$home/prefix-steam"; fi
   # its Wine server runs through a link outside the engine folder, so the app
   # doesn't count the campaign's prefix as a game running
   mkdir -p "$home/campaign"; ln -sfn "$engine/bin/wineserver" "$home/campaign/wineserver"
@@ -130,7 +131,14 @@ case "$game:$mode" in
   bo2c:play) dir=${BO2C_DIR:-} t=t6c ;;
   bo2s:play) dir=$(bash "$kit/bo2-steam.sh" gamedir) t=t6s
     [ -f "$dir/t6sp.exe" ] || die "Black Ops II is not downloaded in Steam yet: press Download (or install it in Steam), then Play Campaign" ;;
-  *) die "usage: launch.sh waw|bo1|bo2|iw5 online|zombies|campaign|mp [name], launch.sh iw4 play|launcher, launch.sh iw6 play, launch.sh boiii play|launcher, or launch.sh stop" ;;
+  steam:*)   # the Steam Library: Steam's own files, started by Steam
+    . "$kit/tools/steam-games.sh"
+    s_id=${mode%-*} s_part=${mode#*-}
+    steam_title "$s_id" "$s_part" || die "unknown Steam Library game: $mode"
+    dir=$(bash "$kit/steam.sh" gamedir "$s_app") t=steam
+    [ -n "$dir" ] && [ -f "$dir/$s_exe" ] ||
+      die "$s_name is not downloaded in Steam yet: press Download in the Steam Library, then Play" ;;
+  *) die "usage: launch.sh waw|bo1|bo2|iw5 online|zombies|campaign|mp [name], launch.sh iw4 play|launcher, launch.sh iw6 play, launch.sh boiii play|launcher, launch.sh steam <game>-<sp|mp|zm>, or launch.sh stop" ;;
 esac
 if [ "$t" = t7 ]; then
   [ -n "$dir" ] && [ -d "$dir" ] || die "the Black Ops III (Windows) folder is not set"
@@ -140,8 +148,8 @@ if [ "$t" = t7 ]; then
     BOIII_DIR="$dir" bash "$kit/boiii.sh" download ||
       die "Could not download boiii.exe: check your internet connection and press Play again."
   fi
-elif [ "$t" = t6 ] || [ "$t" = t6c ] || [ "$t" = t6s ]; then
-  :   # BO2 keeps the desktop's mode (see the t6:mp note above)
+elif [ "$t" = t6 ] || [ "$t" = t6c ] || [ "$t" = t6s ] || [ "$t" = steam ]; then
+  :   # BO2 keeps the desktop's mode (see the t6:mp note above); Steam's games were checked above
 elif [ "$t" = iw5 ]; then
   [ -n "$dir" ] && [ -d "$dir/main" ] && [ -d "$dir/zone" ] ||
     die "the Modern Warfare 3 game folder is not set (or has no main/ and zone/ folders)"
@@ -169,7 +177,7 @@ stop_all
 # The Direct3D 9 games run on MoltenVK: make sure the engine has the build for
 # this macOS (1.4.0 left Black Ops unable to start on macOS 15).
 case "$t" in
-  t4|t5|iw4|iw5)
+  t4|t5|iw4|iw5|steam)
     . "$kit/tools/moltenvk.sh"
     sil_moltenvk_ensure "$engine" "$home/downloads" ||
       printf '%s\n' 'Warning: could not update MoltenVK; the game may not start (check your internet connection).' >&2 ;;
@@ -250,6 +258,14 @@ cursor_fix=0
 case "$t" in
   t6|t6c|t6s) cursor_fix=1 ;;
   iw6) cursor_fix=1 ;;   # Ghosts turns it on itself; it needs the module too
+  steam)
+    # every game of the Steam Library: they draw their own pointer, and Wine's
+    # re-centred Mac cursor showed in the middle of the screen whenever the
+    # mouse stopped (MW2); CURSOR_FIX=0 keeps it to BO2, Ghosts and AW
+    case "$s_id" in
+      bo2|ghosts|aw) cursor_fix=1 ;;
+      *) [ "${CURSOR_FIX:-1}" != 0 ] && cursor_fix=1 ;;
+    esac ;;
   *) [ "${macos_major:-0}" -ge 26 ] 2>/dev/null && [ "${CURSOR_FIX:-1}" != 0 ] && cursor_fix=1 ;;
 esac
 if [ "$cursor_fix" = 1 ]; then
@@ -342,7 +358,7 @@ read -r dw dh hz < <("$kit/tools/displaymode" current 2>/dev/null || true)
 # panel scaled from 5120x2880 stops at 154 Hz, its 1x mode runs at 160 Hz.
 # The frame-rate cap and the games' refresh settings follow it.
 case "$t" in
-  t4|t5|iw4|iw5|t7)
+  t4|t5|iw4|iw5|t7|steam)
     if on DISPLAY_MODE && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
       best_hz=$("$kit/tools/displaymode" best "$dw" "$dh" 2>/dev/null)
       [[ ${best_hz:-} =~ ^[1-9][0-9]*$ ]] && [ "$best_hz" -gt "${hz:-0}" ] && hz=$best_hz
@@ -364,6 +380,13 @@ case "$t:$mode" in
   # 4K panel). Forcing real fullscreen made Wine switch the display to a 1x mode
   # of the game's size, which was slower here and left the window without frames.
   t6:*) : ;;
+  # Steam Library: the fullscreen games (Direct3D 9, OpenGL) are held in a 1x
+  # mode of the desktop's size; BO2 keeps the desktop's mode as above, and
+  # Ghosts / Advanced Warfare run borderless.
+  steam:*)
+    case "$s_api" in
+      gl|d3d9|d3d9x64) [ -n "${dw:-}" ] && [ -n "${dh:-}" ] && hold_1x_size "$dw $dh" ;;
+    esac ;;
   t5:mp) hold_1x "$plutonium/storage/t5/players/config_mp.cfg" ;;
   t5:*) hold_1x "$plutonium/storage/t5/players/config.cfg" ;;
   t4:*)
@@ -613,7 +636,8 @@ if [ "${X87:-1}" = 1 ] && [ -x "$engine/bin/x87sidecar" ]; then
   # Plutonium's games, the campaign's t6sp.exe (it crashed under an older
   # sidecar; with x87sidecar 1.9 it runs, and is CPU-bound without it),
   # Modern Warfare 3's iw5mp.exe and Modern Warfare 2's iw4x.exe
-  set_env X87_SIDECAR_PROGRAMS plutonium-bootstrapper-win32.exe:t6sp.exe:iw5mp.exe:iw4x.exe:iw4x-sp.exe
+  if [ "$t" = steam ]; then set_env X87_SIDECAR_PROGRAMS "t6sp.exe:$steam_x87_programs"
+  else set_env X87_SIDECAR_PROGRAMS plutonium-bootstrapper-win32.exe:t6sp.exe:iw5mp.exe:iw4x.exe:iw4x-sp.exe; fi
 else
   # X87=0: Rosetta's own x87 emulation (exact, if slower)
   clear_env X87_SIDECAR_PATH; clear_env X87_SIDECAR_PROGRAMS
@@ -630,7 +654,7 @@ if on RUMBLE_FIX; then wsrc="$wb/winebus.sil.sys"; else wsrc="$wb/winebus.cx.sys
 # Our DXVK also compiles in the background during BO1's one-frame shader
 # warming pass (it reads the game's warming flag), so warming only queues.
 dxvk_cache="$home/cache"
-if [ "$t" = iw5 ] || [ "$t" = iw4 ]; then
+if [ "$t" = iw5 ] || [ "$t" = iw4 ] || [ "$t" = steam ]; then
   # Both Modern Warfare clients use the patched D3D9 renderer. The shader
   # warming flag and wait in that renderer are specific to Black Ops.
   shader_settings=BO1
@@ -639,6 +663,11 @@ if [ "$t" = iw5 ] || [ "$t" = iw4 ]; then
     shader_settings=IW5
     # Plutonium runs both BO1 and MW3 as plutonium-bootstrapper-win32.exe.
     # Keep MW3's pipeline list separate from the BO1 list we ship and merge.
+    dxvk_cache="$dxvk_config_dir"
+  elif [ "$t" = steam ]; then
+    # Steam Library: each game its own pipeline list and settings
+    shader_settings=STEAM
+    dxvk_config_dir="$dxvk_cache/steam-$s_id"
     dxvk_cache="$dxvk_config_dir"
   fi
   mkdir -p "$dxvk_config_dir" || die "Could not create the $game graphics cache directory."
@@ -653,7 +682,9 @@ if [ "$t" = iw5 ] || [ "$t" = iw4 ]; then
   # and effects otherwise compile on the render thread for the first frames
   # and freeze the game; with 2 they are queued and appear a frame later.
   if on "${shader_settings}_ASYNC"; then
-    if [ "$t" = iw4 ]; then set_env DXVK_ASYNC "${IW4_ASYNC_LEVEL:-2}"; else set_env DXVK_ASYNC "${IW5_ASYNC_LEVEL:-1}"; fi
+    if [ "$t" = iw4 ]; then set_env DXVK_ASYNC "${IW4_ASYNC_LEVEL:-2}"
+    elif [ "$t" = steam ]; then set_env DXVK_ASYNC "${STEAM_ASYNC_LEVEL:-$s_async}"
+    else set_env DXVK_ASYNC "${IW5_ASYNC_LEVEL:-1}"; fi
   else set_env DXVK_ASYNC 0; fi
   set_env DXVK_WARM_ASYNC 0; set_env DXVK_WARM_WAIT 0
   if on "${shader_settings}_SHADER_CACHE"; then clear_env MVKCACHE_OFF; clear_env DXVK_STATE_CACHE
@@ -711,12 +742,18 @@ elif [ "$t:$mode" = iw5:mp ]; then
   set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$iw5_mvk_cache}"
 elif [ "$t:$mode" = t5:mp ]; then
   set_env MVKCACHE_FILE "$bo1_mp_mvk_cache"
+elif [ "$t" = steam ]; then
+  set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$home/cache/steam-$s_id/mvkcache.bin}"
 elif grep -Fxq -e "\"MVKCACHE_FILE\"=\"$iw4_mvk_cache\"" \
                 -e "\"MVKCACHE_FILE\"=\"$iw5_mvk_cache\"" \
                 -e "\"MVKCACHE_FILE\"=\"$bo1_mp_mvk_cache\"" "$WINEPREFIX/user.reg" 2>/dev/null; then
   reg delete 'HKCU\Environment' /v MVKCACHE_FILE /f
 fi
 set_env DXMT_CONFIG "$(dxmt_config BO2 "$maxfps")"
+if [ "$t" = steam ] && [ "$s_kind" = iw6 ]; then
+  steam_ids=; on IW6_GPU_ID && steam_ids="dxgi.customVendorId=1002;dxgi.customDeviceId=67df;"
+  set_env DXMT_CONFIG "$steam_ids$(dxmt_config IW6 "$maxfps")"
+fi
 # a MetalFX setting left by an earlier Siliconium build
 { grep -q '^"DXMT_METALFX_SPATIAL_SWAPCHAIN"=' "$WINEPREFIX/user.reg" 2>/dev/null &&
   clear_env DXMT_METALFX_SPATIAL_SWAPCHAIN; }
@@ -760,7 +797,7 @@ fi
 # The Plutonium launcher's window is drawn with OpenGL.
 reg add 'HKCU\Software\Wine\AppDefaults\plutonium-launcher-win32.exe\Direct3D' /v renderer /d gl /f
 reg_flush
-[ "$t" = t6c ] || "$WINESERVER" -w 2>/dev/null   # the campaign's Steam never exits
+[ "$t" = t6c ] || [ "$t" = steam ] || "$WINESERVER" -w 2>/dev/null   # the campaign's Steam never exits
 
 # --- macOS input ----------------------------------------------------------------
 # Holding a key (W, A, S, D…) would open macOS's accent menu in the game's window:
@@ -818,6 +855,133 @@ if [ "$t" = t6c ]; then
   game_pid=$(game_running 120) || die "the campaign did not start (see logs/bo2c-play.log)"
   : "$game_pid"   # the 1x display mode is held from before Wine started (hold_1x_size)
   while pgrep -f 't6sp\.exe' >/dev/null; do sleep 2; done
+  exit 0
+fi
+
+# --- The Steam Library (prefix-steam) -------------------------------------------
+# Steam (restarted above, so it and the game it starts get this environment
+# and the 1x display mode) signs in by itself and starts the game: as its own
+# Steam app when the part has one, else its executable with Steam's app ID.
+if [ "$t" = steam ]; then
+  steamdir="$WINEPREFIX/drive_c/Program Files (x86)/Steam"
+  log="$home/logs/steam-$s_id-$s_part.log"
+  case "$s_kind" in
+    iw6) capture=n ;;            # borderless
+    t6)  capture=n ;;            # BO2 keeps the desktop's mode
+    *)   if on CAPTURE_DISPLAY; then capture=y; else capture=n; fi ;;
+  esac
+  reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d "$capture" /f
+  if [ "$s_api" = d3d9x64 ]; then
+    steam_dxvk64 "$WINEPREFIX" "$kit" ||
+      die "Could not install DXVK for $s_name (64-bit Direct3D 9): reinstall Siliconium."
+    reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d9 /d native /f
+  fi
+  # Black Ops II: the hardware profile made on an Apple GPU, once (as for the campaign)
+  if [ "$s_kind" = t6 ] && on BO2_HW_PROFILE && [ ! -f "$dir/players/.sil-defaults-hardware" ]; then
+    mkdir -p "$dir/players"
+    cp "$kit/payload/bo2/hardware.chp" "$dir/players/hardware.chp" && : > "$dir/players/.sil-defaults-hardware"
+  fi
+  # Controller aim as on the consoles, in the games with controller support
+  case "$s_kind" in
+    t6)  for c in "$dir"/players/*.cfg; do console_aim "$c"; done ;;
+    iw6) for c in "$dir"/players2/*.cfg; do console_aim "$c"; done ;;
+  esac
+  # "did not quit properly / run in safe mode?" markers (__<exe>) left by a
+  # game stopped from the app or a crash: the app starts a game only when it
+  # is not running, so they are stale here
+  rm -f -- "$dir/__${s_exe%.exe}"
+  # Wine's mouse look (winemac patch) keeps the Mac cursor detached while the
+  # game hides it: in the games that put their cursor back at the centre of
+  # the screen, the pointer jumped there whenever the mouse stopped (Ghosts,
+  # MW2, MW3). Off for those, as for Ghosts' campaign.
+  case "$s_kind:$s_id" in iw6:*|*:mw2|*:mw3) export WINE_MAC_MOUSELOOK=0 ;; esac
+  # 32-bit games: 4 GB of address space instead of 2 (as Plutonium's
+  # bootstrapper has). Steam's executables are not large-address-aware and
+  # World at War ran out of memory under DXVK at 1440p (std::bad_alloc).
+  case "$s_api" in gl|d3d9|d3d11) set_env WINE_LARGE_ADDRESS_AWARE 1 ;; *) clear_env WINE_LARGE_ADDRESS_AWARE ;; esac
+  # DXVK's logs go to Siliconium's logs, not into the game's folder
+  mkdir -p "$home/logs/dxvk"; set_env DXVK_LOG_PATH "Z:${home//\//\\}\\logs\\dxvk"
+  marker="$home/cache/steam-$s_id/.started-$s_part"; mkdir -p "$home/cache/steam-$s_id"
+  first=1; [ -f "$marker" ] && first=0
+  steam_args "${dw:-}" "${dh:-}" "${hz:-}" "$first"
+  steam_config "$dir" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/steam-$s_id"
+  # shellcheck disable=SC2206
+  [ -n "${GAME_ARGS:-}" ] && s_argv+=($GAME_ARGS)
+  reg_flush
+  # A Steam opened meanwhile (the app's Open Steam) would not have this
+  # environment: close it, Steam starts again below
+  "$WINESERVER" -k 2>/dev/null; "$WINESERVER" -w 2>/dev/null
+  clog="$steamdir/logs/connection_log.txt"
+  seen=$(wc -l < "$clog" 2>/dev/null | tr -d ' '); seen=${seen:-0}
+  bash "$kit/steam.sh" start || exit 1
+  signed=
+  for _ in $(seq 1 90); do   # Steam's sign-in (up to 3 minutes)
+    tail -n +$((seen + 1)) "$clog" 2>/dev/null | grep '\[Logged On,' > /dev/null && { signed=1; break; }
+    sleep 2
+  done
+  if [ -z "$signed" ]; then
+    bash "$kit/steam.sh" open
+    die "Steam is not signed in: sign in in Steam's window (tick Remember me), then press Play again"
+  fi
+  console="$steamdir/logs/console_log.txt"
+  cseen=$(wc -l < "$console" 2>/dev/null | tr -d ' '); cseen=${cseen:-0}
+  printf '%s\n' "--- $(date) $s_name: ${s_argv[*]}" >> "$log"
+  # "Set Optimal Settings?" / "Run In Safe Mode?": answered No as they appear
+  # (kit/tools/dialog-guard.c), so the settings are never replaced
+  guard="$kit/payload/steam/dialog-guard.exe"
+  guard_pid=
+  if [ -f "$guard" ]; then
+    "$wine" "$guard" 21600 > /dev/null 2>&1 &
+    guard_pid=$!
+    trap '[ -n "$guard_pid" ] && kill "$guard_pid" 2>/dev/null; pkill -f "dialog-guard\.exe|pad-mapper\.exe" 2>/dev/null; true' EXIT
+  fi
+  # Controllers in the games without controller support on PC: played as
+  # keyboard and mouse (kit/tools/pad-mapper.c); CONTROLLER_MAP=0 turns it off
+  case "$s_pad" in
+    map) if on CONTROLLER_MAP && [ -f "$kit/payload/steam/pad-mapper.exe" ]; then
+             # LT aims while held: numpad 0 bound to +speed_throw in the game's
+             # settings (the right mouse button keeps the player's binding)
+             # (a first start has no settings yet: LT clicks the right mouse
+             # button on press and on release, the games' toggle aiming)
+             pad_ads=
+             [ "$s_kind" = iw ] && pad_ads=ads-toggle
+             if [ "$s_kind" = iw ]; then
+               while IFS= read -r c; do
+                 grep -q '^bind ' "$c" || continue
+                 grep -q '^bind KP_INS ' "$c" || printf 'bind KP_INS "+speed_throw"\r\n' >> "$c"
+                 pad_ads=ads-key
+               done < <(find "$dir/players" "$dir/players2" -maxdepth 3 -name '*.cfg' 2>/dev/null)
+             fi
+             "$wine" "$kit/payload/steam/pad-mapper.exe" 21600 $pad_ads > /dev/null 2>&1 &
+           fi ;;
+  esac
+  if [ "$s_own" = 1 ]; then
+    (cd "$steamdir" && "$wine" Steam.exe -applaunch "$s_app" "${s_argv[@]}" >> "$log" 2>&1 &)
+  else
+    (cd "$dir" && SteamAppId=$s_app SteamGameId=$s_app "$wine" "./$s_exe" "${s_argv[@]}" >> "$log" 2>&1 &)
+  fi
+  # The game is running when its executable works the CPU; Steam says right
+  # away when it will not start it
+  exe_re=${s_exe//./\\.}
+  game_pid=
+  for _ in $(seq 1 180); do
+    for pid in $(pgrep -f "$exe_re"); do
+      cpu=$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' '); cpu=${cpu%%.*}
+      [ "${cpu:-0}" -gt 20 ] && { game_pid=$pid; break 2; }
+    done
+    err=$(tail -n +$((cseen + 1)) "$console" 2>/dev/null | grep -oE "AppID $s_app.*LaunchApp failed with [A-Za-z_]+[0-9]*" | grep -oE '[A-Za-z]+Error_[0-9]+|k_E[A-Za-z0-9_]+' | tail -1)
+    case "$err" in
+      AppError_5) die "Steam has no license for $s_name on this account: sign in with the account that owns it (Open Steam)" ;;
+      ?*) bash "$kit/steam.sh" open; die "Steam could not start $s_name ($err): look at Steam's window" ;;
+    esac
+    sleep 1
+  done
+  if [ -z "$game_pid" ]; then
+    bash "$kit/steam.sh" open
+    die "Steam did not start $s_name: look at Steam's window (license, an update, or a first-time setup step)"
+  fi
+  : > "$marker"
+  while pgrep -f "$exe_re" > /dev/null; do sleep 2; done
   exit 0
 fi
 

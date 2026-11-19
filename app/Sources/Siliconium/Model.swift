@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 
 /// The sidebar's tabs and the games in each, in order.
 enum GameTab: String, CaseIterable, Identifiable {
-    case plutonium, bo3, iw4x, others
+    case steam, plutonium, bo3, iw4x, others
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -18,6 +18,7 @@ enum GameTab: String, CaseIterable, Identifiable {
         case .bo3: "Black Ops III"
         case .iw4x: "IW4X"
         case .others: "Campaigns"
+        case .steam: "Steam"
         }
     }
     var games: [Game] {
@@ -26,13 +27,14 @@ enum GameTab: String, CaseIterable, Identifiable {
         case .bo3: [.boiii, .bo3]
         case .iw4x: [.iw4]
         case .others: [.iw6, .bo2s, .bo2c]
+        case .steam: [.steam]
         }
     }
     static func of(_ game: Game) -> GameTab { allCases.first { $0.games.contains(game) } ?? .plutonium }
 }
 
 enum Game: String, CaseIterable, Identifiable {
-    case waw, bo1, bo2, iw5, iw4, iw6, bo2s, bo2c, bo3, boiii
+    case waw, bo1, bo2, iw5, iw4, iw6, bo2s, bo2c, bo3, boiii, steam
     var id: String { rawValue }
 
     var title: String {
@@ -47,6 +49,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .bo2c: "Black Ops II Campaign (Offline)"
         case .bo3: "Black Ops III for Mac"
         case .boiii: "Black Ops III"
+        case .steam: "Steam Library"
         }
     }
     /// Release year, shown like an atomic number on the game's tile.
@@ -59,6 +62,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .iw4: "2009"
         case .iw6: "2013"
         case .bo3, .boiii: "2015"
+        case .steam: "10"
         }
     }
     /// Who runs it, under the code on the game's tile.
@@ -70,6 +74,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .bo2s: "Steam"
         case .bo3: "Steam"
         case .boiii: "Ezz"
+        case .steam: "Steam"
         }
     }
     var subtitle: String {
@@ -84,6 +89,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .bo3: "Native Mac game · community servers"
         case .boiii: "BOIII · Ezz community servers"
         case .waw: "Plutonium · Zombies, Campaign, Multiplayer"
+        case .steam: "Steam for Windows · download your Call of Duty games"
         }
     }
     var symbol: String {
@@ -98,6 +104,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .bo3: "3.circle.fill"
         case .boiii: "3.square.fill"
         case .waw: "4.circle.fill"
+        case .steam: "cart.fill"
         }
     }
     /// The short engine code shown in the sidebar's game badge.
@@ -110,6 +117,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .iw4: "IW4"
         case .iw6: "IW6"
         case .bo3, .boiii: "T7"
+        case .steam: "St"
         }
     }
     var colors: [Color] {
@@ -123,6 +131,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .bo3: [Color(red: 0.98, green: 0.52, blue: 0.10), Color(red: 0.35, green: 0.12, blue: 0.03)]
         case .boiii: [Color(red: 0.98, green: 0.52, blue: 0.10), Color(red: 0.35, green: 0.12, blue: 0.03)]
         case .waw: [Color(red: 0.62, green: 0.58, blue: 0.36), Color(red: 0.16, green: 0.15, blue: 0.08)]
+        case .steam: [Color(red: 0.16, green: 0.47, blue: 0.80), Color(red: 0.05, green: 0.10, blue: 0.20)]
         }
     }
     /// Settings key of the game folder, for the Plutonium games.
@@ -139,7 +148,7 @@ enum Game: String, CaseIterable, Identifiable {
         default: nil
         }
     }
-    var usesEngine: Bool { self == .waw || self == .bo1 || self == .bo2 || self == .iw5 || self == .iw4 || self == .iw6 || self == .bo2c || self == .bo2s || self == .boiii }
+    var usesEngine: Bool { self == .waw || self == .bo1 || self == .bo2 || self == .iw5 || self == .iw4 || self == .iw6 || self == .bo2c || self == .bo2s || self == .boiii || self == .steam }
     var plutoniumID: String? {
         switch self {
         case .waw: "t4"
@@ -150,6 +159,61 @@ enum Game: String, CaseIterable, Identifiable {
         }
     }
     var usesPlutonium: Bool { plutoniumID != nil }
+}
+
+/// A game of the Steam Library section (kit/steam.sh's catalog, same ids).
+struct SteamTitle: Identifiable {
+    let id: String
+    let title: String
+    let year: String
+    let badge: String
+    let colors: [Color]
+    /// The Siliconium game that can play Steam's download of it today
+    var linked: Game? = nil
+    /// Steam's own copy can't be used by the linked game (why)
+    var note: String? = nil
+    /// What Play starts (launch.sh steam <id>-<mode>): the part and its executable
+    var modes: [Mode] = []
+    struct Mode: Identifiable {
+        let id: String       // sp | mp | zm
+        let title: String
+        let exe: String
+        var symbol: String { id == "mp" ? "person.3.fill" : id == "zm" ? "hand.raised.fill" : "figure.walk" }
+    }
+
+    static let catalog: [SteamTitle] = [
+        .init(id: "cod1", title: "Call of Duty", year: "2003", badge: "CoD",
+              colors: [Color(red: 0.55, green: 0.47, blue: 0.33), Color(red: 0.14, green: 0.11, blue: 0.07)],
+              modes: [.init(id: "sp", title: "Campaign", exe: "CoDSP.exe"), .init(id: "mp", title: "Multiplayer", exe: "CoDMP.exe")]),
+        .init(id: "cod2", title: "Call of Duty 2", year: "2005", badge: "CoD2",
+              colors: [Color(red: 0.50, green: 0.52, blue: 0.48), Color(red: 0.12, green: 0.13, blue: 0.12)],
+              modes: [.init(id: "sp", title: "Campaign", exe: "CoD2SP_s.exe"), .init(id: "mp", title: "Multiplayer", exe: "CoD2MP_s.exe")]),
+        .init(id: "cod4", title: "Call of Duty 4: Modern Warfare", year: "2007", badge: "IW3",
+              colors: [Color(red: 0.36, green: 0.50, blue: 0.30), Color(red: 0.08, green: 0.13, blue: 0.07)],
+              modes: [.init(id: "sp", title: "Campaign", exe: "iw3sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw3mp.exe")]),
+        .init(id: "waw", title: "World at War", year: "2008", badge: "T4",
+              colors: Game.waw.colors, linked: .waw,
+              modes: [.init(id: "sp", title: "Campaign & Zombies", exe: "CoDWaW.exe"), .init(id: "mp", title: "Multiplayer", exe: "CoDWaWmp.exe")]),
+        .init(id: "mw2", title: "Modern Warfare 2", year: "2009", badge: "IW4",
+              colors: Game.iw4.colors, linked: .iw4,
+              modes: [.init(id: "sp", title: "Campaign", exe: "iw4sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw4mp.exe")]),
+        .init(id: "bo1", title: "Black Ops", year: "2010", badge: "T5",
+              colors: Game.bo1.colors, linked: .bo1,
+              modes: [.init(id: "sp", title: "Campaign & Zombies", exe: "BlackOps.exe"), .init(id: "mp", title: "Multiplayer", exe: "BlackOpsMP.exe")]),
+        .init(id: "mw3", title: "Modern Warfare 3", year: "2011", badge: "IW5",
+              colors: Game.iw5.colors,
+              note: "Steam's Modern Warfare 3 is the 64-bit update; Plutonium needs the 32-bit game.",
+              modes: [.init(id: "sp", title: "Campaign", exe: "iw5sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw5mp.exe")]),
+        .init(id: "bo2", title: "Black Ops II", year: "2012", badge: "T6",
+              colors: Game.bo2.colors, linked: .bo2,
+              modes: [.init(id: "sp", title: "Campaign", exe: "t6sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "t6mp.exe"), .init(id: "zm", title: "Zombies", exe: "t6zm.exe")]),
+        .init(id: "ghosts", title: "Ghosts", year: "2013", badge: "IW6",
+              colors: Game.iw6.colors, linked: .iw6,
+              modes: [.init(id: "sp", title: "Campaign", exe: "iw6sp64_ship.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw6mp64_ship.exe")]),
+        .init(id: "aw", title: "Advanced Warfare", year: "2014", badge: "S1",
+              colors: [Color(red: 0.85, green: 0.70, blue: 0.25), Color(red: 0.22, green: 0.16, blue: 0.04)],
+              modes: [.init(id: "sp", title: "Campaign", exe: "s1_sp64_ship.exe"), .init(id: "mp", title: "Multiplayer", exe: "s1_mp64_ship.exe")]),
+    ]
 }
 
 struct PlayMode: Identifiable {
@@ -176,6 +240,7 @@ struct GameWindowTarget {
         case .bo2c, .bo2s: .init(executable: "t6sp.exe")
         case .boiii: .init(executable: "boiii.exe", isBOIII: true)
         case .bo3: .init(executable: "codblkops3_exe", startsOutsideScript: true)
+        case .steam: .init(executable: "steam.exe", startsOutsideScript: true)
         }
     }
 
@@ -659,7 +724,7 @@ final class AppState: ObservableObject {
             guard has("BlackOps3.exe") else {
                 return "That is not a Windows Black Ops III folder: BlackOps3.exe is missing."
             }
-        case .bo2s, .bo3:
+        case .bo2s, .bo3, .steam:
             return nil
         }
         return nil
@@ -837,6 +902,73 @@ final class AppState: ObservableObject {
     }
     func openSteam() { runScript("bo2-steam.sh", ["open"], title: nil) { [weak self] in self?.refreshSteamCampaign() } }
     func downloadInSteam() { runScript("bo2-steam.sh", ["download"], title: nil) { [weak self] in self?.refreshSteamCampaign() } }
+
+    // MARK: Steam Library (steam.sh)
+
+    /// steam.sh library: a catalog game's download in Steam
+    struct SteamEntry {
+        var state = "missing"          // installed|downloading|missing
+        var folder = ""
+        var parts: [(name: String, state: String)] = []   // Campaign, Multiplayer, Zombies…
+        var dlc = 0                    // DLC (map packs…) Steam installed with it
+    }
+    @Published var steamLibrary: [String: SteamEntry] = [:]
+    func refreshSteamLibrary() {
+        refreshSteamCampaign()
+        Task.detached {
+            var d: [String: SteamEntry] = [:]
+            for line in Self.capture("steam.sh", ["library"]).split(separator: "\n") {
+                let p = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                guard p.count >= 5 else { continue }
+                let parts = p[3].split(separator: ",").compactMap { part -> (name: String, state: String)? in
+                    let kv = part.split(separator: ":", maxSplits: 1).map(String.init)
+                    return kv.count == 2 ? (kv[0], kv[1]) : nil
+                }
+                d[p[0]] = SteamEntry(state: p[1], folder: p[2], parts: parts, dlc: Int(p[4]) ?? 0)
+            }
+            let result = d
+            await MainActor.run { self.steamLibrary = result }
+        }
+    }
+    func setupSteam() {
+        runScript("steam.sh", ["setup"], title: "Installing Steam for Windows") { [weak self] in self?.refreshSteamLibrary() }
+    }
+    func openSteamLibrary() { runScript("steam.sh", ["open"], title: nil) { [weak self] in self?.refreshSteamLibrary() } }
+    func downloadSteamGame(_ id: String) {
+        runScript("steam.sh", ["download", id], title: nil) { [weak self] in self?.refreshSteamLibrary() }
+    }
+    /// Plays a Steam Library game: Steam's own files, started through Steam (launch.sh steam).
+    func playSteam(_ title: SteamTitle, _ mode: SteamTitle.Mode) {
+        guard progress == nil, running == nil else { return }
+        // as in play(): the microphone question shows over this window, not behind the game
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .audio) { _ in
+                Task { @MainActor in self.playSteam(title, mode) }
+            }
+            return
+        }
+        running = .steam
+        runScript("launch.sh", ["steam", "\(title.id)-\(mode.id)"], title: "Loading…",
+                  gameWindow: .init(executable: mode.exe, acceptsFullscreenWindows: title.id == "ghosts" || title.id == "aw")) { [weak self] in
+            self?.running = nil
+        }
+    }
+    func downloadAllSteamGames() {
+        runScript("steam.sh", ["download-all"], title: "Asking Steam to download every game") { [weak self] in
+            self?.refreshSteamLibrary()
+        }
+    }
+    func openSteamStore(_ id: String) { runScript("steam.sh", ["store", id], title: nil) }
+    /// Points a Siliconium game (Plutonium, IW4X, Ghosts) at Steam's download of it.
+    func useSteamFolder(_ game: Game, _ path: String) {
+        guard let key = game.folderKey, !path.isEmpty else { return }
+        let url = URL(fileURLWithPath: path)
+        if let problem = gameFolderProblem(game, url) { error = problem; return }
+        settings[key] = url.path
+        settings.save()
+        refreshToken += 1
+        goTo = game
+    }
     func refreshCampaign() {
         Task.detached {
             var d: [String: String] = [:]
@@ -878,6 +1010,7 @@ final class AppState: ObservableObject {
         case .bo2c: engineInstalled && folderUsable(for: .bo2c) && campaign["ready"] == "yes"
         case .bo2s: engineInstalled && steamCampaign["steam"] == "installed" && steamCampaign["game"] == "installed"
         case .bo3: bo3Installed
+        case .steam: engineInstalled && steamCampaign["steam"] == "installed"
         }
     }
 

@@ -1,0 +1,254 @@
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 23b0a6fd..8aa51cd2 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -59,6 +59,27 @@ namespace dxvk {
+     if (canSWVP)
+       Logger::info("D3D9DeviceEx: Using extended constant set for software vertex processing.");
+ 
++    // Black Ops (t5sp.exe) draws every material once in a single frame to
++    // warm its shaders. Those draws are never shown, so while the game's
++    // warming flag is set, missing pipelines compile in the background
++    // (DXVK_ASYNC) instead of one by one. Identified by its own string.
++#ifndef _WIN64
++    if (env::getEnvVar("DXVK_WARM_ASYNC") != "0") {
++      const char* tag = reinterpret_cast<const char*>(0xa457f4);
++      const uint32_t* flag = reinterpret_cast<const uint32_t*>(0x396a188);
++      MEMORY_BASIC_INFORMATION mi = { };
++      auto readable = [&mi] (const void* p, size_t n) {
++        return VirtualQuery(p, &mi, sizeof(mi)) == sizeof(mi) && mi.State == MEM_COMMIT
++            && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))
++            && uintptr_t(p) + n <= uintptr_t(mi.BaseAddress) + mi.RegionSize;
++      };
++      if (readable(tag, 21) && !std::memcmp(tag, "PATCH_SHADER_WARMING", 21) && readable(flag, 4)) {
++        m_warmFlag = flag;
++        Logger::info("D3D9DeviceEx: Black Ops shader warming compiles in the background");
++      }
++    }
++#endif
++
+     if (m_dxvkDevice->instance()->extensions().extDebugUtils)
+       m_annotation = new D3D9UserDefinedAnnotation(this);
+ 
+@@ -2604,6 +2625,13 @@ namespace dxvk {
+           IDirect3DVertexBuffer9*      pDestBuffer,
+           IDirect3DVertexDeclaration9* pVertexDecl,
+           DWORD                        Flags) {
++    if (!m_dxvkDevice->features().core.features.geometryShader) {
++      static bool s_warned = false;
++      if (!std::exchange(s_warned, true))
++        Logger::warn("D3D9DeviceEx::ProcessVertices: needs geometry shaders, which this device lacks; ignored");
++      return D3D_OK;
++    }
++
+     D3D9DeviceLock lock = LockDevice();
+ 
+     if (unlikely(pDestBuffer == nullptr || pVertexDecl == nullptr))
+@@ -3915,7 +3943,9 @@ namespace dxvk {
+     DxvkDeviceFeatures enabled = {};
+ 
+     // Geometry shaders are used for some meta ops
+-    enabled.core.features.geometryShader = VK_TRUE;
++    // Metal has no geometry shaders, and MoltenVK reports none: D3D9 only
++    // needs them for ProcessVertices, which then does nothing (see there).
++    enabled.core.features.geometryShader = supported.core.features.geometryShader;
+     enabled.core.features.robustBufferAccess = VK_TRUE;
+     enabled.extRobustness2.robustBufferAccess2 = supported.extRobustness2.robustBufferAccess2;
+ 
+@@ -3944,7 +3974,8 @@ namespace dxvk {
+     enabled.core.features.sampleRateShading = VK_TRUE;
+     enabled.core.features.samplerAnisotropy = supported.core.features.samplerAnisotropy;
+     enabled.core.features.shaderClipDistance = VK_TRUE;
+-    enabled.core.features.shaderCullDistance = VK_TRUE;
++    // No D3D9 shader writes a cull distance; MoltenVK does not offer it.
++    enabled.core.features.shaderCullDistance = supported.core.features.shaderCullDistance;
+ 
+     // Ensure we support real BC formats and unofficial vendor ones.
+     enabled.core.features.textureCompressionBC = VK_TRUE;
+@@ -5964,14 +5995,18 @@ namespace dxvk {
+     const uint32_t slot = computeResourceSlotId(
+       samplerInfo.first, DxsoBindingType::Image,
+       samplerInfo.second);
++    const uint32_t depthSlot = computeDepthSlotId(
++      samplerInfo.first, samplerInfo.second);
+ 
+     EmitCs([this,
+-      cSlot = slot,
+-      cKey  = key
++      cSlot      = slot,
++      cDepthSlot = depthSlot,
++      cKey       = key
+     ] (DxvkContext* ctx) {
+       auto pair = m_samplers.find(cKey);
+       if (pair != m_samplers.end()) {
+         ctx->bindResourceSampler(cSlot, pair->second);
++        ctx->bindResourceSampler(cDepthSlot, pair->second);
+         return;
+       }
+ 
+@@ -6012,6 +6047,7 @@ namespace dxvk {
+         auto sampler = m_dxvkDevice->createSampler(info);
+ 
+         m_samplers.insert(std::make_pair(cKey, sampler));
++        ctx->bindResourceSampler(cDepthSlot, sampler);
+         ctx->bindResourceSampler(cSlot, std::move(sampler));
+ 
+         m_samplerCount++;
+@@ -6036,9 +6072,11 @@ namespace dxvk {
+       GetCommonTexture(m_state.textures[StateSampler]);
+ 
+     EmitCs([
+-      cSlot = slot,
++      cSlot      = slot,
++      cDepthSlot = computeDepthSlotId(shaderSampler.first, uint32_t(shaderSampler.second)),
+       cImageView = commonTex->GetSampleView(srgb)
+     ](DxvkContext* ctx) {
++      ctx->bindResourceView(cDepthSlot, cImageView, nullptr);
+       ctx->bindResourceView(cSlot, cImageView, nullptr);
+     });
+   }
+@@ -6055,6 +6093,7 @@ namespace dxvk {
+           DxsoBindingType::Image, uint32_t(shaderSampler.second));
+ 
+         ctx->bindResourceView(slot, nullptr, nullptr);
++        ctx->bindResourceView(computeDepthSlotId(shaderSampler.first, uint32_t(shaderSampler.second)), nullptr, nullptr);
+       }
+     });
+   }
+@@ -6110,6 +6149,25 @@ namespace dxvk {
+ 
+ 
+   void D3D9DeviceEx::PrepareDraw(D3DPRIMITIVETYPE PrimitiveType) {
++#ifndef _WIN64   // Black Ops' shader warming: the 32-bit build only
++    if (unlikely(m_warmFlag != nullptr)) {
++      bool warm = *m_warmFlag != 0;
++      if (unlikely(warm != m_warmActive)) {
++        m_warmActive = warm;
++        EmitCs([warm] (DxvkContext* ctx) { ctx->setForceAsync(warm); });
++
++        // Warming is over: keep the loading screen up until the pipelines
++        // it queued (and the state cache's for this map) are compiled, so
++        // the map does not stutter compiling them while it is played.
++        if (!warm && env::getEnvVar("DXVK_WARM_WAIT") != "0") {
++          SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
++          uint32_t ms = m_dxvkDevice->waitForPipelines(180000);
++          Logger::info(str::format("D3D9DeviceEx: waited ", ms, " ms for shader warming pipelines"));
++        }
++      }
++    }
++#endif
++
+     if (unlikely(m_activeHazardsRT != 0)) {
+       EmitCs([](DxvkContext* ctx) {
+         ctx->emitRenderTargetReadbackBarrier();
+@@ -7296,6 +7354,7 @@ namespace dxvk {
+         auto samplerInfo = RemapStateSamplerShader(DWORD(i));
+         uint32_t slot = computeResourceSlotId(samplerInfo.first, DxsoBindingType::Image, uint32_t(samplerInfo.second));
+         ctx->bindResourceView(slot, nullptr, nullptr);
++        ctx->bindResourceView(computeDepthSlotId(samplerInfo.first, uint32_t(samplerInfo.second)), nullptr, nullptr);
+       }
+     });
+ 
+diff --git a/src/d3d9/d3d9_device.h b/src/d3d9/d3d9_device.h
+index cec48291..6d88896c 100644
+--- a/src/d3d9/d3d9_device.h
++++ b/src/d3d9/d3d9_device.h
+@@ -1230,6 +1230,10 @@ namespace dxvk {
+     uint32_t                        m_lastPointMode = 0;
+     uint32_t                        m_lastFetch4    = 0;
+     uint32_t                        m_lastHazardsDS = 0;
++
++    // Black Ops (t5sp.exe): flag the game sets while it warms its shaders
++    volatile const uint32_t*        m_warmFlag   = nullptr;
++    bool                            m_warmActive = false;
+     uint32_t                        m_lastSamplerTypesFF = 0;
+ 
+     D3D9ShaderMasks                 m_vsShaderMasks = D3D9ShaderMasks();
+diff --git a/src/d3d9/d3d9_include.h b/src/d3d9/d3d9_include.h
+index 8762265a..b8ac43a7 100644
+--- a/src/d3d9/d3d9_include.h
++++ b/src/d3d9/d3d9_include.h
+@@ -79,10 +79,13 @@
+ 
+ // MinGW headers are broken. Who'dve guessed?
+ #ifndef _MSC_VER
++// mingw-w64 12 and later declare it (with the real members)
++#if !defined(__MINGW64_VERSION_MAJOR) || __MINGW64_VERSION_MAJOR < 12
+ typedef struct _D3DDEVINFO_RESOURCEMANAGER
+ {
+   char dummy;
+ } D3DDEVINFO_RESOURCEMANAGER, * LPD3DDEVINFO_RESOURCEMANAGER;
++#endif
+ 
+ #ifndef __WINE__
+ extern "C" WINUSERAPI WINBOOL WINAPI SetProcessDPIAware(VOID);
+diff --git a/src/dxso/dxso_compiler.cpp b/src/dxso/dxso_compiler.cpp
+index 7cd6f72b..4b1dbd4f 100644
+--- a/src/dxso/dxso_compiler.cpp
++++ b/src/dxso/dxso_compiler.cpp
+@@ -818,6 +818,8 @@ namespace dxvk {
+       DxsoBindingType::Image,
+       idx);
+ 
++    const uint32_t depthBinding = computeDepthSlotId(m_programInfo.type(), idx);
++
+     const bool implicit = m_programInfo.majorVersion() < 2 || m_moduleInfo.options.forceSamplerTypeSpecConstants;
+ 
+     if (!implicit) {
+@@ -828,7 +830,7 @@ namespace dxvk {
+ 
+       if (samplerType != SamplerTypeTexture3D) {
+         // We could also be depth compared!
+-        DclSampler(idx, binding, samplerType, true, implicit);
++        DclSampler(idx, depthBinding, samplerType, true, implicit);
+       }
+     }
+     else {
+@@ -840,7 +842,7 @@ namespace dxvk {
+         DclSampler(idx, binding, samplerType, false, implicit);
+ 
+         if (samplerType != SamplerTypeTexture3D)
+-          DclSampler(idx, binding, samplerType, true, implicit);
++          DclSampler(idx, depthBinding, samplerType, true, implicit);
+       }
+     }
+ 
+@@ -858,6 +860,13 @@ namespace dxvk {
+     resource.view   = implicit ? VK_IMAGE_VIEW_TYPE_MAX_ENUM : viewType;
+     resource.access = VK_ACCESS_SHADER_READ_BIT;
+     m_resourceSlots.push_back(resource);
++
++    // and the slot of the depth-compare variants, if any were declared
++    if (implicit || SamplerTypeFromTextureType(type) != SamplerTypeTexture3D) {
++      DxvkResourceSlot depthResource = resource;
++      depthResource.slot = depthBinding;
++      m_resourceSlots.push_back(depthResource);
++    }
+   }
+ 
+ 
+diff --git a/src/dxso/dxso_util.h b/src/dxso/dxso_util.h
+index 3a94acfb..097df3f8 100644
+--- a/src/dxso/dxso_util.h
++++ b/src/dxso/dxso_util.h
+@@ -53,6 +53,19 @@ namespace dxvk {
+     return DxsoConstantBuffers::VSCount + caps::MaxTexturesVS + DxsoConstantBuffers::PSCount + caps::MaxTexturesPS + 1; // From last pixel shader slot, above.
+   }
+ 
++  // The depth-compare ("shadow") variants of a sampler get their own binding,
++  // right after the software vertex processing buffer. On the sampler's own
++  // binding they shared a slot with the colour variants, which SPIR-V allows
++  // but Metal does not: MoltenVK could not place them and the shaders using
++  // that sampler failed to compile. The device binds the same image and
++  // sampler to both slots.
++  constexpr uint32_t computeDepthSlotId(
++        DxsoProgramType shaderStage,
++        uint32_t        bindingIndex) {
++    return getSWVPBufferSlot() + 1 + bindingIndex
++      + (shaderStage == DxsoProgramType::PixelShader ? caps::MaxTexturesVS : 0);
++  }
++
+   uint32_t RegisterLinkerSlot(DxsoSemantic semantic);
+ 
+ }
+\ No newline at end of file
