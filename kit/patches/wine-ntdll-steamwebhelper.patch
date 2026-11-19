@@ -1,0 +1,95 @@
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -1167,6 +1167,41 @@
+     *handles_len = count * sizeof(**handles);
+ 
+     return STATUS_SUCCESS;
++}
++
++/* Siliconium: Steam's web helper (Chromium) draws from a separate GPU process
++ * into a window that belongs to the browser process, which the Mac driver
++ * does not show: every Steam window stays black. Like CrossOver, run its GPU
++ * work in process (and in software). SIL_STEAMWEBHELPER_FIX=0 turns it off. */
++static WCHAR *steamwebhelper_cmdline( const UNICODE_STRING *image, const UNICODE_STRING *cmdline )
++{
++    static const char exe[] = "\\steamwebhelper.exe";
++    static const char args[] = " --no-sandbox --in-process-gpu --disable-gpu";
++    static const char flag[] = "--in-process-gpu";
++    const char *env = getenv( "SIL_STEAMWEBHELPER_FIX" );
++    size_t exe_len = sizeof(exe) - 1, args_len = sizeof(args) - 1, flag_len = sizeof(flag) - 1, len, i, j;
++    const WCHAR *name;
++    WCHAR *ret;
++
++    if (env && env[0] == '0') return NULL;
++    if (!image || !image->Buffer || !cmdline || !cmdline->Buffer) return NULL;
++    len = image->Length / sizeof(WCHAR);
++    if (len < exe_len) return NULL;
++    name = image->Buffer + len - exe_len;
++    for (i = 0; i < exe_len; i++)
++        if (towlower( name[i] ) != (WCHAR)exe[i]) return NULL;
++
++    len = cmdline->Length / sizeof(WCHAR);
++    for (i = 0; i + flag_len <= len; i++)   /* already there */
++    {
++        for (j = 0; j < flag_len && cmdline->Buffer[i + j] == (WCHAR)flag[j]; j++) ;
++        if (j == flag_len) return NULL;
++    }
++    if (!(ret = malloc( (len + args_len + 1) * sizeof(WCHAR) ))) return NULL;
++    memcpy( ret, cmdline->Buffer, len * sizeof(WCHAR) );
++    for (i = 0; i < args_len; i++) ret[len + i] = (WCHAR)args[i];
++    ret[len + args_len] = 0;
++    return ret;
+ }
+ 
+ /**********************************************************************
+@@ -1199,6 +1234,8 @@
+     const PS_ATTRIBUTE *handles_attr = NULL, *jobs_attr = NULL;
+     data_size_t handles_size, jobs_size;
+     obj_handle_t *handles, *jobs;
++    RTL_USER_PROCESS_PARAMETERS steam_params;
++    WCHAR *steam_cmdline = NULL;
+ 
+     if (thread_flags & THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER)
+     {
+@@ -1244,6 +1281,13 @@
+         }
+     }
+     if (!process_attr) process_attr = &empty_attr;
++
++    if ((steam_cmdline = steamwebhelper_cmdline( &params->ImagePathName, &params->CommandLine )))
++    {
++        steam_params = *params;
++        init_unicode_string( &steam_params.CommandLine, steam_cmdline );
++        params = &steam_params;
++    }
+ 
+     TRACE( "%s image %s cmdline %s parent %p machine %x\n", debugstr_us( &path ),
+            debugstr_us( &params->ImagePathName ), debugstr_us( &params->CommandLine ), parent, machine );
+@@ -1447,6 +1491,7 @@
+     free( startup_info );
+     free( winedebug );
+     free( unix_name );
++    free( steam_cmdline );
+     free( nt_name.Buffer );
+     return status;
+ }
+@@ -2273,6 +2318,19 @@
+                 return STATUS_INVALID_PARAMETER;
+             }
+             execute_flags = *(ULONG *)info;
++#ifdef __APPLE__
++            {
++                /* bo: under Rosetta, make pages executable when code runs from
++                 * them instead of all at once (BO_EXEC_ON_DEMAND=0: all at once) */
++                const char *env = getenv( "BO_EXEC_ON_DEMAND" );
++                if (enable && is_wow64() && (!env || *env != '0'))
++                {
++                    virtual_set_exec_on_demand( TRUE );
++                    break;
++                }
++                virtual_set_exec_on_demand( FALSE );
++            }
++#endif
+             virtual_set_force_exec( enable );
+         }
+         break;

@@ -1,0 +1,37 @@
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -966,7 +966,9 @@
+     int fd[2], status, err;
+ 
+ #ifdef HAVE_PIPE2
+-    if (pipe2( fd, O_CLOEXEC ) == -1)
++    /* Siliconium: pipe2 is in macOS 27 and later only; built with the macOS 27
++     * SDK for macOS 14, it is a missing symbol on older systems (a crash) */
++    if (!__builtin_available( macOS 27.0, * ) || pipe2( fd, O_CLOEXEC ) == -1)
+ #endif
+     {
+         if (pipe(fd) == -1) return STATUS_TOO_MANY_OPENED_FILES;
+@@ -1062,7 +1064,9 @@
+     NTSTATUS status = STATUS_SUCCESS;
+ 
+ #ifdef HAVE_PIPE2
+-    if (pipe2( fd, O_CLOEXEC ) == -1)
++    /* Siliconium: pipe2 is in macOS 27 and later only; built with the macOS 27
++     * SDK for macOS 14, it is a missing symbol on older systems (a crash) */
++    if (!__builtin_available( macOS 27.0, * ) || pipe2( fd, O_CLOEXEC ) == -1)
+ #endif
+     {
+         if (pipe(fd) == -1) return STATUS_TOO_MANY_OPENED_FILES;
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1281,7 +1281,10 @@
+ {
+     int ret;
+ #ifdef HAVE_PIPE2
++    /* Siliconium: pipe2 is in macOS 27 and later only (a missing symbol before) */
+     static BOOL have_pipe2 = TRUE;
++
++    if (!__builtin_available( macOS 27.0, * )) have_pipe2 = FALSE;
+ 
+     if (have_pipe2)
+     {

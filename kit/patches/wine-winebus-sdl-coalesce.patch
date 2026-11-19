@@ -1,0 +1,155 @@
+--- bus_sdl.c.orig	2026-11-16 18:20:05
++++ bus_sdl.c	2026-11-16 18:20:37
+@@ -61,6 +61,14 @@
+ #ifdef SONAME_LIBSDL2
+ 
+ static pthread_mutex_t sdl_cs = PTHREAD_MUTEX_INITIALIZER;
++
++/* Minimum interval, in ms, between input reports queued for one device.
++ * SIL_SDL_REPORT_MS sets it (0 or unset disables it). A 1000 Hz controller
++ * produces one SDL event per axis change, so moving both sticks queued up to
++ * four reports per device report; the report path (raw input message plus the
++ * HID queue) fell behind and the pad state reached the game late. When the
++ * interval has not elapsed the newest state is kept and queued later. */
++static UINT report_interval_ms = 0;
+ static const struct bus_options *options;
+ 
+ static void *sdl_handle = NULL;
+@@ -150,6 +158,9 @@
+     int effect_state[256];
+     LONG effect_flags;
+     int axis_offset;
++
++    UINT last_report_ticks;
++    BOOL report_pending;
+ };
+ 
+ static inline struct sdl_device *impl_from_unix_device(struct unix_device *iface)
+@@ -815,11 +826,44 @@
+     pthread_mutex_unlock(&sdl_cs);
+ }
+ 
+-static BOOL set_report_from_joystick_event(struct sdl_device *impl, SDL_Event *event)
++static void queue_report(struct sdl_device *impl)
+ {
+     struct unix_device *iface = &impl->unix_device;
+     struct hid_device_state *state = &iface->hid_device_state;
++    UINT ticks;
++
++    if (!report_interval_ms)
++    {
++        bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++        return;
++    }
+ 
++    ticks = pSDL_GetTicks();
++    if (impl->last_report_ticks && ticks - impl->last_report_ticks < report_interval_ms)
++    {
++        impl->report_pending = TRUE;
++        return;
++    }
++    impl->report_pending = FALSE;
++    impl->last_report_ticks = ticks;
++    bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++}
++
++static void flush_pending_reports(void)
++{
++    struct sdl_device *impl;
++
++    if (!report_interval_ms) return;
++    pthread_mutex_lock(&sdl_cs);
++    LIST_FOR_EACH_ENTRY(impl, &device_list, struct sdl_device, unix_device.entry)
++        if (impl->report_pending) queue_report(impl);
++    pthread_mutex_unlock(&sdl_cs);
++}
++
++static BOOL set_report_from_joystick_event(struct sdl_device *impl, SDL_Event *event)
++{
++    struct unix_device *iface = &impl->unix_device;
++
+     if (impl->sdl_controller) return TRUE; /* use controller events instead */
+ 
+     switch (event->type)
+@@ -830,7 +874,7 @@
+             SDL_JoyButtonEvent *ie = &event->jbutton;
+ 
+             hid_device_set_button(iface, ie->button, ie->state);
+-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++            queue_report(impl);
+             break;
+         }
+         case SDL_JOYAXISMOTION:
+@@ -838,7 +882,7 @@
+             SDL_JoyAxisEvent *ie = &event->jaxis;
+ 
+             if (!hid_device_set_abs_axis(iface, ie->axis, ie->value)) break;
+-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++            queue_report(impl);
+             break;
+         }
+         case SDL_JOYBALLMOTION:
+@@ -847,7 +891,7 @@
+ 
+             if (!hid_device_set_rel_axis(iface, 2 * ie->ball, ie->xrel)) break;
+             hid_device_set_rel_axis(iface, 2 * ie->ball + 1, ie->yrel);
+-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++            queue_report(impl);
+             break;
+         }
+         case SDL_JOYHATMOTION:
+@@ -855,7 +899,7 @@
+             SDL_JoyHatEvent *ie = &event->jhat;
+ 
+             set_hat_value(iface, ie->hat, ie->value);
+-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++            queue_report(impl);
+             break;
+         }
+         default:
+@@ -869,7 +913,6 @@
+ static BOOL set_report_from_controller_event(struct sdl_device *impl, SDL_Event *event)
+ {
+     struct unix_device *iface = &impl->unix_device;
+-    struct hid_device_state *state = &iface->hid_device_state;
+ 
+     switch (event->type)
+     {
+@@ -905,7 +948,7 @@
+             if (button == 13) hid_device_move_hatswitch(iface, 0, ie->state ? -1 : +1, 0);
+             if (button == 11) hid_device_move_hatswitch(iface, 0, ie->state ? +1 : -1, 0);
+             hid_device_set_button(iface, button, ie->state);
+-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++            queue_report(impl);
+             break;
+         }
+         case SDL_CONTROLLERAXISMOTION:
+@@ -916,7 +959,7 @@
+                 ie->value = -ie->value - 1; /* match XUSB / GIP protocol */
+ 
+             hid_device_set_abs_axis(iface, ie->axis, ie->value);
+-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++            queue_report(impl);
+             break;
+         }
+         default:
+@@ -1150,6 +1193,11 @@
+     pSDL_JoystickGetType = dlsym(sdl_handle, "SDL_JoystickGetType");
+     pSDL_JoystickGetSerial = dlsym(sdl_handle, "SDL_JoystickGetSerial");
+ 
++    {
++        const char *rate = getenv("SIL_SDL_REPORT_MS");
++        if (rate) report_interval_ms = atoi(rate);
++    }
++
+ #ifdef __APPLE__
+     /* CW HACK 19629: Enable rumble over BT for PS4/PS5 controllers. */
+     pSDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, "1");
+@@ -1207,6 +1255,7 @@
+     do
+     {
+         if (bus_event_queue_pop(&event_queue, result)) return STATUS_PENDING;
++        flush_pending_reports();
+         if (pSDL_WaitEventTimeout(&event, 10) != 0) process_device_event(&event);
+         else check_all_devices_effects_state();
+     } while (event.type != quit_event);

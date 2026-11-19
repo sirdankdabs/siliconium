@@ -1,0 +1,50 @@
+BO2 (all modes): hide the Dock and the menu bar while the game is active.
+Apply after wine-winemac-mouselook.patch and wine-winemac-transparent-cursor.patch.
+
+--- a/dlls/winemac.drv/cocoa_app.m	2026-11-16 14:55:42
++++ b/dlls/winemac.drv/cocoa_app.m	2026-11-16 14:57:06
+@@ -116,6 +116,24 @@
+         [image release];
+     });
+     return cursor;
++}
++
++/* The game paints the whole display, so keep the Dock and the menu bar out of
++ * the way: with a window that covers the screen but is not captured (BO2's
++ * menus), taking the pointer to the top or bottom edge made macOS reveal them
++ * over the game. Restored when the app loses focus so other apps' menus work.
++ * Works for any display size. */
++static void update_game_presentation(void)
++{
++    if (!use_transparent_cursor()) return;
++    /* Presentation options can only be changed while the app is active. They
++     * apply to this app only, so nothing has to be restored when it resigns:
++     * the frontmost app's own options take over. */
++    if (![NSApp isActive]) return;
++
++    NSApp.presentationOptions = NSApplicationPresentationHideDock |
++                                NSApplicationPresentationHideMenuBar |
++                                NSApplicationPresentationDisableCursorLocationAssistance;
+ }
+ 
+ @implementation WineApplication
+@@ -238,8 +256,8 @@
+ 
+             if (use_transparent_cursor())
+             {
+-                NSApp.presentationOptions |= NSApplicationPresentationDisableCursorLocationAssistance;
+-                fprintf(stderr, "[Si14]: BO2 cursor workaround enabled (transparent cursor, location assistance disabled)\n");
++                update_game_presentation();
++                fprintf(stderr, "[Si14]: BO2 cursor workaround enabled (transparent cursor, menu bar and Dock hidden, location assistance disabled)\n");
+             }
+ 
+             keyboardType = LMGetKbdType();
+@@ -2612,6 +2630,8 @@
+         // movement deltas are invalidated.  Make sure the next mouse move event
+         // starts over from an absolute baseline.
+         forceNextMouseMoveAbsolute = TRUE;
++
++        update_game_presentation();
+     }
+ 
+     - (void)applicationDidChangeScreenParameters:(NSNotification *)notification

@@ -1,0 +1,15 @@
+--- a/src/dxmt/meson.build
++++ b/src/dxmt/meson.build
+@@ -26,7 +26,11 @@
+   'dxmt_command.metal'
+ ]
+ 
+-dxmt_shaders_ir = metalir_generator.process(dxmt_shaders)
++# Siliconium: the internal command library is compiled for macOS 14 (MSL 3.1) like
++# airconv's shaders; without a version, Xcode 26+ makes MSL 4.1, which Metal
++# refuses before macOS 26 ("language version 4.1 is not supported on this OS")
++dxmt_shaders_ir = metalir_generator.process(dxmt_shaders,
++  extra_args: ['-std=metal3.1', '--target=air64-apple-macos14.0'])
+ 
+ dxmt_shaders_lib = metallib_generator.process(dxmt_shaders_ir)
+ 

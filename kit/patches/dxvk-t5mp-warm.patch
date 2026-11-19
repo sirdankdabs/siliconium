@@ -1,0 +1,116 @@
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -65,17 +65,34 @@
+     // (DXVK_ASYNC) instead of one by one. Identified by its own string.
+ #ifndef _WIN64
+     if (env::getEnvVar("DXVK_WARM_ASYNC") != "0") {
+-      const char* tag = reinterpret_cast<const char*>(0xa457f4);
+-      const uint32_t* flag = reinterpret_cast<const uint32_t*>(0x396a188);
++      const bool mpRequested = env::getEnvVar("DXVK_T5MP_WARM") == "1"
++        && std::wcsstr(GetCommandLineW(), L" t5mp ") != nullptr;
++      const char* tag = reinterpret_cast<const char*>(mpRequested ? 0xa146f0 : 0xa457f4);
++      const uint32_t* flag = reinterpret_cast<const uint32_t*>(mpRequested ? 0x46ec408 : 0x396a188);
+       MEMORY_BASIC_INFORMATION mi = { };
+       auto readable = [&mi] (const void* p, size_t n) {
+         return VirtualQuery(p, &mi, sizeof(mi)) == sizeof(mi) && mi.State == MEM_COMMIT
+             && !(mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))
+             && uintptr_t(p) + n <= uintptr_t(mi.BaseAddress) + mi.RegionSize;
+       };
+-      if (readable(tag, 21) && !std::memcmp(tag, "PATCH_SHADER_WARMING", 21) && readable(flag, 4)) {
++      // Plutonium maps t5mp.exe's image into the bootstrapper. Check both
++      // stores to the MP flag along with the renderer's identifying string.
++      const uint8_t mpBegin[] = { 0xc7, 0x05, 0x08, 0xc4, 0x6e, 0x04, 1, 0, 0, 0 };
++      const uint8_t mpEnd[]   = { 0xc7, 0x05, 0x08, 0xc4, 0x6e, 0x04, 0, 0, 0, 0 };
++      const auto matches = [&] (uintptr_t addr, const uint8_t (&bytes)[10]) {
++        const auto* code = reinterpret_cast<const void*>(addr);
++        return readable(code, sizeof(bytes)) && !std::memcmp(code, bytes, sizeof(bytes));
++      };
++      if (readable(tag, 21) && !std::memcmp(tag, "PATCH_SHADER_WARMING", 21)
++          && readable(flag, sizeof(*flag))
++          && (!mpRequested || (matches(0x6f6040, mpBegin) && matches(0x6f166c, mpEnd)))) {
+         m_warmFlag = flag;
+-        Logger::info("D3D9DeviceEx: Black Ops shader warming compiles in the background");
++        m_t5mpWarm = mpRequested;
++        Logger::info(mpRequested
++          ? "D3D9DeviceEx: T5 Multiplayer shader warming recognized"
++          : "D3D9DeviceEx: Black Ops shader warming compiles in the background");
++      } else if (mpRequested) {
++        Logger::warn("D3D9DeviceEx: T5 Multiplayer shader warming signature unavailable");
+       }
+     }
+ #endif
+@@ -87,9 +104,12 @@
+     m_converter        = new D3D9FormatHelper(m_dxvkDevice);
+ 
+     EmitCs([
+-      cDevice = m_dxvkDevice
++      cDevice = m_dxvkDevice,
++      cT5mpWarm = m_t5mpWarm
+     ] (DxvkContext* ctx) {
+       ctx->beginRecording(cDevice->createCommandList());
++      if (cT5mpWarm)
++        ctx->setAsyncOnlyDuringWarming();
+ 
+       DxvkLogicOpState loState;
+       loState.enableLogicOp = VK_FALSE;
+@@ -6154,14 +6174,19 @@
+       if (unlikely(warm != m_warmActive)) {
+         m_warmActive = warm;
+         EmitCs([warm] (DxvkContext* ctx) { ctx->setForceAsync(warm); });
++        if (warm && m_t5mpWarm)
++          Logger::info("D3D9DeviceEx: T5 MP queuing shader warming pipelines");
+ 
+         // Warming is over: keep the loading screen up until the pipelines
+         // it queued (and the state cache's for this map) are compiled, so
+         // the map does not stutter compiling them while it is played.
+         if (!warm && env::getEnvVar("DXVK_WARM_WAIT") != "0") {
+           SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+-          uint32_t ms = m_dxvkDevice->waitForPipelines(90000);
+-          Logger::info(str::format("D3D9DeviceEx: waited ", ms, " ms for shader warming pipelines"));
++          // Give MP's batch a head start while limiting the wait before
++          // the client can play. Visible draws use a ready pipeline.
++          uint32_t ms = m_dxvkDevice->waitForPipelines(m_t5mpWarm ? 750 : 90000);
++          Logger::info(str::format(m_t5mpWarm ? "D3D9DeviceEx: T5 MP waited " : "D3D9DeviceEx: waited ",
++            ms, " ms for shader warming pipelines"));
+         }
+       }
+     }
+--- a/src/d3d9/d3d9_device.h
++++ b/src/d3d9/d3d9_device.h
+@@ -1234,6 +1234,7 @@
+     // Black Ops (t5sp.exe): flag the game sets while it warms its shaders
+     volatile const uint32_t*        m_warmFlag   = nullptr;
+     bool                            m_warmActive = false;
++    bool                            m_t5mpWarm = false;
+     uint32_t                        m_lastSamplerTypesFF = 0;
+ 
+     D3D9ShaderMasks                 m_vsShaderMasks = D3D9ShaderMasks();
+--- a/src/dxvk/dxvk_context.cpp
++++ b/src/dxvk/dxvk_context.cpp
+@@ -5246,6 +5246,8 @@
+   bool DxvkContext::checkAsyncCompilationCompat() {
+     if (m_forceAsync)
+       return true;
++    if (m_asyncOnlyDuringWarming)
++      return false;
+ 
+     bool fbCompat = true;
+     for (uint32_t i = 0; fbCompat && i < m_state.om.framebufferInfo.numAttachments(); i++) {
+--- a/src/dxvk/dxvk_context.h
++++ b/src/dxvk/dxvk_context.h
+@@ -29,6 +29,7 @@
+      * so they need not wait for their pipelines.
+      */
+     void setForceAsync(bool forceAsync) { m_forceAsync = forceAsync; }
++    void setAsyncOnlyDuringWarming() { m_asyncOnlyDuringWarming = true; }
+     
+     DxvkContext(const Rc<DxvkDevice>& device);
+     ~DxvkContext();
+@@ -1085,6 +1086,7 @@
+ 
+     VkPipeline m_gpActivePipeline = VK_NULL_HANDLE;
+     bool       m_forceAsync = false;
++    bool       m_asyncOnlyDuringWarming = false;
+     VkPipeline m_cpActivePipeline = VK_NULL_HANDLE;
+ 
+     VkDescriptorSet m_gpSet = VK_NULL_HANDLE;

@@ -1,0 +1,9 @@
+# build output
+.build/
+dist/
+*.app
+*.zip
+
+# macOS
+.DS_Store
+._*

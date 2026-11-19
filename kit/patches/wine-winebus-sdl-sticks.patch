@@ -1,0 +1,119 @@
+--- a/dlls/winebus.sys/bus_sdl.c
++++ b/dlls/winebus.sys/bus_sdl.c
+@@ -61,6 +61,9 @@
+ #ifdef SONAME_LIBSDL2
+ 
+ static pthread_mutex_t sdl_cs = PTHREAD_MUTEX_INITIALIZER;
++
++#define SDL_STICK_REPORT_INTERVAL_MS 4
++static BOOL batch_sdl_sticks;
+ static const struct bus_options *options;
+ 
+ static void *sdl_handle = NULL;
+@@ -150,6 +153,9 @@
+     int effect_state[256];
+     LONG effect_flags;
+     int axis_offset;
++    BOOL stick_report_pending;
++    BOOL stick_report_sent;
++    UINT last_stick_report;
+ };
+ 
+ static inline struct sdl_device *impl_from_unix_device(struct unix_device *iface)
+@@ -814,7 +820,47 @@
+         check_device_effects_state(impl);
+     pthread_mutex_unlock(&sdl_cs);
+ }
++
++/* SDL reports each changed axis separately. Deliver the first stick update
++ * immediately, then keep the newest state within the short report interval.
++ * Buttons and triggers bypass batching, including when a stick is pending. */
++static void queue_controller_report(struct sdl_device *impl, BOOL stick_event)
++{
++    struct unix_device *iface = &impl->unix_device;
++    struct hid_device_state *state = &iface->hid_device_state;
+ 
++    if (batch_sdl_sticks && stick_event)
++    {
++        UINT now = pSDL_GetTicks();
++        if (impl->stick_report_sent && now - impl->last_stick_report < SDL_STICK_REPORT_INTERVAL_MS)
++        {
++            impl->stick_report_pending = TRUE;
++            return;
++        }
++        impl->last_stick_report = now;
++        impl->stick_report_sent = TRUE;
++    }
++    impl->stick_report_pending = FALSE;
++    bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++}
++
++static BOOL flush_pending_stick_reports(void)
++{
++    struct sdl_device *impl;
++    BOOL pending = FALSE;
++
++    if (!batch_sdl_sticks) return FALSE;
++    pthread_mutex_lock(&sdl_cs);
++    LIST_FOR_EACH_ENTRY(impl, &device_list, struct sdl_device, unix_device.entry)
++    {
++        if (!impl->stick_report_pending) continue;
++        queue_controller_report(impl, TRUE);
++        pending |= impl->stick_report_pending;
++    }
++    pthread_mutex_unlock(&sdl_cs);
++    return pending;
++}
++
+ static BOOL set_report_from_joystick_event(struct sdl_device *impl, SDL_Event *event)
+ {
+     struct unix_device *iface = &impl->unix_device;
+@@ -869,7 +915,6 @@
+ static BOOL set_report_from_controller_event(struct sdl_device *impl, SDL_Event *event)
+ {
+     struct unix_device *iface = &impl->unix_device;
+-    struct hid_device_state *state = &iface->hid_device_state;
+ 
+     switch (event->type)
+     {
+@@ -905,7 +950,7 @@
+             if (button == 13) hid_device_move_hatswitch(iface, 0, ie->state ? -1 : +1, 0);
+             if (button == 11) hid_device_move_hatswitch(iface, 0, ie->state ? +1 : -1, 0);
+             hid_device_set_button(iface, button, ie->state);
+-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++            queue_controller_report(impl, FALSE);
+             break;
+         }
+         case SDL_CONTROLLERAXISMOTION:
+@@ -916,7 +961,7 @@
+                 ie->value = -ie->value - 1; /* match XUSB / GIP protocol */
+ 
+             hid_device_set_abs_axis(iface, ie->axis, ie->value);
+-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
++            queue_controller_report(impl, ie->axis <= SDL_CONTROLLER_AXIS_RIGHTY);
+             break;
+         }
+         default:
+@@ -1149,6 +1194,8 @@
+     pSDL_JoystickGetVendor = dlsym(sdl_handle, "SDL_JoystickGetVendor");
+     pSDL_JoystickGetType = dlsym(sdl_handle, "SDL_JoystickGetType");
+     pSDL_JoystickGetSerial = dlsym(sdl_handle, "SDL_JoystickGetSerial");
++
++    batch_sdl_sticks = pSDL_GetTicks && getenv("SIL_BATCH_SDL_STICKS");
+ 
+ #ifdef __APPLE__
+     /* CW HACK 19629: Enable rumble over BT for PS4/PS5 controllers. */
+@@ -1206,8 +1253,12 @@
+ 
+     do
+     {
++        BOOL pending;
++
+         if (bus_event_queue_pop(&event_queue, result)) return STATUS_PENDING;
+-        if (pSDL_WaitEventTimeout(&event, 10) != 0) process_device_event(&event);
++        pending = flush_pending_stick_reports();
++        if (batch_sdl_sticks && bus_event_queue_pop(&event_queue, result)) return STATUS_PENDING;
++        if (pSDL_WaitEventTimeout(&event, pending ? 1 : 10) != 0) process_device_event(&event);
+         else check_all_devices_effects_state();
+     } while (event.type != quit_event);
+ 

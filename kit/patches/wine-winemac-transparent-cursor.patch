@@ -1,0 +1,169 @@
+Based on Elvin Hayatov’s Wine cursor workaround (MR !11880), gated for BO2.
+Apply after wine-winemac-mouselook.patch.
+
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -87,6 +87,37 @@
+ }
+ 
+ 
++/* Hiding the native cursor on macOS 26 and later can synchronize
++ * presentation with cursor movement. Use an invisible cursor for the game
++ * without changing Wine's separate relative movement handling. */
++static BOOL use_transparent_cursor(void)
++{
++    static dispatch_once_t once;
++    static BOOL enabled;
++
++    dispatch_once(&once, ^{
++        if (@available(macOS 26.0, *))
++        {
++            const char *value = getenv("SIL_BO2_TRANSPARENT_CURSOR");
++            enabled = value && !strcmp(value, "1");
++        }
++    });
++    return enabled;
++}
++
++static NSCursor *transparent_cursor(void)
++{
++    static dispatch_once_t once;
++    static NSCursor *cursor;
++
++    dispatch_once(&once, ^{
++        NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(1, 1)];
++        cursor = [[NSCursor alloc] initWithImage:image hotSpot:NSZeroPoint];
++        [image release];
++    });
++    return cursor;
++}
++
+ @implementation WineApplication
+ 
+ @synthesize wineController;
+@@ -204,6 +235,12 @@
+             }
+ 
+             [self setupObservations];
++
++            if (use_transparent_cursor())
++            {
++                NSApp.presentationOptions |= NSApplicationPresentationDisableCursorLocationAssistance;
++                fprintf(stderr, "[Si14]: BO2 cursor workaround enabled (transparent cursor, location assistance disabled)\n");
++            }
+ 
+             keyboardType = LMGetKbdType();
+ 
+@@ -1042,6 +1079,22 @@
+ 
+     - (void) updateCursor:(BOOL)force
+     {
++        if (use_transparent_cursor())
++        {
++            if ([NSApp isActive] && (force || lastTargetWindow))
++            {
++                NSCursor *desired = clientWantsCursorHidden ? transparent_cursor() :
++                                    (cursor ? cursor : [NSCursor arrowCursor]);
++                if ([NSCursor currentCursor] != desired) [desired set];
++                cursorIsCurrent = TRUE;
++            }
++            else if (cursorIsCurrent)
++            {
++                [[NSCursor arrowCursor] set];
++                cursorIsCurrent = FALSE;
++            }
++            return;
++        }
+         if (force || lastTargetWindow)
+         {
+             if (clientWantsCursorHidden && !cursorHidden)
+@@ -1483,8 +1536,14 @@
+ 
+     - (void) handleMouseMove:(NSEvent*)anEvent
+     {
++        static NSTimeInterval lastWindowHitTest;
++        static NSInteger cachedWindowNumber;
++        static NSRect cachedFrame, cachedContent;
+         WineWindow* targetWindow;
+         BOOL drag = [anEvent type] != NSEventTypeMouseMoved;
++
++        if (drag || mouseLook || mouseCaptureWindow || [windowsBeingDragged count])
++            lastWindowHitTest = 0;
+ 
+         if ([windowsBeingDragged count])
+             targetWindow = nil;
+@@ -1504,13 +1563,48 @@
+                cursor and post the event as being for that window. */
+             CGPoint cgpoint = CGEventGetLocation([anEvent CGEvent]);
+             NSPoint point = [self flippedMouseLocation:NSPointFromCGPoint(cgpoint)];
+-            NSInteger windowUnderNumber;
+-
+-            windowUnderNumber = [NSWindow windowNumberAtPoint:point
+-                                  belowWindowWithWindowNumber:0];
+-            targetWindow = (WineWindow*)[NSApp windowWithWindowNumber:windowUnderNumber];
+-            if (!NSMouseInRect(point, [targetWindow contentRectForFrameRect:[targetWindow frame]], NO))
+-                targetWindow = nil;
++            NSTimeInterval timestamp = [anEvent timestamp];
++            WineWindow *previous = lastTargetWindow;
++
++            BOOL canRouteLocally = use_transparent_cursor() && previous && [anEvent window] == previous &&
++                [NSApp isActive] && [previous isKeyWindow] && ![NSApp modalWindow] && ![previous attachedSheet];
++
++            /* On the captured display a hidden cursor stays with the game.
++               For borderless or visible-cursor use, periodically check the
++               compositor again so overlapping windows still get mouse events. */
++            if (canRouteLocally && timestamp >= lastWindowHitTest && lastWindowHitTest > 0 &&
++                ((displaysCapturedForFullscreen && clientWantsCursorHidden) || timestamp - lastWindowHitTest < 0.032) &&
++                [previous windowNumber] == cachedWindowNumber && NSEqualRects([previous frame], cachedFrame) &&
++                NSMouseInRect(point, cachedContent, NO))
++            {
++                static dispatch_once_t once;
++                dispatch_once(&once, ^{
++                    fprintf(stderr, "[Si14]: BO2 fullscreen mouse routing optimized\n");
++                });
++                targetWindow = previous;
++            }
++            else
++            {
++                NSInteger windowNumber = [NSWindow windowNumberAtPoint:point belowWindowWithWindowNumber:0];
++                targetWindow = (WineWindow*)[NSApp windowWithWindowNumber:windowNumber];
++                lastWindowHitTest = 0;
++                if (targetWindow)
++                {
++                    NSRect frame = [targetWindow frame];
++                    NSRect content = [targetWindow contentRectForFrameRect:frame];
++
++                    if (!NSMouseInRect(point, content, NO)) targetWindow = nil;
++                    else if (use_transparent_cursor() && [targetWindow isKindOfClass:[WineWindow class]] &&
++                             ([targetWindow isFullscreen] ||
++                              ([targetWindow screen] && NSEqualRects(frame, [[targetWindow screen] frame]))))
++                    {
++                        cachedWindowNumber = windowNumber;
++                        cachedFrame = frame;
++                        cachedContent = content;
++                        lastWindowHitTest = timestamp;
++                    }
++                }
++            }
+         }
+ 
+         if ([targetWindow isKindOfClass:[WineWindow class]])
+@@ -2011,6 +2105,10 @@
+                 [self handleCommandTab];
+             }
+         }
++
++        if (use_transparent_cursor() &&
++            (type == NSEventTypeCursorUpdate || (clientWantsCursorHidden && [NSApp isActive])))
++            [self updateCursor:FALSE];
+     }
+ 
+     - (void) setupObservations
+@@ -2548,6 +2646,7 @@
+         }
+ 
+         [self endMouseLook];
++        if (use_transparent_cursor()) [self updateCursor:FALSE];
+         [self releaseMouseCapture];
+     }
+ 

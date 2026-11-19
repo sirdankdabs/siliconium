@@ -1,0 +1,82 @@
+--- a/dlls/winecoreaudio.drv/coreaudio.c
++++ b/dlls/winecoreaudio.drv/coreaudio.c
+@@ -33,6 +33,7 @@
+ 
+ #include <errno.h>
+ #include <limits.h>
++#include <math.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -1139,12 +1140,70 @@
+     return STATUS_SUCCESS;
+ }
+ 
++static BOOL is_black_ops_audio_process(void)
++{
++    const RTL_USER_PROCESS_PARAMETERS *process = NtCurrentTeb()->Peb->ProcessParameters;
++    const WCHAR *image = wcsrchr(process->ImagePathName.Buffer, '\\');
++    const WCHAR *argument = process->CommandLine.Buffer;
++    const WCHAR *end;
++
++    image = image ? image + 1 : process->ImagePathName.Buffer;
++    if (wcsicmp(image, u"plutonium-bootstrapper-win32.exe")) return FALSE;
++
++    /* The bootstrapper's first argument selects the game and mode. */
++    if (*argument == '"')
++    {
++        if (!(argument = wcschr(argument + 1, '"'))) return FALSE;
++        argument++;
++    }
++    else argument += wcscspn(argument, u" \t");
++    argument += wcsspn(argument, u" \t");
++
++    if (*argument == '"')
++    {
++        argument++;
++        if (!(end = wcschr(argument, '"'))) return FALSE;
++    }
++    else end = argument + wcscspn(argument, u" \t");
++
++    return end - argument == 4 &&
++           (!wcsnicmp(argument, u"t5sp", 4) || !wcsnicmp(argument, u"t5mp", 4));
++}
++
+ static NTSTATUS unix_get_device_period(void *args)
+ {
+     struct get_device_period_params *params = args;
++    REFERENCE_TIME render_period = def_period;
++
++    if (params->def_period && params->flow == eRender && is_black_ops_audio_process())
++    {
++        AudioDeviceID device = dev_id_from_device(params->device);
++        AudioObjectPropertyAddress address =
++        {
++            kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain,
++        };
++        UInt32 frames, size = sizeof(frames);
++        Float64 rate;
++
++        if (device != kAudioObjectUnknown &&
++            !AudioObjectGetPropertyData(device, &address, 0, NULL, &size, &frames))
++        {
++            address.mSelector = kAudioDevicePropertyNominalSampleRate;
++            size = sizeof(rate);
++            if (!AudioObjectGetPropertyData(device, &address, 0, NULL, &size, &rate) && rate > 0)
++            {
++                double interval = (10000000.0 * frames) / rate;
++                /* Round up in 100 ns units so the period covers the full HAL block. */
++                if (interval > def_period && interval <= 5000000)
++                    render_period = (REFERENCE_TIME)ceil(interval);
++            }
++        }
++        TRACE("CoreAudio render period %llu (default %llu)\n",
++              (unsigned long long)render_period, (unsigned long long)def_period);
++    }
+ 
+     if (params->def_period)
+-        *params->def_period = def_period;
++        *params->def_period = render_period;
+     if (params->min_period)
+         *params->min_period = min_period;
+ 
