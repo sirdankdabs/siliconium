@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.0 — Infinite Warfare
+
+**New**
+- Steam Library: **Call of Duty: Infinite Warfare**: campaign, multiplayer and Zombies from one Play button, fullscreen at your display's size and refresh rate, with the two DXMT fixes made for Advanced Warfare. The first start prepares its shaders once (about 3.5 minutes); later starts reach the menu in seconds.
+- **IW7-Mod (CBServers)** section: Infinite Warfare through [CBServers' community client](https://github.com/CBServers/iw7-mod) (their servers, custom maps in `usermaps`). It finds your Steam download by itself or uses the folder you choose; Steam's files are never changed (it plays from an APFS copy that takes no extra space) and it shares its shader caches with Steam's game. Zombies: 55–70 FPS at High settings on an M1 Pro.
+- Infinite Warfare's **Fixes** menu in the Steam Library: play the normal game or IW7-Mod (CBServers).
+- **AlterWare** section: why AlterWare's Ghosts and Advanced Warfare clients cannot run on Apple silicon (nothing is installed).
+
+**Fixed**
+- Steam's **Call of Duty 4, Modern Warfare 2 and Modern Warfare 3** (campaign and multiplayer) and **CoD4X** did not start in 1.1.0 and 1.1.1 with controller mapping on (the default).
+- CoD4X: servers that require Steam work now: Siliconium starts Steam for Windows in the background when it is set up (Settings → "Steam for servers that require it").
+- BOIII and Steam's Black Ops III share Metal's compiled shaders, so the second one no longer compiles them again.
+- CoD4X and IW7-Mod no longer keep a second copy of the game between games: uninstalling it in Steam gives all its space back, Time Machine never backs it up twice, and they start faster.
+- Install downloads (about 270 MB) are no longer kept after setup.
+- Siliconium's game logs no longer grow without limit.
+
 ## 1.1.1 — United Offensive
 
 **New**

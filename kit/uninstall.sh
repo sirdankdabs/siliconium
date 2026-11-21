@@ -10,6 +10,9 @@
 #   uninstall.sh iw4    forget the Modern Warfare 2 (IW4X) folder
 #   uninstall.sh cod4x  forget the Call of Duty 4 (CoD4X) folder; CoD4X's copy of
 #                       a Steam download goes to the Trash
+#   uninstall.sh iw7mod forget the Infinite Warfare (IW7-Mod) folder and its
+#                       switches; IW7-Mod's copy of a Steam download goes to
+#                       the Trash (its profile and saves are kept)
 #   uninstall.sh iw6    forget the Ghosts folder and trash its campaign prefix
 #   uninstall.sh boiii  forget the Black Ops III (Windows) folder
 #   uninstall.sh bo2s   Black Ops II campaign through Steam: Steam's prefix
@@ -120,9 +123,30 @@ cod4x)
   step "Removing the CoD4X setup"
   forget COD4X_DIR
   # CoD4X's copy of Steam's Call of Duty 4 (APFS clones, made again by Play);
-  # CoD4X's profiles and identity stay in Steam's prefix (AppData\Local\CallofDuty4MW)
+  # CoD4X's profiles and identity stay in Steam's prefix (AppData\Local\CallofDuty4MW).
+  # Steam's files leave it first, so the Trash never holds the game itself
+  bash "$kit/tools/steam-copy.sh" release-all cod4x > /dev/null 2>&1
   trash "$home/cod4x"
   step "CoD4X can be set up again"
+  ;;
+iw7mod)
+  stop_games
+  step "Removing the IW7-Mod setup"
+  forget IW7MOD_DIR IW7MOD_DXMT_FIX IW7MOD_SCREEN IW7MOD_DISPLAY_MODE IW7MOD_ASYNC IW7MOD_FRAME_PACING STEAM_MOD_IW
+  # its download, and its APFS copies of Steam's Infinite Warfare (made again
+  # by Play); each copy's iw7-mod folder (profile, saves) is kept and comes
+  # back with the next copy. A folder the player chose keeps iw7-mod.exe;
+  # IW7-Mod's identity and data stay in Steam's prefix. Steam's files leave
+  # the copies first, so the Trash never holds the game itself
+  bash "$kit/tools/steam-copy.sh" release-all iw7mod > /dev/null 2>&1
+  trash "$home/mods/iw7mod"
+  for c in "$home/iw7mod"/*; do
+    [ -d "$c/iw7-mod" ] || continue
+    mkdir -p "$home/iw7mod/kept/${c##*/}" && trash "$home/iw7mod/kept/${c##*/}/iw7-mod" &&
+      mv "$c/iw7-mod" "$home/iw7mod/kept/${c##*/}/iw7-mod"
+  done
+  for c in "$home/iw7mod"/*; do [ "${c##*/}" = kept ] || trash "$c"; done
+  step "IW7-Mod can be set up again"
   ;;
 iw6)
   [ ! -d "$home/prefix-iw6" ] ||
@@ -169,6 +193,6 @@ bo3)
   step "BO3 Mac Client removed"
   ;;
 *)
-  die "usage: uninstall.sh waw | bo1 | bo2 | iw5 | iw4 | iw6 | bo2s | bo2c | boiii | all | bo3"
+  die "usage: uninstall.sh waw | bo1 | bo2 | iw5 | iw4 | cod4x | iw7mod | iw6 | bo2s | bo2c | boiii | all | bo3"
   ;;
 esac

@@ -18,9 +18,10 @@
 # show. From then on CoD4X's launcher keeps itself and the client up to date.
 #
 # Steam's own Call of Duty 4 is never changed: for a Steam download CoD4X
-# plays from a copy of it in Siliconium's folder, made with APFS clones (no
-# extra disk space: only the files CoD4X changes take room), and files Steam
-# updates later are copied again before each start. A folder the player
+# plays from a copy of it in Siliconium's folder (tools/steam-copy.sh), made
+# with APFS clones at each start (no extra disk space: only the files CoD4X
+# changes take room); a minute after the game Steam's files leave it again,
+# so between games it holds only CoD4X's own files. A folder the player
 # chose that is not a Steam download gets CoD4X installed in it, as its
 # installer does (the original iw3mp.exe is kept as iw3mp.exe.sil-original,
 # the original mss32.dll as miles32.dll).
@@ -75,27 +76,15 @@ sil_cod4x_fetch() {
   return 0
 }
 
-# Steam's Call of Duty 4 -> CoD4X's copy of it (APFS clones; a plain copy when
-# the volume has no clones). Later starts copy again only what Steam changed:
-# CoD4X's three files and the profiles (players) stay as CoD4X left them.
+# Steam's Call of Duty 4 -> CoD4X's copy of it (tools/steam-copy.sh: APFS
+# clones of Steam's current files at each start; a plain copy, kept and
+# brought up to date, when the volume has no clones). CoD4X's own files
+# (iw3mp.exe, mss32.dll, miles32.dll, players/, its logs and markers, what it
+# added) stay as CoD4X left them.
+. "$kit/tools/steam-copy.sh"
 sil_cod4x_clone() {   # <Steam's folder> <copy>
-  local src=$1 dst=$2 s d rel
-  if [ ! -d "$dst" ]; then
-    printf '==> %s\n' "Making CoD4X's own copy of Call of Duty 4 (Steam's files stay untouched)"
-    mkdir -p "$(dirname "$dst")" && rm -rf "$dst.part" || return 1
-    cp -cRp "$src" "$dst.part" 2> /dev/null || { rm -rf "$dst.part"; cp -Rp "$src" "$dst.part"; } || {
-      rm -rf "$dst.part"; return 1; }
-    mv "$dst.part" "$dst"
-    return 0
-  fi
-  while IFS= read -r -d '' s; do
-    rel=${s#"$src"/}
-    case "$rel" in iw3mp.exe|mss32.dll|miles32.dll|players/*|__*|*.log) continue ;; esac
-    d="$dst/$rel"
-    [ -f "$d" ] && [ "$(stat -f '%z %m' "$s")" = "$(stat -f '%z %m' "$d")" ] && continue
-    mkdir -p "$(dirname "$d")" && rm -f "$d" && { cp -cp "$s" "$d" 2> /dev/null || cp -p "$s" "$d"; } || return 1
-  done < <(find "$src" -type f -print0)
-  return 0
+  [ -d "$2" ] || printf '==> %s\n' "Making CoD4X's own copy of Call of Duty 4 (Steam's files stay untouched)"
+  sil_copy_make cod4x "$1" "$2"
 }
 
 # CoD4X's files in its play folder and in Wine's AppData
@@ -156,7 +145,7 @@ sil_cod4x_prepare() {   # <game folder>
   sil_cod4x_fetch || return 1
   if sil_cod4x_is_steam "$src"; then
     c4_dir="$home/cod4x/$(basename "$src")"
-    sil_cod4x_clone "$src" "$c4_dir" || { c4_error="Could not make CoD4X's copy of Call of Duty 4 in $home/cod4x."; return 1; }
+    sil_cod4x_clone "$src" "$c4_dir" || { c4_error=${sil_copy_error:-"Could not make CoD4X's copy of Call of Duty 4 in $home/cod4x."}; return 1; }
   else
     c4_dir=$src
   fi

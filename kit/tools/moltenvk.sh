@@ -46,7 +46,11 @@ sil_moltenvk_install() {
   codesign -fs - "$dest/lib64/libMoltenVK.real.dylib.new" 2>/dev/null
   xattr -d com.apple.quarantine "$dest/lib64/libMoltenVK.real.dylib.new" 2>/dev/null
   mv -f "$dest/lib64/libMoltenVK.real.dylib.new" "$dest/lib64/libMoltenVK.real.dylib" || return 1
-  printf '%s\n' "$moltenvk_version" > "$dest/lib64/libMoltenVK.real.version"
+  printf '%s\n' "$moltenvk_version" > "$dest/lib64/libMoltenVK.real.version" || return 1
+  # the download is not kept (install-engine.sh reuses the installed build;
+  # a later macOS version downloads its own)
+  rm -f "$tar"; rmdir "$downloads" 2> /dev/null || true
+  return 0
 }
 
 # sil_moltenvk_ensure <engine dir> <downloads dir>: the right build for this macOS

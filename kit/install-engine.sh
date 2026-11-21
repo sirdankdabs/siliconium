@@ -33,6 +33,7 @@ cx_zip_url="https://media.codeweavers.com/pub/crossover/cxmac/demo/crossover-$cx
 cx_zip_sha256=8688e0848c4e5f79f1cc351cb52d32447da00c6c00cfd3b4bb2d164d44589a26
 engine="$home/engine"
 downloads="$home/downloads"
+trap 'rmdir "$downloads" 2> /dev/null || true' EXIT   # (left empty: nothing is kept there)
 cx_version_wanted=26.3
 engine_version=0.2.3
 # published as an asset of the Siliconium 1.0.0 release; that release must stay
@@ -53,7 +54,7 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 fetch() { # url file sha256
   if [ ! -f "$2" ] || [ "$(sha "$2")" != "$3" ]; then
-    curl -fsSL --retry 3 -o "$2.part" "$1" || die "cannot download $1"
+    curl -fsSL --retry 3 -o "$2.part" "$1" || { rm -f "$2.part"; die "cannot download $1"; }
     mv -f "$2.part" "$2"
   fi
   [ "$(sha "$2")" = "$3" ] || die "$(basename "$2"): SHA-256 does not match"
@@ -70,11 +71,20 @@ try:
     r = json.load(sys.stdin)
     print(next(a["digest"].split(":")[1] for a in r["assets"] if a["name"] == "x87sidecar.tar.xz"))
 except Exception: pass' 2>/dev/null)
-  if [ -z "$tag" ] || [ -z "$sha" ]; then tag=$x87_fallback_tag sha=$x87_fallback_sha; fi
-  url="https://github.com/athei/x87sidecar/releases/download/$tag/x87sidecar.tar.xz"
-  fetch "$url" "$downloads/x87sidecar-$tag.tar.xz" "$sha"
   tmp=$(mktemp -d)
-  tar -xJf "$downloads/x87sidecar-$tag.tar.xz" -C "$tmp"
+  # The installed engine's x87sidecar is that release already (or, when
+  # GitHub cannot be asked, the one there is): no download, nothing kept
+  if [ -x "$engine/bin/x87sidecar" ] && [ -f "$engine/x87sidecar.version" ] &&
+     { [ -z "$tag" ] || [ "$tag" = "$(cat "$engine/x87sidecar.version")" ]; }; then
+    tag=$(cat "$engine/x87sidecar.version")
+    cp -p "$engine/bin/x87sidecar" "$tmp/x87sidecar"
+  else
+    if [ -z "$tag" ] || [ -z "$sha" ]; then tag=$x87_fallback_tag sha=$x87_fallback_sha; fi
+    url="https://github.com/athei/x87sidecar/releases/download/$tag/x87sidecar.tar.xz"
+    fetch "$url" "$downloads/x87sidecar-$tag.tar.xz" "$sha"
+    tar -xJf "$downloads/x87sidecar-$tag.tar.xz" -C "$tmp"
+    rm -f "$downloads/x87sidecar-$tag.tar.xz"
+  fi
   xattr -d com.apple.quarantine "$tmp/x87sidecar" 2>/dev/null || true
   if ! "$tmp/x87sidecar" --probe > /dev/null 2>&1; then
     echo "note: x87sidecar $tag does not support this Rosetta; the games will run without x87 acceleration" >&2
@@ -110,6 +120,14 @@ if [ ! -f "$archive" ] || [ "$(sha "$archive")" != "$engine_sha" ]; then
   step "Downloading the Siliconium engine $engine_version (130 MB)"
   if curl -fL --retry 3 -o "$archive.part" "$engine_url" 2>/dev/null; then mv -f "$archive.part" "$archive"; fi
   rm -f "$archive.part"
+  # (the archive is not kept after an install: an update downloads it again)
+  # An update that cannot download it keeps the installed engine of this
+  # version as it is, rather than switching it to CrossOver's runtime
+  if { [ ! -f "$archive" ] || [ "$(sha "$archive")" != "$engine_sha" ]; } &&
+     grep -qx "base=own $engine_version" "$engine/siliconium.version" 2>/dev/null; then
+    rm -rf "$new"
+    die "could not download the Siliconium engine (check your internet connection and try again); the installed engine stays as it is"
+  fi
 fi
 if [ -f "$archive" ] && [ "$(sha "$archive")" = "$engine_sha" ]; then
   step "Unpacking the engine"
@@ -205,7 +223,16 @@ if [ -n "$own" ]; then
 fi
 
 step "Installing MoltenVK $moltenvk_version with the shader cache"
-sil_moltenvk_install "$new" "$downloads" || die "could not install MoltenVK $moltenvk_version"
+# the installed engine's build when it is this version (the same file this
+# step makes from Khronos' download, already prepared), else the download
+if [ -f "$engine/lib64/libMoltenVK.real.dylib" ] &&
+   [ "$(cat "$engine/lib64/libMoltenVK.real.version" 2>/dev/null)" = "$moltenvk_version" ]; then
+  cp -p "$engine/lib64/libMoltenVK.real.dylib" "$new/lib64/libMoltenVK.real.dylib" &&
+    printf '%s\n' "$moltenvk_version" > "$new/lib64/libMoltenVK.real.version" ||
+    die "could not install MoltenVK $moltenvk_version"
+else
+  sil_moltenvk_install "$new" "$downloads" || die "could not install MoltenVK $moltenvk_version"
+fi
 cp "$kit/payload/lib64/libMoltenVK.dylib" "$new/lib64/libMoltenVK.dylib"
 codesign -fs - "$new/lib64/libMoltenVK.dylib" 2>/dev/null
 # our engine's Vulkan (winevulkan) is MoltenVK, through the shader cache
@@ -216,8 +243,17 @@ mkdir -p "$new/share/wine/gecko"
 for a in x86_64 x86; do
   sha_var="gecko_sha_$a"
   f="wine-gecko-$gecko_version-$a.tar.xz"
+  # the installed engine's copy when it is this version (what this archive
+  # unpacks to), else WineHQ's download, which is not kept
+  if [ -d "$engine/share/wine/gecko/wine-gecko-$gecko_version-$a" ] &&
+     [ ! -e "$new/share/wine/gecko/wine-gecko-$gecko_version-$a" ] &&
+     cp -cRp "$engine/share/wine/gecko/wine-gecko-$gecko_version-$a" "$new/share/wine/gecko/" 2>/dev/null; then
+    continue
+  fi
+  rm -rf "$new/share/wine/gecko/wine-gecko-$gecko_version-$a"
   fetch "https://dl.winehq.org/wine/wine-gecko/$gecko_version/$f" "$downloads/$f" "${!sha_var}"
   tar -xJf "$downloads/$f" -C "$new/share/wine/gecko"
+  rm -f "$downloads/$f"
 done
 
 step "Installing the x87 accelerator"
@@ -242,4 +278,13 @@ rm -rf "$engine.old"
 [ -d "$engine" ] && mv "$engine" "$engine.old"
 mv "$new" "$engine"
 rm -rf "$engine.old"
+# Nothing the install downloaded is kept (an update takes Wine Gecko, MoltenVK
+# and the x87 accelerator from this engine and downloads the engine again),
+# nor what earlier builds kept there (Steam's installer). A CrossOver the
+# player installed is never touched: only Siliconium's own download of it.
+rm -f "$downloads"/siliconium-engine-*.tar.xz "$downloads"/wine-gecko-*.tar.xz \
+  "$downloads"/MoltenVK-macos-*.tar "$downloads"/x87sidecar-*.tar.xz \
+  "$downloads"/SteamSetup.exe "$downloads"/*.part
+rm -rf "$downloads"/CrossOver-*.app "$downloads/cx.tmp"
+rmdir "$downloads" 2>/dev/null || true
 step "Engine ready in $engine"

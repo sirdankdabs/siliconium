@@ -14,6 +14,7 @@
 #           not the foreground app), so on a captured display the player
 #           saw only black (MW2 Multiplayer): 0 wherever the game allows it.
 #   s_kind  q3 (CoD, CoD 2) | iw (CoD 4 … MW3, BO1) | t6 | iw6 (Ghosts) | s1 (AW) | t7 (BO3)
+#           | iw7 (Infinite Warfare)
 #   s_name  the title shown in errors
 steam_title() {
   # s_async: DXVK_ASYNC. 2 compiles every new pipeline in the background, even
@@ -59,6 +60,10 @@ steam_title() {
     # Black Ops III: one executable for the campaign, Zombies and Multiplayer
     # (chosen in its menu); its own setup (t7: BOIII's, see steam_config)
     bo3:sp)   s_exe=BlackOps3.exe     s_app=311210 s_api=d3d11x64 s_own=0 s_kind=t7 s_pad=native s_name="Black Ops III" ;;
+    # Infinite Warfare: one executable for the campaign, Multiplayer and
+    # Zombies in Spaceland (chosen in its menu); its own setup (iw7): nothing
+    # is taken from Ghosts / Advanced Warfare until tested on it
+    iw:sp)    s_exe=iw7_ship.exe      s_app=292730 s_api=d3d11x64 s_own=0 s_kind=iw7 s_pad=native s_name="Infinite Warfare" ;;
     *) return 1 ;;
   esac
 }
@@ -301,6 +306,31 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
         steam_ini_set "$f" MaxFPS "${maxfps:-${hz:-0}}"
       fi
       return 0 ;;
+    iw)
+      # Infinite Warfare: one profile for every mode, players2/config_mp.cfg
+      # (Steam Cloud's list names it too). Its settings are saved by hash, not
+      # by name (`setcl <hash> "value"`), so only two values are written, each
+      # identified on this Mac (session 20): 1984923617 = the resolution
+      # ("1920x1080" on its first start; the game replaces a size the display
+      # has no mode for) and -1226230005 = the refresh rate ("60.00 Hz", the
+      # only Hz value, AW's r_refreshRate format). Left alone it starts in
+      # exclusive fullscreen at what it saved. Every start (IW7_SCREEN): the
+      # desktop's size and the rate of the mode launch.sh holds.
+      f="$dir/players2/config_mp.cfg"
+      on IW7_SCREEN || return 0
+      mkdir -p "$dir/players2" && { [ -f "$f" ] || : > "$f"; } || return 0
+      if [ "${s_client:-}" = iw7mod ]; then
+        # IW7-Mod knows these two dvars' names and saves them by name (its
+        # profile after its first start, 2026-11-21: seta r_mode "2560x1440",
+        # seta r_refreshRate "160.00 Hz"); the hashed lines (from the game's
+        # own profile, copied the first time) go
+        [ -n "$w" ] && [ -n "$h" ] && steam_iw7_seta "$f" r_mode "${w}x$h" 1984923617
+        [ -n "$hz" ] && steam_iw7_seta "$f" r_refreshRate "$hz.00 Hz" -1226230005
+        return 0
+      fi
+      [ -n "$w" ] && [ -n "$h" ] && steam_setcl "$f" 1984923617 "${w}x$h"
+      [ -n "$hz" ] && steam_setcl "$f" -1226230005 "$hz.00 Hz"
+      return 0 ;;
     *) return 0 ;;
   esac
   mkdir -p "$marks"
@@ -407,6 +437,32 @@ steam_cfg_set() {   # <cfg> <name> <value>: the name in any case, kept once
     tolower($1) == "seta" && tolower($2) == ln { if (!done) { printf "seta %s \"%s\"\r\n", n, v; done = 1 } next }
     { print }
     END { if (!done) printf "seta %s \"%s\"\r\n", n, v }
+  ' "$1" > "$tmp" && mv -f "$tmp" "$1" || rm -f "$tmp"
+}
+
+# Infinite Warfare's profile: `setcl <hash> "value"` lines (LF), the value
+# replaced or the line added
+steam_setcl() {   # <cfg> <hash> <value>
+  local tmp
+  tmp=$(mktemp "$1.XXXXXX") || return 0
+  awk -v k="$2" -v v="$3" '
+    $1 == "setcl" && $2 == k { if (!done) { printf "setcl %s \"%s\"\n", k, v; done = 1 } next }
+    { print }
+    END { if (!done) printf "setcl %s \"%s\"\n", k, v }
+  ' "$1" > "$tmp" && mv -f "$tmp" "$1" || rm -f "$tmp"
+}
+
+# IW7-Mod's profile (LF): `seta <name> "value"` replaced or added, the game's
+# hashed line for the same dvar removed
+steam_iw7_seta() {   # <cfg> <name> <value> <hash>
+  local tmp
+  tmp=$(mktemp "$1.XXXXXX") || return 0
+  awk -v n="$2" -v v="$3" -v k="$4" '
+    BEGIN { ln = tolower(n) }
+    $1 == "setcl" && $2 == k { next }
+    tolower($1) == "seta" && tolower($2) == ln { if (!done) { printf "seta %s \"%s\"\n", n, v; done = 1 } next }
+    { print }
+    END { if (!done) printf "seta %s \"%s\"\n", n, v }
   ' "$1" > "$tmp" && mv -f "$tmp" "$1" || rm -f "$tmp"
 }
 

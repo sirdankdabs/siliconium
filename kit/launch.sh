@@ -66,6 +66,12 @@
 #                      mouse no longer lowers the frame rate) to Black Ops II
 #   SKIP_INTRO=0       play the logo movies when WaW, BO1 and BO2 start
 #   BOIII_SCREEN=0     Black Ops III keeps its own window mode, size and frame cap
+#   IW7_SCREEN=0       Infinite Warfare (Steam) keeps the resolution and refresh
+#                      rate saved in its profile
+#   IW7_ASYNC=0        Infinite Warfare shaders compile while drawing
+#   IW7_FRAME_PACING=0 no DXMT frame pacing at the frame-rate cap (Infinite Warfare)
+#   IW7_DXMT_FIX=0     Infinite Warfare on the engine's DXMT instead of Advanced
+#                      Warfare's fixed one (its tessellation crashes it there)
 #   SETTINGS_GUARD=0   "Set Optimal Settings?" may apply the game's own guesses
 #   GAME_ARGS="..."    extra game arguments (offline modes)
 set -uo pipefail
@@ -86,10 +92,11 @@ engine="$home/engine"
 export WINEPREFIX="$home/prefix" CX_ROOT="$engine" WINESERVER="$engine/bin/wineserver"
 # Black Ops II's campaign has its own prefix; its game folder was made
 # Steam-free by bo2-campaign.sh (no Steam runs in it)
-if [ "${1:-}" = bo2c ] || [ "${1:-}" = bo2s ] || [ "${1:-}" = steam ] || [ "${1:-}" = cod4x ]; then
+if [ "${1:-}" = bo2c ] || [ "${1:-}" = bo2s ] || [ "${1:-}" = steam ] || [ "${1:-}" = cod4x ] || [ "${1:-}" = iw7mod ]; then
   # bo2s and the Steam Library (steam): Steam for Windows in its own prefix
   # (steam.sh), which starts the game. CoD4X (cod4x): the same prefix and
-  # Steam's Call of Duty 4 multiplayer setup, without Steam
+  # Steam's Call of Duty 4 multiplayer setup, without Steam; IW7-Mod (iw7mod):
+  # the same with Steam's Infinite Warfare setup
   if [ "${1:-}" = bo2c ]; then export WINEPREFIX="$home/prefix-bo2c"; else export WINEPREFIX="$home/prefix-steam"; fi
   # its Wine server runs through a link outside the engine folder, so the app
   # doesn't count the campaign's prefix as a game running
@@ -105,6 +112,26 @@ plutonium="$WINEPREFIX/drive_c/users/crossover/AppData/Local/Plutonium"
 mkdir -p "$home/logs" "$home/cache"
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+# log_cap <log>: the logs every start appends to (Steam Library games, CoD4X,
+# IW7-Mod, the display mode helper) keep only their newest 1 MB once they pass
+# 2 MB (Advanced Warfare's had reached 23 MB of DXMT messages); called before
+# a start writes to it, so the start's own lines are always there in full.
+# The file stays the same file, so a program still appending to it goes on.
+log_cap() {
+  local f=$1 t
+  [ -f "$f" ] && [ "$(stat -f %z "$f" 2>/dev/null || echo 0)" -gt 2097152 ] || return 0
+  t=$(mktemp "${TMPDIR:-/tmp}/siliconium-log.XXXXXX") || return 0
+  { printf '%s\n' "--- $(date) (older lines removed: Siliconium keeps the newest 1 MB of this log)"
+    tail -c 1048576 "$f" | tail -n +2; } > "$t" && cat "$t" > "$f"
+  rm -f "$t"
+}
+# A community client's copy of a Steam game (CoD4X, IW7-Mod: tools/steam-copy.sh):
+# Steam's files leave it a minute after this start ends, however it ends (the
+# game quit, Stop, an error); a start in that minute keeps them
+copy_release() {
+  [ -n "${sil_copy_dir:-}" ] || return 0
+  ( /bin/bash "$kit/tools/steam-copy.sh" release "$s_client" "$sil_copy_dir" "$sil_copy_gen" 60 > /dev/null 2>&1 & )
+}
 . "$kit/tools/winpath.sh"
 stop_all() { "$WINESERVER" -k 2>/dev/null; "$WINESERVER" -w 2>/dev/null; }
 
@@ -113,10 +140,10 @@ game=${1:-}; mode=${2:-}
 [ "$game" = stop ] && { stop_all; WINEPREFIX="$home/prefix-bo2c" "$WINESERVER" -k 2>/dev/null
   WINEPREFIX="$home/prefix-steam" "$WINESERVER" -k 2>/dev/null; exit 0; }
 [ -x "$wine" ] || die "the engine is not installed"
-# CoD4X without the Steam Library set up yet: Steam's prefix, without Steam
-# (as steam.sh setup makes it; Steam for Windows can be added to it later)
-if [ "$game" = cod4x ] && [ ! -f "$WINEPREFIX/system.reg" ]; then
-  printf '==> %s\n' "Preparing Wine for CoD4X"
+# CoD4X or IW7-Mod without the Steam Library set up yet: Steam's prefix, without
+# Steam (as steam.sh setup makes it; Steam for Windows can be added to it later)
+if { [ "$game" = cod4x ] || [ "$game" = iw7mod ]; } && [ ! -f "$WINEPREFIX/system.reg" ]; then
+  printf '==> %s\n' "Preparing Wine for $([ "$game" = cod4x ] && echo CoD4X || echo IW7-Mod)"
   "$wine" wineboot --init > "$home/logs/steam-wineboot.log" 2>&1
   "$WINESERVER" -w 2>/dev/null
 fi
@@ -150,7 +177,15 @@ case "$game:$mode" in
     [ "${STEAM_APPLAUNCH:-}" = 1 ] && s_own=1
     dir=$(bash "$kit/steam.sh" gamedir "$s_app") t=steam s_client=
     [ -n "$dir" ] && [ -f "$dir/$s_exe" ] ||
-      die "$s_name is not downloaded in Steam yet: press Download in the Steam Library, then Play" ;;
+      die "$s_name is not downloaded in Steam yet: press Download in the Steam Library, then Play"
+    # Infinite Warfare with IW7-Mod chosen in its Fixes menu (STEAM_MOD_IW=iw7mod):
+    # this Steam download through IW7-Mod, exactly as the IW7-Mod tab plays it
+    # (its own copy; None: Steam's game as it is)
+    if [ "$s_id" = iw ] && [ "${STEAM_MOD_IW:-}" = iw7mod ]; then
+      . "$kit/tools/iw7mod.sh"
+      sil_iw7mod_use "$dir" || die "$i7_error"
+      dir=$i7_dir
+    fi ;;
   # CoD4X (tools/cod4x.sh): Call of Duty 4 multiplayer with the Steam Library's
   # setup for it (steam cod4-mp) from CoD4X's own folder (a copy of Steam's
   # download, or the folder the player chose), started without Steam
@@ -162,8 +197,23 @@ case "$game:$mode" in
     . "$kit/tools/cod4x.sh"
     sil_cod4x_prepare "${COD4X_DIR:-}" || die "$c4_error"
     dir=$c4_dir t=steam ;;
-  *) die "usage: launch.sh waw|bo1|bo2|iw5 online|zombies|campaign|mp [name], launch.sh iw4 play|launcher, launch.sh iw6 play, launch.sh boiii play|launcher, launch.sh steam <game>-<sp|mp|zm>, launch.sh cod4x play, or launch.sh stop" ;;
+  # IW7-Mod (tools/iw7mod.sh): Infinite Warfare with the Steam Library's setup
+  # for it (steam iw-sp: AW's DXMT fixes, 1x display mode, resolution and
+  # refresh rate in its profile) from the folder the player chose, or from its
+  # own APFS copy of Steam's download (Steam's files are never changed),
+  # started without Steam. The game runs inside iw7-mod.exe: every
+  # per-executable setting follows that name. Its own switches (IW7MOD_*, the
+  # IW7-Mod tab's patches) stand in for the Steam Library's IW7_* and the shared
+  # DISPLAY_MODE
+  iw7mod:play)
+    . "$kit/tools/steam-games.sh"
+    . "$kit/tools/iw7mod.sh"
+    sil_iw7mod_use "${IW7MOD_DIR:-}" || die "$i7_error"
+    dir=$i7_dir t=steam ;;
+  *) die "usage: launch.sh waw|bo1|bo2|iw5 online|zombies|campaign|mp [name], launch.sh iw4 play|launcher, launch.sh iw6 play, launch.sh boiii play|launcher, launch.sh steam <game>-<sp|mp|zm>, launch.sh cod4x play, launch.sh iw7mod play, or launch.sh stop" ;;
 esac
+# (a client's copy was made above: Steam's files leave it after this start)
+[ -n "${sil_copy_dir:-}" ] && trap copy_release EXIT
 # The community fix the player chose for this Steam game, if any
 # (tools/steam-mods.sh; none: nothing here changes). CoD4X is not one of them
 if [ "$t" = steam ]; then
@@ -204,6 +254,10 @@ else
   [ "$t" != t6c ] || [ -f "$dir/t6sp.exe" ] || die "the Black Ops II campaign folder has no t6sp.exe"
 fi
 stop_all
+# Clients' copies nobody is using (an earlier start that never got to clean
+# up): Steam's files leave them (tools/steam-copy.sh; this start's own copy is
+# in use and stays), in the background
+( /bin/bash "$kit/tools/steam-copy.sh" tidy > /dev/null 2>&1 & )
 # The Direct3D 9 games run on MoltenVK: make sure the engine has the build for
 # this macOS (1.4.0 left Black Ops unable to start on macOS 15).
 case "$t" in
@@ -352,6 +406,7 @@ hold_1x_size() { # "<width> <height>"
     while pgrep -qf 'plutonium-bootstrapper-win32\.exe|t6sp\.exe|iw4x(-launcher)?\.exe'; do sleep 2; done
   ) > /dev/null 2>&1 &
   stop_displaymode
+  log_cap "$log"
   size=$(stat -f %z "$log" 2>/dev/null || echo 0)
   # shellcheck disable=SC2086
   "$kit/tools/displaymode" $res $! >> "$log" 2>&1 &
@@ -421,13 +476,15 @@ case "$t:$mode" in
   # mode of the desktop's size; Ghosts runs borderless. Advanced Warfare is
   # held too (its own setup, s1; not Ghosts'), and Black Ops III (t7) as
   # BOIII is (DISPLAY_MODE: on a HiDPI desktop it otherwise switches to the
-  # panel's full pixel size).
+  # panel's full pixel size). Infinite Warfare (iw7) too: it is an exclusive-
+  # fullscreen game like AW, and the hold puts the desktop's mode back when it
+  # ends (Wine does not when a game is killed).
   # Black Ops II too, as Plutonium's BO2 is (hold_1x of its profile, further
   # down): on the scaled desktop (a 4K panel mode at 153 Hz) Steam's BO2 Zombies
   # missed 13-33 % of the refreshes; Plutonium's, held at 1x 160 Hz, none.
   steam:*)
     case "$s_api:$s_kind" in
-      gl:*|d3d9:*|d3d9x64:*|d3d11:t6|d3d11x64:s1|d3d11x64:t7) [ -n "${dw:-}" ] && [ -n "${dh:-}" ] && hold_1x_size "$dw $dh" ;;
+      gl:*|d3d9:*|d3d9x64:*|d3d11:t6|d3d11x64:s1|d3d11x64:t7|d3d11x64:iw7) [ -n "${dw:-}" ] && [ -n "${dh:-}" ] && hold_1x_size "$dw $dh" ;;
     esac ;;
   t5:mp) hold_1x "$plutonium/storage/t5/players/config_mp.cfg" ;;
   t5:*) hold_1x "$plutonium/storage/t5/players/config.cfg" ;;
@@ -829,6 +886,27 @@ fi
 # Advanced Warfare: DXMT's defaults (async pipelines, pacing at the refresh
 # rate) without Ghosts' AMD GPU id; AW_ASYNC / AW_FRAME_PACING=0 turn them off
 [ "$t" = steam ] && [ "${s_kind:-}" = s1 ] && set_env DXMT_CONFIG "$(dxmt_config AW "$maxfps")"
+# Infinite Warfare: the same defaults under its own switches (IW7_ASYNC /
+# IW7_FRAME_PACING=0), no GPU id change (it reads the Apple GPU as is)
+[ "$t" = steam ] && [ "${s_kind:-}" = iw7 ] && set_env DXMT_CONFIG "$(dxmt_config IW7 "$maxfps")"
+# IW7-Mod's Metal folder = Steam's Infinite Warfare's (DXMT keeps Metal's
+# compiled shaders in dxmt/<executable>/com.apple.metal and has no setting for
+# it): a link, made once; translations IW7-Mod had made on its own are merged
+# into Steam's game's databases first (insert or ignore: same keys, same
+# shaders)
+iw7_shared_metal() {   # <DXMT's cache folder>
+  local dxmt=$1 shared own db
+  case "$dxmt" in /?*/dxmt) ;; *) return 0 ;; esac
+  shared="$dxmt/iw7_ship.exe" own="$dxmt/$s_exe"
+  mkdir -p "$shared/com.apple.metal" "$own" || return 0
+  [ -L "$own/com.apple.metal" ] && return 0
+  for db in "$own"/shaders_*.db "$own"/airconv-aw5/shaders_*.db; do
+    [ -f "$db" ] || continue
+    mkdir -p "$(dirname "$shared/${db#"$own"/}")" || continue
+    /usr/bin/sqlite3 "$shared/${db#"$own"/}" "attach '$db' as s; create table if not exists main.cache_18 (key BLOB PRIMARY KEY, value BLOB NOT NULL); insert or ignore into main.cache_18 select key, value from s.cache_18;" 2>/dev/null || true
+  done
+  rm -rf "$own/com.apple.metal" && ln -s "$shared/com.apple.metal" "$own/com.apple.metal"
+}
 # Black Ops II (Steam): the shader caches of Plutonium's BO2. DXMT keeps one
 # per executable (dxmt/<exe>/ in the user cache folder: shaders_*.db, the
 # translated shaders, and com.apple.metal, Metal's compiled ones), so Steam's
@@ -861,6 +939,25 @@ elif [ "$t" = steam ] && [ "${s_kind:-}" = s1 ] && { [ -f "${AW_DXMT_DIR:-/nonex
   [ -f "${AW_DXMT_DIR:-/nonexistent}/x86_64-unix/winemetal.so" ] && aw_cache="${aw_cache%/*}/test-$(basename "$AW_DXMT_DIR")"
   if [ "${aw_cache#/}" != "$aw_cache" ] && mkdir -p "$aw_cache"; then set_env DXMT_SHADER_CACHE_PATH "$aw_cache"
   else clear_env DXMT_SHADER_CACHE_PATH; fi
+# Infinite Warfare with the same translator (IW7_DXMT_FIX, see the Steam block):
+# its own database too, only when the clone will really be made. IW7-Mod
+# (iw7-mod.exe) draws the same game's shaders: it uses Steam's Infinite
+# Warfare's database and Metal's compiled shaders (iw7_ship.exe's, a link as
+# for Black Ops II above), so neither starts cold after the other was played
+# (the first cold "Preloading Shaders" took ~3.5 min, session 20)
+elif [ "$t" = steam ] && [ "${s_kind:-}" = iw7 ] && on IW7_DXMT_FIX && [ -f "$kit/payload/steam/aw-winemetal.so" ] &&
+     cmp -s "$engine/lib/wine/x86_64-windows/winemetal.dll" "$kit/payload/dxmt/x86_64-windows/winemetal.dll"; then
+  iw_cache="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)dxmt/iw7_ship.exe/airconv-aw5"
+  if [ "${iw_cache#/}" != "$iw_cache" ] && mkdir -p "$iw_cache"; then set_env DXMT_SHADER_CACHE_PATH "$iw_cache"
+  else clear_env DXMT_SHADER_CACHE_PATH; fi
+  [ "$s_exe" = iw7_ship.exe ] || iw7_shared_metal "$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)dxmt"
+# IW7-Mod on the engine's DXMT (IW7_DXMT_FIX=0): Steam's Infinite Warfare's
+# engine-translator database and Metal folder, as above
+elif [ "$t" = steam ] && [ "${s_kind:-}" = iw7 ] && [ "$s_exe" != iw7_ship.exe ]; then
+  iw_cache="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)dxmt/iw7_ship.exe"
+  if [ "${iw_cache#/}" != "$iw_cache" ] && mkdir -p "$iw_cache"; then set_env DXMT_SHADER_CACHE_PATH "$iw_cache"
+  else clear_env DXMT_SHADER_CACHE_PATH; fi
+  iw7_shared_metal "$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)dxmt"
 # SIL_DXMT_SO=<winemetal.so> SIL_DXMT_CACHE=<absolute folder> (development
 # only): a Steam Library Direct3D 11 game runs from a clone of the engine with
 # that DXMT translator (see the Steam block) and its own translated-shader
@@ -982,6 +1079,7 @@ if [ "$t" = steam ]; then
   steamdir="$WINEPREFIX/drive_c/Program Files (x86)/Steam"
   log="$home/logs/steam-$s_id-$s_part.log"
   [ -n "${s_client:-}" ] && log="$home/logs/$s_client.log"
+  log_cap "$log"
   case "$s_kind" in
     iw6) capture=n ;;            # borderless
     t6)  capture=n ;;            # BO2 keeps the desktop's mode
@@ -1073,6 +1171,19 @@ if [ "$t" = steam ]; then
       reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d11 /d builtin /f
     fi
   fi
+  # Infinite Warfare (iw7) needs the same DLL: right after its brightness
+  # screen it creates depth-only tessellation pipelines and the engine's DXMT
+  # aborted it with the same "fragmentFunction must not be nil" (session 20).
+  # Its executable only; IW7_DXMT_FIX=0: the engine's DXMT
+  if [ "${s_kind:-}" = iw7 ]; then
+    if on IW7_DXMT_FIX && [ -f "$kit/payload/steam/aw-d3d11.dll" ]; then
+      cmp -s "$kit/payload/steam/aw-d3d11.dll" "$WINEPREFIX/drive_c/windows/system32/d3d11.dll" ||
+        cp "$kit/payload/steam/aw-d3d11.dll" "$WINEPREFIX/drive_c/windows/system32/d3d11.dll"
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d11 /d native /f
+    else
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d11 /d builtin /f
+    fi
+  fi
   # Advanced Warfare with its own shader translator (winemetal.so, the unix
   # half of DXMT, kit/payload/steam/aw-winemetal.so = v0.80 +
   # patches/dxmt-airconv-ts-workloads-v0.80.patch): DXMT's emulated
@@ -1086,7 +1197,12 @@ if [ "$t" = steam ]; then
   aw_engine=
   sil_so=
   [ -f "${SIL_DXMT_SO:-/nonexistent}" ] && case "${SIL_DXMT_CACHE:-}" in /?*) true ;; *) false ;; esac && sil_so=$SIL_DXMT_SO
-  if [ -n "${aw_dxmt_dir:-}" ] || [ -n "$sil_so" ] || { [ "${s_kind:-}" = s1 ] && on AW_DXMT_FIX && [ -f "$kit/payload/steam/aw-winemetal.so" ] &&
+  # Infinite Warfare (iw7, IW7_DXMT_FIX) runs from the same clone: its
+  # tessellation shaders use the same quad generator (dxmt.generate_workload.
+  # quad.integer) and with only the DLL above its GPU page-faulted ~1.5 min
+  # into its first mission, as AW's did (session 20)
+  if [ -n "${aw_dxmt_dir:-}" ] || [ -n "$sil_so" ] || { { { [ "${s_kind:-}" = s1 ] && on AW_DXMT_FIX; } || { [ "${s_kind:-}" = iw7 ] && on IW7_DXMT_FIX; }; } &&
+     [ -f "$kit/payload/steam/aw-winemetal.so" ] &&
      cmp -s "$engine/lib/wine/x86_64-windows/winemetal.dll" "$kit/payload/dxmt/x86_64-windows/winemetal.dll"; }; then
     # (the PE half it must pair with: DXMT v0.80's; the engine's .so is re-signed, so not byte-equal)
     for old in "$home/cache"/aw-engine.*; do   # left by a run that did not end normally
@@ -1245,18 +1361,27 @@ if [ "$t" = steam ]; then
   [ -n "${s_client:-}" ] && marker="$home/cache/steam-$s_id/.started-$s_client"
   first=1; [ -f "$marker" ] && first=0
   steam_args "${dw:-}" "${dh:-}" "${hz:-}" "$first"
-  if [ -n "${s_client:-}" ]; then
+  if [ "${s_client:-}" = cod4x ]; then
     # CoD4X keeps its profiles in its AppData folder (fs_savepath
     # %LOCALAPPDATA%\CallofDuty4MW: players\profiles\<name>, seen on its first
     # start 2026-11-21), not in the game's folder: its settings go there
     mkdir -p "$c4_home/players/profiles"
     steam_config "$c4_home" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/steam-$s_id/$s_client-home"
+  elif [ -n "${s_client:-}" ]; then
+    # IW7-Mod moves the game's profile to <game>\iw7-mod\players2 (its
+    # filesystem.cpp) and writes the dvars without a readable name as the game
+    # does (setcl <checksum>): the same two values, in its profile
+    steam_config "$dir/iw7-mod" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/steam-$s_id/$s_client-home"
   else
     steam_config "$dir" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/steam-$s_id"
   fi
   # shellcheck disable=SC2206
   [ -n "${GAME_ARGS:-}" ] && s_argv+=($GAME_ARGS)
   [ -n "${s_client:-}" ] || steam_mod_args "$dir"
+  # IW7-Mod without Steam: -nosteam takes the path it takes when no Steam is
+  # installed (stand-ins for Steam's client and overlay; its own Steam API),
+  # so every Mac plays it the same way, with or without Steam in this prefix
+  [ "${s_client:-}" = iw7mod ] && s_argv+=(-nosteam)
   # Frame statistics (MVKCACHE_FPS) for the OpenGL games, which do not go
   # through MoltenVK: Wine's own frame-rate trace (every few seconds)
   [ -n "${MVKCACHE_FPS:-}" ] && [ "$s_api" = gl ] && [ "$WINEDEBUG" = -all ] && export WINEDEBUG=-all,+fps
@@ -1265,17 +1390,39 @@ if [ "$t" = steam ]; then
   # environment: close it, Steam starts again below
   "$WINESERVER" -k 2>/dev/null; "$WINESERVER" -w 2>/dev/null
   console=/nonexistent cseen=0
-  # (CoD4X runs CoD4X's own iw3mp.exe, which does not use Steam: no Steam)
-  if [ -z "${s_client:-}" ]; then
+  # Steam for Windows starts the Steam Library's games; the community clients
+  # (s_client) start their own executable without it. CoD4X too, but a CoD4X
+  # server can require Steam (the server's sv_steamforce, set by its admin;
+  # default off): it asks the game for a Steam ticket and drops a player
+  # without Steam ("Steam is not installed/running…"), on Windows too. So when
+  # Steam for Windows is installed in this prefix and signs in by itself (a
+  # remembered account), it runs in the background while CoD4X plays, as on
+  # Windows; COD4X_STEAM=0: never. Without it CoD4X plays as before, on the
+  # servers that do not require Steam.
+  use_steam=1
+  if [ -n "${s_client:-}" ]; then
+    use_steam=0
+    [ "$s_client" = cod4x ] && on COD4X_STEAM && [ -f "$steamdir/Steam.exe" ] &&
+      grep -q '^"AutoLoginUser"="[^"]' "$WINEPREFIX/user.reg" 2>/dev/null && use_steam=1
+  fi
+  if [ "$use_steam" = 1 ]; then
   clog="$steamdir/logs/connection_log.txt"
   seen=$(wc -l < "$clog" 2>/dev/null | tr -d ' '); seen=${seen:-0}
-  bash "$kit/steam.sh" start || exit 1
+  if bash "$kit/steam.sh" start; then :
+  elif [ -n "${s_client:-}" ]; then use_steam=0
+  else exit 1; fi
   signed=
-  for _ in $(seq 1 90); do   # Steam's sign-in (up to 3 minutes)
+  # Steam's sign-in: up to 3 minutes (CoD4X: 90 s, then it starts anyway)
+  tries=90; [ -n "${s_client:-}" ] && tries=45
+  [ "$use_steam" = 1 ] && for _ in $(seq 1 "$tries"); do
     tail -n +$((seen + 1)) "$clog" 2>/dev/null | grep '\[Logged On,' > /dev/null && { signed=1; break; }
     sleep 2
   done
-  if [ -z "$signed" ]; then
+  if [ -n "$signed" ] && [ -n "${s_client:-}" ]; then
+    printf '%s\n' "--- $(date) Steam signed in: running in the background for $s_name" >> "$log"
+  elif [ -n "${s_client:-}" ]; then
+    printf '%s\n' "--- $(date) Steam did not sign in: $s_name starts without Steam (servers that require Steam will refuse it)" >> "$log"
+  elif [ -z "$signed" ]; then
     bash "$kit/steam.sh" open
     die "Steam is not signed in: sign in in Steam's window (tick Remember me), then press Play again"
   fi
@@ -1290,7 +1437,7 @@ if [ "$t" = steam ]; then
   if [ -f "$guard" ]; then
     "$wine" "$guard" 21600 > /dev/null 2>&1 &
     guard_pid=$!
-    trap '[ -n "$guard_pid" ] && kill "$guard_pid" 2>/dev/null; pkill -f "dialog-guard\.exe|pad-mapper\.exe" 2>/dev/null; true' EXIT
+    trap '[ -n "$guard_pid" ] && kill "$guard_pid" 2>/dev/null; pkill -f "dialog-guard\.exe|pad-mapper\.exe" 2>/dev/null; copy_release; true' EXIT
   fi
   # Controllers in the games without controller support on PC: played as
   # keyboard and mouse (kit/tools/pad-mapper.c); CONTROLLER_MAP=0 turns it off
@@ -1302,8 +1449,12 @@ if [ "$t" = steam ]; then
              pad_ads=
              if [ "$s_kind" = iw ]; then
                pad_ads=keys
+               # (CoD4X: the profiles in its AppData folder, c4_home. No comment
+               # inside the <( ) below: macOS's bash 3.2 parses it again when it
+               # runs, and an apostrophe in a comment there ended the whole
+               # Steam block with "bad substitution" in 1.1.0 and 1.1.1)
                while IFS= read -r c; do steam_pad_binds "$c"; done \
-                 < <(if [ -n "${c4_home:-}" ]; then find "$c4_home/players" -maxdepth 3 -name 'config*.cfg' 2>/dev/null   # CoD4X's profiles
+                 < <(if [ -n "${c4_home:-}" ]; then find "$c4_home/players" -maxdepth 3 -name 'config*.cfg' 2>/dev/null
                      else find "$dir/players" "$dir/players2" -maxdepth 3 -name 'config*.cfg' 2>/dev/null; fi)
              elif [ "$s_id" = cod1 ]; then
                # Call of Duty: the same keys, its own commands (X also holds F11)
@@ -1343,7 +1494,10 @@ if [ "$t" = steam ]; then
   # away when it will not start it
   exe_re=${s_exe//./\\.}
   game_pid=
-  for _ in $(seq 1 180); do
+  # (IW7-Mod's updater fetches its data files, ~376 MB, before the game opens
+  # the first time, at a low CPU load: up to 20 minutes)
+  start_wait=180; [ "${s_client:-}" = iw7mod ] && start_wait=1200
+  for _ in $(seq 1 "$start_wait"); do
     for pid in $(pgrep -f "$exe_re"); do
       cpu=$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' '); cpu=${cpu%%.*}
       [ "${cpu:-0}" -gt 20 ] && { game_pid=$pid; break 2; }
@@ -1468,6 +1622,29 @@ if [ "$t" = t7 ]; then
     if on CAPTURE_DISPLAY; then reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d y /f
     else reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d n /f; fi
   done
+  # Shaders shared with the Steam Library's Black Ops III. DXMT keeps its
+  # translated shaders under the game's name for both (dxmt/BlackOps3.exe/
+  # shaders_*.db: boiii runs the game's code), but Metal's compiled ones
+  # under the process's name: dxmt/boiii.exe/com.apple.metal and
+  # dxmt/BlackOps3.exe/com.apple.metal, so one of them always started cold
+  # after the other. boiii's becomes a link to the game's, made once (the
+  # larger of the two is kept: Metal's cache cannot be merged), as for
+  # Black Ops II and IW7-Mod; never while either game runs
+  bo3_shared_metal() {   # <DXMT's cache folder>
+    local dxmt=$1 shared own a b
+    case "$dxmt" in /?*/dxmt) ;; *) return 0 ;; esac
+    shared="$dxmt/BlackOps3.exe/com.apple.metal" own="$dxmt/boiii.exe/com.apple.metal"
+    [ -L "$own" ] && return 0
+    pgrep -f '[B]lackOps3\.exe|[b]oiii\.exe' > /dev/null && return 0
+    mkdir -p "$dxmt/boiii.exe" "$dxmt/BlackOps3.exe" || return 0
+    if [ -d "$own" ]; then
+      a=$(du -sk "$own" 2>/dev/null | cut -f1) b=$(du -sk "$shared" 2>/dev/null | cut -f1)
+      if [ "${a:-0}" -gt "${b:-0}" ]; then rm -rf "$shared" && mv "$own" "$shared" || return 0
+      else rm -rf "$own" || return 0; fi
+    fi
+    mkdir -p "$shared" && ln -s "$shared" "$own"
+  }
+  bo3_shared_metal "$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)dxmt"
   # The game refuses to start unless Steam is installed ("Steam must be
   # installed for the game to run"), but boiii plays without it: register an
   # empty Steam folder whose steam.exe does nothing (no Steam, no login).
@@ -1647,6 +1824,7 @@ PY
   # panel's full pixel size and shows its 1080p picture in one corner.
   if on DISPLAY_MODE && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
     stop_displaymode
+    log_cap "$home/logs/displaymode.log"
     "$kit/tools/displaymode" "$dw" "$dh" $$ >> "$home/logs/displaymode.log" 2>&1 &
     sleep 2   # the switch first: Wine reads the desktop mode as the game starts
   fi

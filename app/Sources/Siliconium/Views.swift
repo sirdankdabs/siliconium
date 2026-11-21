@@ -61,6 +61,7 @@ struct RootView: View {
                 state.warnOldMacOS()
                 state.checkUpdates()
                 state.refreshInstalledFiles()
+                state.tidyCopies()
                 state.checkForAppUpdate(manual: false)
                 state.checkBluetoothController()
                 state.confirmBluetoothPermissionAfterRelaunch()
@@ -220,7 +221,7 @@ struct ElementTile: View {
                         Spacer()
                     }
                     Spacer()
-                    Text(game.client.uppercased())
+                    Text(game.tileClient.uppercased())
                         .font(.system(size: size * 0.085, weight: .semibold)).kerning(size * 0.01)
                         .lineLimit(1).minimumScaleFactor(0.6)
                 }
@@ -279,12 +280,43 @@ struct GameRow: View {
     }
 
     private var statusText: String {
+        if game == .alterware { return "Not available" }   // (an explanation page)
         if state.running == game { return "Playing" }
         return state.isReady(game) ? "Ready" : "Set up"
     }
     private var statusColor: Color {
         if state.running == game { return Color(red: 0.35, green: 0.75, blue: 1) }
         return state.isReady(game) ? Color(red: 0.30, green: 0.82, blue: 0.48) : Color.white.opacity(0.35)
+    }
+}
+
+/// The AlterWare section (owner 2026-11-21): AlterWare's clients cannot be played
+/// on Apple silicon, so Siliconium has none of them, only this explanation.
+/// Evidence: session 23 (Siliconium's notes). Ghosts (iw6-mod) starts but never
+/// finishes the online sign-in it emulates: Arxan sets x86 hardware breakpoints
+/// (Dr0-Dr3, Dr7 0x155) on the game's Demonware code, and under Rosetta 2 Wine
+/// accepts them but they never fire. Advanced Warfare (s1-mod): discontinued
+/// (archived 2026-08-28), refuses Steam's August 2026 build.
+struct AlterWareInfoView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Why AlterWare's Ghosts and Advanced Warfare are not in Siliconium")
+                .font(.system(size: 15, weight: .semibold)).foregroundStyle(.white)
+            note("info.circle", "AlterWare (alterware.dev) made community clients for Call of Duty: Ghosts (iw6-mod) and Advanced Warfare (s1-mod), with their own dedicated servers. Neither can be played on a Mac with Apple silicon, so Siliconium does not include them.")
+            note("exclamationmark.triangle.fill", "Ghosts: the client starts and its menus work, but Online Play never gets past \"Connecting to Online Services\", and the client lets you join a server only after that sign-in. The game's copy protection (Arxan) relies on the processor's hardware breakpoints around its online code. Rosetta 2, which runs Windows games on Apple silicon, does not provide them: they are accepted but never trigger, so the sign-in never completes. Private matches and Extinction most likely need the same sign-in.", orange: true)
+            note("exclamationmark.triangle.fill", "Advanced Warfare: AlterWare discontinued its client (s1-mod) in 2026. It refuses Steam's current (2026) version of the game, and AlterWare offers no older one. Advanced Warfare uses the same kind of protection: Steam's own Advanced Warfare Multiplayer also stops at \"Connecting to Online Services\" on a Mac.", orange: true)
+            note("checkmark.seal.fill", "Both campaigns play from the Steam Library, and Ghosts' campaign from the Offline tab. AlterWare stopped development in September 2026.")
+        }
+        .frame(maxWidth: 600, alignment: .leading)
+    }
+
+    private func note(_ symbol: String, _ text: String, orange: Bool = false) -> some View {
+        Label(text, systemImage: symbol)
+            .font(.system(size: 12))
+            .foregroundStyle(orange ? Color.orange : Color.white.opacity(0.85))
+        // (no .fixedSize(horizontal: false, vertical: true) here: with it, opening
+        // this page left the whole window blank, sidebar included; the views
+        // existed but nothing was drawn. The text wraps without it)
     }
 }
 
@@ -322,7 +354,8 @@ struct GameDetail: View {
                         .frame(maxWidth: 640, alignment: .leading)
                 }
                 switch game {
-                case .waw, .bo1, .bo2, .iw5, .iw4, .iw6, .bo2c, .bo2s, .boiii, .cod4x: PlutoniumGameView(game: game)
+                case .waw, .bo1, .bo2, .iw5, .iw4, .iw6, .bo2c, .bo2s, .boiii, .cod4x, .iw7mod: PlutoniumGameView(game: game)
+                case .alterware: AlterWareInfoView()
                 case .bo3: BO3View()
                 case .steam: SteamLibraryView()
                 }
@@ -389,6 +422,8 @@ struct PlutoniumGameView: View {
                  ? "Black Ops III (Windows) setup: forgets the game folder. The game, boiii.exe and your stats in it are not touched.\n\nEverything: also moves the engine and the Wine prefix (Plutonium, its login and BOIII's identity keys: back up your stats first) to the Trash."
                  : game == .iw5
                  ? "Modern Warfare 3 setup: forgets the 32-bit game folder. Your game files are not touched.\n\nEverything: also moves the engine and the Wine prefix (Plutonium and its login) to the Trash, so every Plutonium game is set up again from the start."
+                 : game == .iw7mod
+                 ? "Infinite Warfare (IW7-Mod) setup: forgets the game folder and its IW7-Mod switches, and moves IW7-Mod's download and its copy of a Steam download to the Trash (Play makes it again). Steam's Infinite Warfare and IW7-Mod's profile and saves are kept; a Steam download is found again by itself.\n\nEverything: also moves the engine and the Plutonium prefix to the Trash."
                  : game == .cod4x
                  ? "Call of Duty 4 (CoD4X) setup: forgets the game folder and moves CoD4X's copy of a Steam download to the Trash (Play makes it again). Steam's Call of Duty 4 and your CoD4X profile are not touched.\n\nEverything: also moves the engine and the shared Wine prefix (Plutonium, its login and any other game settings) to the Trash."
                  : game == .iw4
@@ -477,11 +512,31 @@ struct PlutoniumGameView: View {
                         .font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
                         .frame(maxWidth: 560, alignment: .leading)
                 }
+                if game == .iw7mod && state.folderIsSteamLibrary(.iw7mod) {
+                    Label("Detected automatically from the Steam Library: IW7-Mod (CBServers) plays the Infinite Warfare you downloaded there, from its own copy of it in Siliconium's folder (APFS clones: no extra disk space). Steam's own files are never changed, Play in the Steam Library keeps playing the normal game, and both share the same shader caches. Custom maps go in the game folder's usermaps folder (usermaps/<map>/): they reach IW7-Mod's copy at every start.",
+                          systemImage: "checkmark.seal.fill")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
+                        .frame(maxWidth: 560, alignment: .leading)
+                }
+                if game == .iw7mod {
+                    // updater.cpp (CBServers): files.json + data/ from github.com/CBServers/updater (~400 MB, 88 files, 2026-11-21);
+                    // filesystem.cpp: players2 -> iw7-mod/players2
+                    Label("The first start downloads IW7-Mod's own data (about 400 MB) before the game opens, and the game prepares its shaders once if Steam's Infinite Warfare has not done it yet. IW7-Mod keeps its own profile and campaign saves (iw7-mod/players2), starting from the game's video settings.",
+                          systemImage: "info.circle")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.8))
+                        .frame(maxWidth: 560, alignment: .leading)
+                }
                 if game == .cod4x {
                     // the original 1.7 executable CoD4X needs asks for the game's key
                     // (Steam's own executable does not, so Steam never stores it)
                     Label("The first time you join a server, CoD4X asks for your Call of Duty 4 key code (only once). A Steam copy's key is in Steam: Library → right-click Call of Duty 4 → Manage → CD Keys.",
                           systemImage: "key.fill")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.8))
+                        .frame(maxWidth: 560, alignment: .leading)
+                    // the server's own rule (sv_steamforce in CoD4X's server auth module):
+                    // launch.sh starts Steam for Windows for CoD4X when it is set up (COD4X_STEAM)
+                    Label("Some servers only let you in while Steam is running (\"Steam is not installed\" / \"Steam is not running\": the server's own setting). Set up Steam in the Steam section and sign in: Play CoD4X then starts it in the background for them. Every other server plays without Steam.",
+                          systemImage: "info.circle")
                         .font(.system(size: 11)).foregroundStyle(.white.opacity(0.8))
                         .frame(maxWidth: 560, alignment: .leading)
                 }
@@ -627,11 +682,11 @@ struct SetupChecklist: View {
                     Button("Create") { state.createEmptyPrefix() }
                         .disabled(!state.engineInstalled || state.progress != nil)
                 }
-            } else if game == .cod4x {
+            } else if game == .cod4x || game == .iw7mod {
                 // Steam's prefix is made by Play when missing (launch.sh), without Steam
-                Check(done: state.folderUsable(for: .cod4x), title: "\(game.title) game folder",
-                      detail: state.folderDetail(for: .cod4x)) {
-                    Button("Choose…") { state.chooseFolder(for: .cod4x) }
+                Check(done: state.folderUsable(for: game), title: "\(game.title) game folder",
+                      detail: state.folderDetail(for: game)) {
+                    Button("Choose…") { state.chooseFolder(for: game) }
                 }
             } else if game == .iw4 {
                 Check(done: state.folderUsable(for: .iw4), title: "\(game.title) game folder",
@@ -1334,7 +1389,7 @@ struct SettingsView: View {
                         Text(folder.path).font(.system(size: 11)).foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                         Spacer()
-                        if game.usesPlutonium || game == .iw6 || game == .iw4 || game == .cod4x || game == .boiii {
+                        if game.usesPlutonium || game == .iw6 || game == .iw4 || game == .cod4x || game == .iw7mod || game == .boiii {
                             Button("Change…") {
                                 state.chooseFolder(for: game)
                                 close()
@@ -1346,7 +1401,7 @@ struct SettingsView: View {
                 }
             }
             Section("Play") {
-                if !game.usesPlutonium && game != .iw6 && game != .cod4x { TextField("Player name (offline)", text: $name) }
+                if !game.usesPlutonium && game != .iw6 && game != .cod4x && game != .iw7mod { TextField("Player name (offline)", text: $name) }
                 Picker("Frame-rate cap", selection: $fps) {
                     Text("Monitor's refresh rate").tag("monitor")
                     Text("240").tag("240"); Text("160").tag("160"); Text("120").tag("120")
@@ -1402,6 +1457,9 @@ struct SettingsView: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 } else if game == .iw6 {
                     Text("Ghosts keeps its controller settings in the game's Options menu.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                } else if game == .iw7mod {
+                    Text("Infinite Warfare has its own controller support: it asks to switch to the gamepad when one is connected, and keeps its controller settings in the game (Options → Controls).")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 } else if game == .cod4x {
                     Text("Call of Duty 4 has no controller support on PC: Siliconium plays your controller as keyboard and mouse, as for Steam's Call of Duty 4 (the keyboard keeps your own bindings).")

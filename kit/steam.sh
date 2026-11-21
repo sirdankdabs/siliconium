@@ -58,6 +58,7 @@ bo2 202970:Campaign 202990:Multiplayer 212910:Zombies
 ghosts 209160:Campaign 209170:Multiplayer
 aw 209650:Campaign 209660:Multiplayer
 bo3 311210:Game
+iw 292730:Game
 EOF
 }
 # a game's Steam apps (numbers only), the main one first
@@ -197,12 +198,15 @@ setup)
   if [ ! -f "$steamdir/Steam.exe" ]; then
     step "Downloading Steam for Windows (Valve)"
     curl -fsSL --retry 3 -o "$downloads/SteamSetup.exe.part" \
-      https://cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe || die "cannot download Steam"
+      https://cdn.cloudflare.steamstatic.com/client/installer/SteamSetup.exe || {
+      rm -f "$downloads/SteamSetup.exe.part"; die "cannot download Steam"; }
     mv -f "$downloads/SteamSetup.exe.part" "$downloads/SteamSetup.exe"
-    strings -a "$downloads/SteamSetup.exe" | grep -q "Valve Corp" || die "unexpected Steam installer"
+    strings -a "$downloads/SteamSetup.exe" | grep -q "Valve Corp" || { rm -f "$downloads/SteamSetup.exe"; die "unexpected Steam installer"; }
     step "Installing Steam for Windows"
     "$wine" "$downloads/SteamSetup.exe" /S > /dev/null 2>&1
     "$WINESERVER" -w
+    # (the installer is not kept: Steam updates itself, a new setup downloads it again)
+    rm -f "$downloads/SteamSetup.exe"; rmdir "$downloads" 2> /dev/null || true
     [ -f "$steamdir/Steam.exe" ] || die "Steam did not install"
   fi
   step "Opening Steam: sign in with your account (tick Remember me)"

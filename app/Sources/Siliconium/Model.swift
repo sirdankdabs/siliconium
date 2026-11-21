@@ -10,8 +10,9 @@ import UniformTypeIdentifiers
 
 /// The sidebar's tabs and the games in each, in order.
 enum GameTab: String, CaseIterable, Identifiable {
-    // (the sidebar's order, owner 2026-11-20: Steam, Plutonium, CoD4X, IW4X, BOIII/EZZ, Offline)
-    case steam, plutonium, cod4x, iw4x, bo3, others
+    // (the sidebar's order, owner 2026-11-20: Steam, Plutonium, CoD4X, IW4X, BOIII/EZZ, Offline;
+    // 2026-11-21: IW7-Mod under BOIII/EZZ, AlterWare above Offline)
+    case steam, plutonium, cod4x, iw4x, bo3, iw7mod, alterware, others
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -19,6 +20,9 @@ enum GameTab: String, CaseIterable, Identifiable {
         case .bo3: "BOIII/EZZ"
         case .cod4x: "CoD4X"
         case .iw4x: "IW4X"
+        // (CBServers' fork of AuroraMod's IW7-Mod, owner 2026-11-21)
+        case .iw7mod: "IW7-Mod (CBServers)"
+        case .alterware: "AlterWare"
         case .others: "Offline"
         case .steam: "Steam"
         }
@@ -29,6 +33,10 @@ enum GameTab: String, CaseIterable, Identifiable {
         case .bo3: [.boiii, .bo3]
         case .cod4x: [.cod4x]
         case .iw4x: [.iw4]
+        case .iw7mod: [.iw7mod]
+        // only an explanation (owner 2026-11-21): AlterWare's Ghosts client cannot sign in
+        // online under Rosetta 2 and its Advanced Warfare client was discontinued
+        case .alterware: [.alterware]
         // Black Ops II Campaign (Steam), .bo2s, left the sidebar (2026-11-20, owner): the
         // Steam Library plays Steam's Black Ops II campaign; its code path stays
         case .others: [.iw6, .bo2c]
@@ -39,7 +47,7 @@ enum GameTab: String, CaseIterable, Identifiable {
 }
 
 enum Game: String, CaseIterable, Identifiable {
-    case waw, bo1, bo2, iw5, iw4, iw6, bo2s, bo2c, bo3, boiii, steam, cod4x
+    case waw, bo1, bo2, iw5, iw4, iw6, bo2s, bo2c, bo3, boiii, steam, cod4x, iw7mod, alterware
     var id: String { rawValue }
 
     var title: String {
@@ -56,6 +64,8 @@ enum Game: String, CaseIterable, Identifiable {
         case .boiii: "Black Ops III"
         case .steam: "Steam Library"
         case .cod4x: "Call of Duty 4"
+        case .iw7mod: "Infinite Warfare"
+        case .alterware: "Ghosts, Advanced Warfare"
         }
     }
     /// A game option that hurts the game on a Mac (shown on its page)
@@ -74,9 +84,11 @@ enum Game: String, CaseIterable, Identifiable {
         case .iw5: "2011"
         case .iw4: "2009"
         case .iw6: "2013"
+        case .alterware: "–"
         case .bo3, .boiii: "2015"
         case .steam: "10"
         case .cod4x: "2007"
+        case .iw7mod: "2016"
         }
     }
     /// Who runs it, under the code on the game's tile.
@@ -90,8 +102,13 @@ enum Game: String, CaseIterable, Identifiable {
         case .boiii: "Ezz"
         case .steam: "Steam"
         case .cod4x: "CoD4X"
+        case .iw7mod: "IW7-Mod (CBServers)"
+        case .alterware: "AlterWare"
         }
     }
+    /// The client's name on the game's tile (it has room for one short word:
+    /// "IW7-MOD (CBSERVERS)" was cut off)
+    var tileClient: String { self == .iw7mod ? "CBServers" : client }
     var subtitle: String {
         switch self {
         case .bo1: "Plutonium · Zombies, Campaign, Multiplayer"
@@ -106,6 +123,8 @@ enum Game: String, CaseIterable, Identifiable {
         case .waw: "Plutonium · Zombies, Campaign, Multiplayer"
         case .steam: "Steam for Windows · download your Call of Duty games"
         case .cod4x: "CoD4X · Multiplayer"
+        case .iw7mod: "IW7-Mod (CBServers) · Campaign, Multiplayer, Zombies, custom maps"
+        case .alterware: "AlterWare · not available on Apple silicon"
         }
     }
     var symbol: String {
@@ -122,6 +141,8 @@ enum Game: String, CaseIterable, Identifiable {
         case .waw: "4.circle.fill"
         case .steam: "cart.fill"
         case .cod4x: "scope"
+        case .iw7mod: "sparkles"
+        case .alterware: "info.circle"
         }
     }
     /// The short engine code shown in the sidebar's game badge.
@@ -133,9 +154,11 @@ enum Game: String, CaseIterable, Identifiable {
         case .iw5: "IW5"
         case .iw4: "IW4"
         case .iw6: "IW6"
+        case .alterware: "AW"
         case .bo3, .boiii: "T7"
         case .steam: "St"
         case .cod4x: "IW3"
+        case .iw7mod: "IW7"
         }
     }
     var colors: [Color] {
@@ -151,6 +174,9 @@ enum Game: String, CaseIterable, Identifiable {
         case .waw: [Color(red: 0.62, green: 0.58, blue: 0.36), Color(red: 0.16, green: 0.15, blue: 0.08)]
         case .steam: [Color(red: 0.16, green: 0.47, blue: 0.80), Color(red: 0.05, green: 0.10, blue: 0.20)]
         case .cod4x: [Color(red: 0.36, green: 0.50, blue: 0.30), Color(red: 0.08, green: 0.13, blue: 0.07)]
+        // (the Steam Library's Infinite Warfare row)
+        case .iw7mod: [Color(red: 0.32, green: 0.46, blue: 0.62), Color(red: 0.06, green: 0.09, blue: 0.15)]
+        case .alterware: [Color(white: 0.36), Color(white: 0.12)]
         }
     }
     /// Settings key of the game folder, for the Plutonium games.
@@ -165,10 +191,11 @@ enum Game: String, CaseIterable, Identifiable {
         case .bo2c: "BO2C_DIR"
         case .boiii: "BOIII_DIR"
         case .cod4x: "COD4X_DIR"
+        case .iw7mod: "IW7MOD_DIR"
         default: nil
         }
     }
-    var usesEngine: Bool { self == .waw || self == .bo1 || self == .bo2 || self == .iw5 || self == .iw4 || self == .iw6 || self == .bo2c || self == .bo2s || self == .boiii || self == .steam || self == .cod4x }
+    var usesEngine: Bool { self == .waw || self == .bo1 || self == .bo2 || self == .iw5 || self == .iw4 || self == .iw6 || self == .bo2c || self == .bo2s || self == .boiii || self == .steam || self == .cod4x || self == .iw7mod }
     var plutoniumID: String? {
         switch self {
         case .waw: "t4"
@@ -237,7 +264,12 @@ struct SteamTitle: Identifiable {
     static let cod4x = Mod(id: "cod4x", title: "CoD4X", parts: "Multiplayer",
         about: "Not a fix: opens the CoD4X tab, the community multiplayer client (its own servers and server list, security and bug fixes, no PunkBuster) that plays this same Steam download when that tab has no game folder of its own. CoD4X needs its own copy of the 1.7 executable and its loader in place of two of the game's files, so it plays from a copy of this download in Siliconium's folder (made with APFS clones: it takes no extra disk space) and Steam's own files are never changed. Siliconium installs it from CoD4X's official releases; it keeps itself up to date.",
         source: "https://cod4x.ovh", license: "Free (CoD4X team; launcher and loader MIT)", opensLinked: true)
-
+    /// Infinite Warfare: Play starts CBServers' IW7-Mod instead of the game as
+    /// it is (launch.sh steam iw-sp with STEAM_MOD_IW=iw7mod = the IW7-Mod tab's
+    /// Play on this download); None: Steam's game exactly as before
+    static let iw7mod = Mod(id: "iw7mod", title: "IW7-Mod (CBServers)", parts: "Every mode",
+        about: "CBServers' fork of AuroraMod's IW7-Mod community client: Play starts it instead of the game as it is (CBServers' servers and server browser, bots, Zombies and the campaign, custom maps from the game folder's usermaps; no Steam needed), with the same Siliconium setup and the same shader caches. Steam's own files are never changed: IW7-Mod plays from its own copy of this download in Siliconium's folder (APFS clones: no extra disk space) and keeps its own profile and saves there. Choose None to play the normal game again. Siliconium downloads it from CBServers the first time; it then keeps itself up to date (the first start also downloads its data, about 400 MB). The IW7-Mod (CBServers) tab plays the same copy.",
+        source: "https://github.com/CBServers/iw7-mod", license: "GPL-3.0 (CBServers' fork of AuroraMod's IW7-Mod)")
     static let catalog: [SteamTitle] = [
         .init(id: "cod1", title: "Call of Duty", year: "2003", badge: "CoD",
               colors: [Color(red: 0.55, green: 0.47, blue: 0.33), Color(red: 0.14, green: 0.11, blue: 0.07)],
@@ -309,6 +341,17 @@ struct SteamTitle: Identifiable {
               mods: [.init(id: "boiii", title: "Ezz (BOIII)", parts: "Its own tab",
                            about: "Not a fix: opens the Black Ops III tab, where Ezz's BOIII client plays this same Steam download.",
                            source: "https://github.com/Ezz-lol/boiii-free", license: "GPL-3.0", opensLinked: true)]),
+        // Infinite Warfare: one executable for the campaign, Multiplayer and
+        // Zombies in Spaceland (chosen in its own menu); its own setup
+        // (launch.sh Steam path, s_kind iw7: AW's two DXMT fixes, 1x display
+        // mode, resolution and refresh rate in its hashed profile).
+        // measured 2026-11-21: the game's own "Preloading Shaders" took ~3.5 min
+        // on the first start (cold caches), the menu came up in 2 s afterwards
+        .init(id: "iw", title: "Infinite Warfare", year: "2016", badge: "IW7",
+              colors: Game.iw7mod.colors, linked: .iw7mod,
+              known: "The first start prepares the game's shaders once (\"Preloading Shaders\", a few minutes). Later starts reach the menu in seconds.",
+              modes: [.init(id: "sp", title: "Play", exe: "iw7_ship.exe")],
+              mods: [iw7mod]),
     ]
 }
 
@@ -344,6 +387,10 @@ struct GameWindowTarget {
         case .bo3: .init(executable: "codblkops3_exe", startsOutsideScript: true)
         case .steam: .init(executable: "steam.exe", startsOutsideScript: true)
         case .cod4x: .init(executable: "iw3mp.exe")
+        // IW7-Mod maps the game into its own process (iw7-mod.exe), which
+        // opens the game's exclusive-fullscreen window (as Steam's iw7_ship.exe)
+        case .iw7mod: .init(executable: "iw7-mod.exe", acceptsFullscreenWindows: true)
+        case .alterware: .init(executable: "")   // (an explanation page: nothing to start)
         }
     }
 
@@ -434,6 +481,7 @@ extension Game {
         case .iw5: [PlayMode(id: "mp", title: "Multiplayer", symbol: "person.3.fill")]
         case .iw4: [PlayMode(id: "play", title: "Play IW4X", symbol: "play.fill")]
         case .cod4x: [PlayMode(id: "play", title: "Play CoD4X", symbol: "play.fill")]
+        case .iw7mod: [PlayMode(id: "play", title: "Play IW7-Mod", symbol: "play.fill")]
         case .iw6, .bo2c, .bo2s: [PlayMode(id: "play", title: "Play Campaign", symbol: "flag.fill")]
         case .boiii: [PlayMode(id: "launcher", title: "Open BOIII", symbol: "play.fill")]
         default: []
@@ -577,6 +625,28 @@ extension Patch {
         Patch(key: "BOIII_SCREEN", title: "Fullscreen at your display's refresh rate",
               info: "Every start: fullscreen at your display's size and refresh rate, and the frame cap at that rate. Black Ops III's own default cap is 60 FPS (MaxFPS, and Ezz's com_maxfps), and a crash or the launcher could leave it in a window.",
               games: [.boiii]),
+        // CoD4X: Steam for Windows in the background for servers that require it
+        // (the server's sv_steamforce; launch.sh's Steam-start block)
+        Patch(key: "COD4X_STEAM", title: "Steam for servers that require it",
+              info: "Some CoD4X servers only let you in while Steam is running: that is the server's own setting (\"Steam is not installed\" or \"Steam is not running\"), on Windows too. When Steam for Windows is set up in the Steam section and signs in by itself, Play CoD4X starts it in the background first, as it runs on Windows. Without it, CoD4X plays as before on every server that does not require Steam. Those servers check your Steam account with Steam, so it most likely needs to own Call of Duty 4. Off: CoD4X never starts Steam.",
+              games: [.cod4x]),
+        // IW7-Mod: Infinite Warfare's Steam Library setup, under its own switches
+        // (launch.sh iw7mod; the Steam Library's Infinite Warfare keeps IW7_*)
+        Patch(key: "IW7MOD_DXMT_FIX", title: "Infinite Warfare's DXMT fixes",
+              info: "Infinite Warfare's tessellation broke DXMT, the Direct3D 11 to Metal layer: its shader preload aborted, and with that fixed the GPU faulted about 1.5 minutes into the first mission. Siliconium runs it with the two fixes made for Advanced Warfare (a fixed Direct3D 11 DLL and a fixed shader translator, kept in their own copy of the engine while the game runs). Turn off only to test the engine's own DXMT, which crashes this game.",
+              games: [.iw7mod]),
+        Patch(key: "IW7MOD_SCREEN", title: "Fit the display",
+              info: "Every start: the game's resolution is your display's size and its refresh rate the one Siliconium holds, written into its profile (players2/config_mp.cfg). Off: the game keeps what it saved.",
+              games: [.iw7mod]),
+        Patch(key: "IW7MOD_DISPLAY_MODE", title: "Native display mode in fullscreen",
+              info: "While the game runs, the display uses a 1x mode of your desktop's size at its best refresh rate (a scaled HiDPI desktop is otherwise slower and capped lower); your desktop's mode comes back when the game ends.",
+              games: [.iw7mod]),
+        Patch(key: "IW7MOD_ASYNC", title: "Background shader compilation",
+              info: "New shaders are compiled in the background instead of stopping the frame (a short hitch the first time an effect appears).",
+              games: [.iw7mod]),
+        Patch(key: "IW7MOD_FRAME_PACING", title: "Frame pacing",
+              info: "DXMT spaces frames evenly at the frame-rate cap (your display's refresh rate by default).",
+              games: [.iw7mod]),
         Patch(key: "BOIII_SAFE_LUA", title: "Ask before unsafe Lua",
               info: "Some Workshop mods and modded servers use \"unsafe\" Lua functions: reading and writing files, running system commands, loading DLLs. boiii asks first (\"Unsafe Lua Function Called\"). If a mod needs them and the question gets in its way, turn this off: boiii then starts with -unsafe-lua and lets them run without asking. The risk: any mod from any server can then use them, and under Wine that reaches your whole Mac (drive Z:). Only turn it off if you trust the servers and mods you play.",
               games: [.boiii]),
@@ -767,7 +837,9 @@ final class AppState: ObservableObject {
     func folder(for game: Game) -> URL? {
         guard let key = game.folderKey, let path = settings[key] else { return nil }
         let url = URL(fileURLWithPath: path)
-        return FileManager.default.fileExists(atPath: url.appendingPathComponent("zone").path) ? url : nil
+        // (Infinite Warfare has no zone folder: its fastfiles are next to iw7_ship.exe)
+        let marker = game == .iw7mod ? "iw7_ship.exe" : "zone"
+        return FileManager.default.fileExists(atPath: url.appendingPathComponent(marker).path) ? url : nil
     }
 
     /// Checks that the selected folder really is the requested game, not just
@@ -777,11 +849,20 @@ final class AppState: ObservableObject {
     /// or zm_*.ff, and IW5 has main/, zone/ and mss32.dll.
     func gameFolderProblem(_ game: Game, _ url: URL) -> String? {
         let fm = FileManager.default
+        func has(_ path: String) -> Bool { fm.fileExists(atPath: url.appendingPathComponent(path).path) }
+        // Infinite Warfare has no zone folder: its fastfiles (common.ff…) are in the
+        // game's folder itself
+        if game == .iw7mod {
+            // IW7-Mod runs the game's own executable from its folder (iw7-mod.exe goes next to it)
+            guard has("iw7_ship.exe"), has("common.ff"), has("main") else {
+                return "That is not a Windows Infinite Warfare folder: choose the one with iw7_ship.exe, common.ff and main/."
+            }
+            return nil
+        }
         let zone = url.appendingPathComponent("zone")
         guard fm.fileExists(atPath: zone.path) else {
             return "That folder has no zone folder: choose the \(game.title) game folder."
         }
-        func has(_ path: String) -> Bool { fm.fileExists(atPath: url.appendingPathComponent(path).path) }
         func anyFile(_ test: (String) -> Bool) -> Bool {
             guard let e = fm.enumerator(at: zone, includingPropertiesForKeys: [.isRegularFileKey]) else { return false }
             var seen = 0
@@ -841,7 +922,7 @@ final class AppState: ObservableObject {
             guard has("iw3mp.exe"), has("main"), has("zone") else {
                 return "That is not a Windows Call of Duty 4 folder: choose the one with iw3mp.exe, main/ and zone/."
             }
-        case .bo2s, .bo3, .steam:
+        case .iw7mod, .bo2s, .bo3, .steam, .alterware:   // (.iw7mod: checked above)
             return nil
         }
         return nil
@@ -915,6 +996,7 @@ final class AppState: ObservableObject {
         case .bo2c: "Your Black Ops II folder, with t6sp.exe and zone/ inside (it can be anywhere: copied from a PC, an external drive, the Mac Steam app's folder…)."
         case .boiii: "The Windows game's folder, with BlackOps3.exe and zone/ inside."
         case .cod4x: "Choose the Call of Duty 4 folder (Windows game files, with iw3mp.exe, main/ and zone/). Siliconium installs CoD4X, which then keeps itself up to date. Steam's own download is never changed: CoD4X plays from its own copy of it."
+        case .iw7mod: "Choose the Infinite Warfare folder (Windows game files, with iw7_ship.exe, common.ff and main/). Siliconium installs IW7-Mod, which then keeps itself up to date. A Steam download is found by itself and never changed: IW7-Mod plays from its own copy of it."
         default: ""
         }
     }
@@ -1066,8 +1148,10 @@ final class AppState: ObservableObject {
             return
         }
         running = .steam
+        // (Infinite Warfare through IW7-Mod: the game runs inside iw7-mod.exe)
+        let exe = title.id == "iw" && steamMod(title)?.id == "iw7mod" ? "iw7-mod.exe" : mode.exe
         runScript("launch.sh", ["steam", "\(title.id)-\(mode.id)"], title: "Loading…",
-                  gameWindow: .init(executable: mode.exe, acceptsFullscreenWindows: title.id == "ghosts" || title.id == "aw",
+                  gameWindow: .init(executable: exe, acceptsFullscreenWindows: title.id == "ghosts" || title.id == "aw" || title.id == "iw",
                                     acceptsRaisedWindows: title.id == "cod1" || title.id == "uo" || title.id == "cod2")) { [weak self] in
             self?.running = nil
         }
@@ -1099,6 +1183,7 @@ final class AppState: ObservableObject {
         detectSteamFolder("311210", for: .boiii)
         detectSteamFolder("10190", for: .iw4)
         detectSteamFolder("7940", for: .cod4x)
+        detectSteamFolder("292730", for: .iw7mod)
     }
     func detectSteamFolder(_ app: String, for game: Game) {
         guard let key = game.folderKey else { return }
@@ -1171,6 +1256,10 @@ final class AppState: ObservableObject {
         case .boiii: engineInstalled && prefixReady && folderUsable(for: .boiii)
         // CoD4X runs in Steam's prefix (launch.sh makes it when missing, without Steam)
         case .cod4x: engineInstalled && folderUsable(for: .cod4x)
+        // IW7-Mod too (Infinite Warfare's Steam Library setup, without Steam)
+        case .iw7mod: engineInstalled && folderUsable(for: .iw7mod)
+        // (an explanation page: never "ready", the sidebar says "Not available")
+        case .alterware: false
         case .bo2c: engineInstalled && folderUsable(for: .bo2c) && campaign["ready"] == "yes"
         case .bo2s: engineInstalled && steamCampaign["steam"] == "installed" && steamCampaign["game"] == "installed"
         case .bo3: bo3Installed
@@ -1199,6 +1288,7 @@ final class AppState: ObservableObject {
         case .bo2c: panel.message = "Choose the Black Ops II campaign folder: t6sp.exe and zone/."
         case .boiii: panel.message = "Choose the Windows Black Ops III folder: BlackOps3.exe and zone/."
         case .cod4x: panel.message = "Choose the Call of Duty 4 folder with iw3mp.exe, main/ and zone/ (Siliconium installs CoD4X)."
+        case .iw7mod: panel.message = "Choose the Infinite Warfare folder with iw7_ship.exe, common.ff and main/ (Siliconium installs IW7-Mod; a Steam download is never changed)."
         default: panel.message = "Choose the \(game.title) game folder."
         }
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -1294,7 +1384,7 @@ final class AppState: ObservableObject {
     func removeSetup(_ what: String) {
         let titles = ["waw": "Removing the World at War setup", "bo1": "Removing the Black Ops setup", "bo2": "Removing the Black Ops II setup",
                       "iw5": "Removing the Modern Warfare 3 setup", "iw4": "Removing the Modern Warfare 2 setup",
-                      "cod4x": "Removing the CoD4X setup",
+                      "cod4x": "Removing the CoD4X setup", "iw7mod": "Removing the IW7-Mod setup",
                       "all": "Removing the engine and Plutonium", "bo3": "Removing BO3 Mac Client",
                       "bo2c": "Removing the campaign setup", "bo2s": "Removing Steam and its campaign",
                       "iw6": "Removing the Ghosts campaign setup"]
@@ -1609,6 +1699,14 @@ final class AppState: ObservableObject {
         } else {
             refreshBO3Files()
         }
+    }
+
+    /// CoD4X's and IW7-Mod's copies of Steam games (kit/tools/steam-copy.sh)
+    /// that nobody is using give Steam's files back, in the background: a start
+    /// that could not clean up (Siliconium or the Mac turned off during a game)
+    /// leaves no second copy of the game behind. A copy in use is left alone.
+    func tidyCopies() {
+        Task.detached(priority: .utility) { _ = Self.capture("tools/steam-copy.sh", ["tidy"]) }
     }
 
     private func refreshBO3Files() {
