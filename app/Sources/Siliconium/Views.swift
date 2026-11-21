@@ -53,7 +53,11 @@ struct RootView: View {
             // chrome: in Light Mode the sidebar's vibrancy material turned
             // white under the white labels. Set the window itself dark too.
             .background(DarkWindowAppearance())
+            .sheet(isPresented: Binding(get: { state.whatsNew != nil }, set: { if !$0 { state.whatsNew = nil } })) {
+                WhatsNewView(version: state.appVersion, notes: state.whatsNew ?? "") { state.whatsNew = nil }
+            }
             .onAppear {
+                state.showWhatsNewAfterUpdate()
                 state.warnOldMacOS()
                 state.checkUpdates()
                 state.refreshInstalledFiles()
@@ -104,9 +108,12 @@ private struct DarkWindowAppearance: NSViewRepresentable {
 
 struct ContentView: View {
     @EnvironmentObject var state: AppState
-    // `-openSettings bo1` on the command line opens that game's settings
-    @State private var selection: Game = UserDefaults.standard.string(forKey: "openSettings")
-        .flatMap(Game.init(rawValue:)) ?? .waw
+    // `-openSettings bo1` on the command line opens that game's settings;
+    // otherwise the app opens on the row the player had selected last time
+    @State private var selection: Game = (UserDefaults.standard.string(forKey: "openSettings")
+        ?? UserDefaults.standard.string(forKey: "lastSelectedGame"))
+        .flatMap(Game.init(rawValue:))
+        .flatMap { game in GameTab.allCases.contains { $0.games.contains(game) } ? game : nil } ?? .waw
     @State private var showLog = false
     @AppStorage("showBO3ForMac") private var showBO3ForMac = false
 
@@ -134,6 +141,9 @@ struct ContentView: View {
             }
             .onAppear {
                 if !showBO3ForMac && selection == .bo3 { selection = .boiii }
+                // the restored row gets the same refresh as when it is clicked
+                if selection == .bo2c { state.refreshCampaign() }
+                if selection == .bo2s { state.refreshSteamCampaign() }
             }
             .onChange(of: state.goTo) {
                 guard let g = state.goTo else { return }
@@ -164,6 +174,7 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.15), value: state.settingsGame)
         .onChange(of: selection) {
+            UserDefaults.standard.set(selection.rawValue, forKey: "lastSelectedGame")
             state.settingsGame = nil
             if selection == .bo2c { state.refreshCampaign() }
             if selection == .bo2s { state.refreshSteamCampaign() }
@@ -239,7 +250,7 @@ struct BrandHeader: View {
             .frame(width: 30, height: 30)
             VStack(alignment: .leading, spacing: 0) {
                 Text("Siliconium").font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                Text("Call of Duty classics on Apple silicon")
+                Text("Call of Duty on Apple silicon")
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
             }
             Spacer(minLength: 0)
@@ -303,12 +314,22 @@ struct GameDetail: View {
                     .foregroundStyle(.white)
                 }
 
+                if let avoid = game.avoid {
+                    Label(avoid, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                        .frame(maxWidth: 640, alignment: .leading)
+                }
                 switch game {
-                case .waw, .bo1, .bo2, .iw5, .iw4, .iw6, .bo2c, .bo2s, .boiii: PlutoniumGameView(game: game)
+                case .waw, .bo1, .bo2, .iw5, .iw4, .iw6, .bo2c, .bo2s, .boiii, .cod4x: PlutoniumGameView(game: game)
                 case .bo3: BO3View()
                 case .steam: SteamLibraryView()
                 }
-                Spacer()
+                // the Steam Library scrolls: its list runs to the window's edge
+                // (with the page margin and this spacer it stopped ~60 pt short,
+                // rows cut off above an empty band)
+                if game != .steam { Spacer() }
                 if let p = state.progress {
                     HStack(spacing: 10) {
                         ProgressView().controlSize(.small).tint(.white)
@@ -318,7 +339,8 @@ struct GameDetail: View {
                     .background(.ultraThinMaterial, in: Capsule())
                 }
             }
-            .padding(32)
+            .padding([.top, .horizontal], 32)
+            .padding(.bottom, game == .steam ? 0 : 32)
         }
     }
 }
@@ -367,6 +389,8 @@ struct PlutoniumGameView: View {
                  ? "Black Ops III (Windows) setup: forgets the game folder. The game, boiii.exe and your stats in it are not touched.\n\nEverything: also moves the engine and the Wine prefix (Plutonium, its login and BOIII's identity keys: back up your stats first) to the Trash."
                  : game == .iw5
                  ? "Modern Warfare 3 setup: forgets the 32-bit game folder. Your game files are not touched.\n\nEverything: also moves the engine and the Wine prefix (Plutonium and its login) to the Trash, so every Plutonium game is set up again from the start."
+                 : game == .cod4x
+                 ? "Call of Duty 4 (CoD4X) setup: forgets the game folder and moves CoD4X's copy of a Steam download to the Trash (Play makes it again). Steam's Call of Duty 4 and your CoD4X profile are not touched.\n\nEverything: also moves the engine and the shared Wine prefix (Plutonium, its login and any other game settings) to the Trash."
                  : game == .iw4
                  ? "Modern Warfare 2 (IW4X) setup: forgets the game folder. Your game files are not touched.\n\nEverything: also moves the engine and the shared Wine prefix (Plutonium, its login and any other game settings) to the Trash."
                  : game == .waw
@@ -418,6 +442,15 @@ struct PlutoniumGameView: View {
                         .frame(maxWidth: 560, alignment: .leading)
                 }
                 if game == .boiii {
+                    // the folder is Steam's own download (found on its own when Black
+                    // Ops III was installed in the Steam Library, or chosen there)
+                    if let folder = state.folder(for: .boiii),
+                       folder.path.contains("/prefix-steam/drive_c/Program Files (x86)/Steam/steamapps/common/") {
+                        Label("Detected automatically from the Steam Library: BOIII plays the Black Ops III you downloaded there.",
+                              systemImage: "checkmark.seal.fill")
+                            .font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
+                            .frame(maxWidth: 560, alignment: .leading)
+                    }
                     HStack(spacing: 10) {
                         Button { state.backupBoiii() } label: { Label("Back Up Stats…", systemImage: "externaldrive.badge.plus") }
                         Button { state.restoreBoiii() } label: { Label("Restore Stats…", systemImage: "arrow.counterclockwise") }
@@ -431,6 +464,26 @@ struct PlutoniumGameView: View {
                           systemImage: "info.circle")
                         .font(.system(size: 11)).foregroundStyle(.white.opacity(0.8))
                         .frame(maxWidth: 620, alignment: .leading)
+                }
+                if game == .iw4 && state.folderIsSteamLibrary(.iw4) {
+                    Label("Detected automatically from the Steam Library: IW4X plays the Modern Warfare 2 you downloaded there. IW4X adds its own files next to the game's (the first start converts the maps for its client, which takes a while); Steam's own files are not changed.",
+                          systemImage: "checkmark.seal.fill")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
+                        .frame(maxWidth: 560, alignment: .leading)
+                }
+                if game == .cod4x && state.folderIsSteamLibrary(.cod4x) {
+                    Label("Detected automatically from the Steam Library: CoD4X plays the Call of Duty 4 you downloaded there, from its own copy of it in Siliconium's folder (it takes no extra disk space). Steam's own files are never changed.",
+                          systemImage: "checkmark.seal.fill")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
+                        .frame(maxWidth: 560, alignment: .leading)
+                }
+                if game == .cod4x {
+                    // the original 1.7 executable CoD4X needs asks for the game's key
+                    // (Steam's own executable does not, so Steam never stores it)
+                    Label("The first time you join a server, CoD4X asks for your Call of Duty 4 key code (only once). A Steam copy's key is in Steam: Library → right-click Call of Duty 4 → Manage → CD Keys.",
+                          systemImage: "key.fill")
+                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.8))
+                        .frame(maxWidth: 560, alignment: .leading)
                 }
                 if game == .iw4 {
                     HStack(spacing: 10) {
@@ -573,6 +626,12 @@ struct SetupChecklist: View {
                       detail: "Where Windows programs keep their settings (shared with Black Ops and Black Ops II).") {
                     Button("Create") { state.createEmptyPrefix() }
                         .disabled(!state.engineInstalled || state.progress != nil)
+                }
+            } else if game == .cod4x {
+                // Steam's prefix is made by Play when missing (launch.sh), without Steam
+                Check(done: state.folderUsable(for: .cod4x), title: "\(game.title) game folder",
+                      detail: state.folderDetail(for: .cod4x)) {
+                    Button("Choose…") { state.chooseFolder(for: .cod4x) }
                 }
             } else if game == .iw4 {
                 Check(done: state.folderUsable(for: .iw4), title: "\(game.title) game folder",
@@ -807,6 +866,7 @@ struct SteamLibraryView: View {
                         SteamTitleRow(title: title, steamReady: steamInstalled)
                     }
                 }
+                .padding(.bottom, 32)   // the last row can scroll clear of the edge
             }
         }
         .task {
@@ -823,13 +883,24 @@ struct SteamTitleRow: View {
     @EnvironmentObject var state: AppState
     let title: SteamTitle
     let steamReady: Bool
+    @State private var showModInfo = false
 
     private var entry: AppState.SteamEntry? { state.steamLibrary[title.id] }
     private var gameState: String { entry?.state ?? "missing" }
 
     var body: some View {
-        HStack(spacing: 14) {
+        // The details and the buttons side by side, or the buttons under the
+        // details when the window is too narrow for both (SteamRowLayout)
+        SteamRowLayout(spacing: 14) {
             SteamTile(title: title, size: 44)
+            details
+            HStack(spacing: 14) { actions }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var details: some View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(title.title).font(.system(size: 14, weight: .semibold))
@@ -847,6 +918,7 @@ struct SteamTitleRow: View {
                         if let dlc = entry?.dlc, dlc > 0 {
                             Text("+\(dlc) DLC")
                                 .font(.system(size: 10, weight: .semibold))
+                                .lineLimit(1).fixedSize()
                                 .padding(.horizontal, 7).padding(.vertical, 2)
                                 .background(Color(red: 0.76, green: 0.70, blue: 1).opacity(0.25), in: Capsule())
                                 .help("DLC you own (map packs and more), downloaded by Steam with the game")
@@ -857,15 +929,30 @@ struct SteamTitleRow: View {
                 if gameState == "installed", let note = title.note {
                     Text(note).font(.system(size: 10)).opacity(0.5)
                 }
+                if gameState == "installed", let avoid = title.avoid {
+                    Label(avoid, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if gameState == "installed", let known = title.known {
+                    Label(known, systemImage: "info.circle")
+                        .font(.system(size: 10))
+                        .opacity(0.6)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .foregroundStyle(.white)
-            Spacer()
+    }
+
+    @ViewBuilder private var actions: some View {
             switch gameState {
             case "installed":
                 if entry?.parts.contains(where: { $0.state == "missing" }) == true {
                     Button("Download the rest") { state.downloadSteamGame(title.id) }
                         .help("Downloads the parts not in Steam yet (if your account owns them)")
                 }
+                if !title.mods.isEmpty { modPicker }
                 ForEach(Array(title.modes.enumerated()), id: \.element.id) { index, mode in
                     if index == 0 {
                         Button { state.playSteam(title, mode) } label: { Label(mode.title, systemImage: mode.symbol) }
@@ -875,6 +962,15 @@ struct SteamTitleRow: View {
                         Button { state.playSteam(title, mode) } label: { Label(mode.title, systemImage: mode.symbol) }
                             .disabled(state.running != nil || state.progress != nil)
                     }
+                }
+                if title.workshop {
+                    Button { state.openSteamWorkshop(title.id) } label: { Label("Workshop", systemImage: "puzzlepiece.extension") }
+                        .help("The game's Steam Workshop: mods and maps. Steam downloads what you subscribe to; the game lists it in its Mods menu.")
+                }
+                if let label = title.linkedButton, let game = title.linked, let folder = entry?.folder, !folder.isEmpty {
+                    Button { state.openInLinkedGame(game, folder) } label: { Label(label, systemImage: game.symbol) }
+                        .help("Opens the \(game.title) tab (\(game.client)'s client). With no game folder of its own it uses this Steam download.")
+                        .disabled(state.running != nil || state.progress != nil)
                 }
                 Menu {
                     if let f = entry?.folder, !f.isEmpty {
@@ -894,9 +990,41 @@ struct SteamTitleRow: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!steamReady)
             }
+    }
+
+    /// The community fix used when this game starts (None: the game as it is),
+    /// and what each one does
+    @ViewBuilder private var modPicker: some View {
+        let chosen = state.steamMod(title)
+        HStack(spacing: 4) {
+            Menu {
+                Button { state.setSteamMod(title, nil) } label: {
+                    if chosen == nil { Label("None", systemImage: "checkmark") } else { Text("None") }
+                }
+                ForEach(title.mods.filter { !$0.opensLinked }) { mod in
+                    Button { state.setSteamMod(title, mod) } label: {
+                        if chosen?.id == mod.id { Label("\(mod.title) (\(mod.parts))", systemImage: "checkmark") }
+                        else { Text("\(mod.title) (\(mod.parts))") }
+                    }
+                }
+                let linked = title.mods.filter(\.opensLinked)
+                if !linked.isEmpty, let game = title.linked, let folder = entry?.folder, !folder.isEmpty {
+                    Divider()
+                    ForEach(linked) { mod in
+                        Button { state.openInLinkedGame(game, folder) } label: { Label(mod.title, systemImage: game.symbol) }
+                    }
+                }
+            } label: {
+                Label(chosen?.title ?? "No fix", systemImage: "wrench.and.screwdriver")
+            }
+            .fixedSize()
+            .disabled(state.running != nil || state.progress != nil)
+            .help("A community fix used when this game starts. None: the game exactly as Siliconium plays it.")
+            Button { showModInfo.toggle() } label: { Image(systemName: "info.circle") }
+                .buttonStyle(.borderless)
+                .help("What each fix does")
+                .popover(isPresented: $showModInfo, arrowEdge: .bottom) { SteamModInfo(title: title) }
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var statusText: String {
@@ -915,7 +1043,151 @@ struct SteamTitleRow: View {
     }
 }
 
+/// The ⓘ of a Steam game's fixes: what each does, its author's page and licence.
+struct SteamModInfo: View {
+    let title: SteamTitle
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Community fixes for \(title.title)").font(.headline)
+            entry("None", "The game exactly as Siliconium plays it, with nothing added.", nil, nil, nil)
+            ForEach(title.mods) { mod in
+                entry("\(mod.title) · \(mod.parts)", mod.about, mod.warning, mod.source, mod.license)
+            }
+            Text("Fixes are made by their authors, not by Siliconium. They are added only while the game runs; the game's own files are never changed.")
+                .font(.system(size: 10)).opacity(0.6)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(width: 380)
+    }
+
+    @ViewBuilder private func entry(_ name: String, _ about: String, _ warning: String?, _ source: String?, _ license: String?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(name).font(.system(size: 12, weight: .semibold))
+            Text(about).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+            if let warning {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10)).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let source, let url = URL(string: source) {
+                HStack(spacing: 6) {
+                    Link(url.host.map { "\($0)\(url.path)" } ?? source, destination: url).font(.system(size: 10))
+                    if let license { Text("· \(license)").font(.system(size: 10)).opacity(0.6) }
+                }
+            }
+        }
+    }
+}
+
 /// A part of a Steam game (Campaign, Multiplayer, Zombies), each its own Steam app.
+/// "What's new in Siliconium <version>": the release notes (CHANGELOG lines:
+/// "**Heading**", "- item" with inline Markdown), once after an update
+struct WhatsNewView: View {
+    let version: String
+    let notes: String
+    let close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("What's new in Siliconium \(version)").font(.system(size: 20, weight: .bold))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(notes.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                        noteLine(line)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+            }
+            HStack {
+                Spacer()
+                Button("Continue") { close() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 640, height: 560)
+    }
+
+    @ViewBuilder private func noteLine(_ line: String) -> some View {
+        let text = line.trimmingCharacters(in: .whitespaces)
+        if text.isEmpty {
+            Color.clear.frame(height: 4)
+        } else if text.hasPrefix("- ") {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("•")
+                Text(inline(String(text.dropFirst(2)))).fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.system(size: 13))
+        } else {
+            Text(inline(text)).font(.system(size: 14)).fixedSize(horizontal: false, vertical: true).padding(.top, 4)
+        }
+    }
+
+    private func inline(_ s: String) -> AttributedString {
+        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(s)
+    }
+}
+
+/// A Steam Library row: tile, details and buttons on one line when the details
+/// keep at least their chips' width (and `minDetails`); otherwise the buttons
+/// move under the details (a narrow window squeezed the chips letter by letter).
+/// Subviews: tile, details, buttons.
+struct SteamRowLayout: Layout {
+    var spacing: CGFloat = 14
+    var rowSpacing: CGFloat = 10
+    var minDetails: CGFloat = 260
+
+    private func oneLine(_ s: Subviews, width: CGFloat) -> Bool {
+        guard s.count == 3, width.isFinite else { return true }
+        let tile = s[0].sizeThatFits(.unspecified).width
+        // narrowest width of the details: their fixed parts (chips, DLC) stay whole
+        let details = max(minDetails, s[1].sizeThatFits(.init(width: 1, height: nil)).width)
+        let buttons = s[2].sizeThatFits(.unspecified).width
+        return tile + spacing + details + spacing + buttons <= width
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews s: Subviews, cache: inout ()) -> CGSize {
+        guard s.count == 3 else { return .zero }
+        let width = proposal.width ?? .infinity
+        let tile = s[0].sizeThatFits(.unspecified), buttons = s[2].sizeThatFits(.unspecified)
+        if oneLine(s, width: width) {
+            let detailsWidth: CGFloat? = width.isFinite ? max(0, width - tile.width - buttons.width - 2 * spacing) : nil
+            let details = s[1].sizeThatFits(.init(width: detailsWidth, height: nil))
+            return CGSize(width: width.isFinite ? width : tile.width + details.width + buttons.width + 2 * spacing,
+                          height: max(tile.height, details.height, buttons.height))
+        }
+        let detailsWidth = max(0, width - tile.width - spacing)
+        let details = s[1].sizeThatFits(.init(width: detailsWidth, height: nil))
+        let below = s[2].sizeThatFits(.init(width: detailsWidth, height: nil))
+        return CGSize(width: width, height: max(tile.height, details.height) + rowSpacing + below.height)
+    }
+
+    func placeSubviews(in b: CGRect, proposal: ProposedViewSize, subviews s: Subviews, cache: inout ()) {
+        guard s.count == 3 else { return }
+        let tile = s[0].sizeThatFits(.unspecified), buttons = s[2].sizeThatFits(.unspecified)
+        if oneLine(s, width: b.width) {
+            let detailsWidth = max(0, b.width - tile.width - buttons.width - 2 * spacing)
+            let details = s[1].sizeThatFits(.init(width: detailsWidth, height: nil))
+            s[0].place(at: CGPoint(x: b.minX, y: b.midY), anchor: .leading, proposal: .unspecified)
+            s[1].place(at: CGPoint(x: b.minX + tile.width + spacing, y: b.midY), anchor: .leading,
+                       proposal: .init(width: detailsWidth, height: details.height))
+            s[2].place(at: CGPoint(x: b.maxX, y: b.midY), anchor: .trailing, proposal: .unspecified)
+        } else {
+            let detailsWidth = max(0, b.width - tile.width - spacing)
+            let details = s[1].sizeThatFits(.init(width: detailsWidth, height: nil))
+            let top = max(tile.height, details.height)
+            s[0].place(at: CGPoint(x: b.minX, y: b.minY + top / 2), anchor: .leading, proposal: .unspecified)
+            s[1].place(at: CGPoint(x: b.minX + tile.width + spacing, y: b.minY + top / 2), anchor: .leading,
+                       proposal: .init(width: detailsWidth, height: details.height))
+            s[2].place(at: CGPoint(x: b.minX + tile.width + spacing, y: b.minY + top + rowSpacing), anchor: .topLeading,
+                       proposal: .init(width: detailsWidth, height: nil))
+        }
+    }
+}
+
 struct PartChip: View {
     let name: String
     let state: String
@@ -923,8 +1195,9 @@ struct PartChip: View {
         HStack(spacing: 4) {
             Image(systemName: state == "installed" ? "checkmark" : state == "downloading" ? "arrow.down" : "minus")
                 .font(.system(size: 8, weight: .bold))
-            Text(name).font(.system(size: 10, weight: .semibold))
+            Text(name).font(.system(size: 10, weight: .semibold)).lineLimit(1)
         }
+        .fixedSize()
         .padding(.horizontal, 7).padding(.vertical, 2)
         .foregroundStyle(.white.opacity(state == "missing" ? 0.5 : 0.95))
         .background(color.opacity(0.25), in: Capsule())
@@ -1061,7 +1334,7 @@ struct SettingsView: View {
                         Text(folder.path).font(.system(size: 11)).foregroundStyle(.secondary)
                             .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                         Spacer()
-                        if game.usesPlutonium || game == .iw6 {
+                        if game.usesPlutonium || game == .iw6 || game == .iw4 || game == .cod4x || game == .boiii {
                             Button("Change…") {
                                 state.chooseFolder(for: game)
                                 close()
@@ -1073,7 +1346,7 @@ struct SettingsView: View {
                 }
             }
             Section("Play") {
-                if !game.usesPlutonium && game != .iw6 { TextField("Player name (offline)", text: $name) }
+                if !game.usesPlutonium && game != .iw6 && game != .cod4x { TextField("Player name (offline)", text: $name) }
                 Picker("Frame-rate cap", selection: $fps) {
                     Text("Monitor's refresh rate").tag("monitor")
                     Text("240").tag("240"); Text("160").tag("160"); Text("120").tag("120")
@@ -1129,6 +1402,9 @@ struct SettingsView: View {
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 } else if game == .iw6 {
                     Text("Ghosts keeps its controller settings in the game's Options menu.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                } else if game == .cod4x {
+                    Text("Call of Duty 4 has no controller support on PC: Siliconium plays your controller as keyboard and mouse, as for Steam's Call of Duty 4 (the keyboard keeps your own bindings).")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 } else {
                     HStack {

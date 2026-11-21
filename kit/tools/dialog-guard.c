@@ -16,7 +16,8 @@
 
 static int asks(const wchar_t *title)
 {
-    static const wchar_t *const keys[] = { L"Optimal Settings", L"Safe Mode", L"safe mode", L"Optimal settings" };
+    /* Black Ops III titles its box "Safe mode" */
+    static const wchar_t *const keys[] = { L"Optimal Settings", L"Safe Mode", L"safe mode", L"Optimal settings", L"Safe mode" };
     for (unsigned i = 0; i < sizeof keys / sizeof *keys; i++)
         if (wcsstr(title, keys[i])) return 1;
     return 0;

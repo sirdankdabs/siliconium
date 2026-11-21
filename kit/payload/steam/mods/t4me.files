@@ -1,0 +1,3 @@
+# T4Me r49 (T4M Enhanced by JBShady, github.com/JBShady/T4M-Enhanced; no licence: downloaded, never shipped)
+# 7z https://github.com/JBShady/T4M-Enhanced/releases/download/r49/d3d9.7z sha256 c635e1de283d36a71f91c1ebc7fc1ab74b8017b1544ea6df13a9145123f0ce50; only its d3d9.dll (its stock DXVK is replaced by ours)
+95a6d9eca3ca2e61d6fa53fdc7d7ad367e7620fcd74bb03cdac318e8ded7ae9d 5129728 d3d9.dll

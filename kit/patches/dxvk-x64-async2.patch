@@ -1,0 +1,59 @@
+DXVK_ASYNC=2 for the 64-bit DXVK (Gcenx DXVK-macOS 1.10.3 async): compile in the background
+also for render targets first bound this frame, as our 32-bit DXVK does. Apply after
+dxvk-d3d9-x64.patch. Build with -Db_ndebug=true.
+
+diff --git a/src/dxvk/dxvk_context.cpp b/src/dxvk/dxvk_context.cpp
+index 1aaf6154..38e21390 100644
+--- a/src/dxvk/dxvk_context.cpp
++++ b/src/dxvk/dxvk_context.cpp
+@@ -5234,6 +5234,9 @@ namespace dxvk {
+   }
+   
+   bool DxvkContext::checkAsyncCompilationCompat() {
++    if (m_common->pipelineManager().asyncAll())
++      return true;
++
+     bool fbCompat = true;
+     for (uint32_t i = 0; fbCompat && i < m_state.om.framebufferInfo.numAttachments(); i++) {
+       const auto& attachment = m_state.om.framebufferInfo.getAttachment(i);
+diff --git a/src/dxvk/dxvk_pipemanager.cpp b/src/dxvk/dxvk_pipemanager.cpp
+index 950efc28..3f63fdfd 100644
+--- a/src/dxvk/dxvk_pipemanager.cpp
++++ b/src/dxvk/dxvk_pipemanager.cpp
+@@ -12,7 +12,11 @@ namespace dxvk {
+     std::string useAsync      = env::getEnvVar("DXVK_ASYNC");
+     std::string useStateCache = env::getEnvVar("DXVK_STATE_CACHE");
+ 
+-    if (useAsync == "1" || device->config().enableAsync)
++    // DXVK_ASYNC=2 (Siliconium): compile every missing pipeline in the
++    // background, also for render targets first bound this frame, as our
++    // 32-bit DXVK does (patches/dxvk-d3d9.patch)
++    m_asyncAll = useAsync == "2";
++    if (useAsync == "1" || m_asyncAll || device->config().enableAsync)
+       m_compiler = new DxvkPipelineCompiler(device);
+     
+     if (useStateCache != "0" && device->config().enableStateCache)
+diff --git a/src/dxvk/dxvk_pipemanager.h b/src/dxvk/dxvk_pipemanager.h
+index dad7a13b..ed454784 100644
+--- a/src/dxvk/dxvk_pipemanager.h
++++ b/src/dxvk/dxvk_pipemanager.h
+@@ -37,6 +37,11 @@ namespace dxvk {
+     friend class DxvkComputePipeline;
+     friend class DxvkGraphicsPipeline;
+   public:
++
++    /**
++     * \brief DXVK_ASYNC=2: compile in the background for every render target
++     */
++    bool asyncAll() const { return m_asyncAll; }
+     
+     DxvkPipelineManager(
+             DxvkDevice*         device,
+@@ -102,6 +107,7 @@ namespace dxvk {
+     Rc<DxvkPipelineCache>     m_cache;
+     Rc<DxvkStateCache>        m_stateCache;
+     Rc<DxvkPipelineCompiler>  m_compiler;
++    bool                      m_asyncAll = false;
+ 
+     std::atomic<uint32_t>     m_numComputePipelines  = { 0 };
+     std::atomic<uint32_t>     m_numGraphicsPipelines = { 0 };

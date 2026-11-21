@@ -56,6 +56,7 @@ bo1 42700:Campaign 42710:Multiplayer
 bo2 202970:Campaign 202990:Multiplayer 212910:Zombies
 ghosts 209160:Campaign 209170:Multiplayer
 aw 209650:Campaign 209660:Multiplayer
+bo3 311210:Game
 EOF
 }
 # a game's Steam apps (numbers only), the main one first
@@ -117,15 +118,40 @@ game_state() {
 }
 
 # Steam's web windows draw with the engine's steamwebhelper fix (ntdll); the
-# GPU and the sandbox stay off. The in-game overlay is off: it is injected
-# into the game and does not render under Wine (Steam may restore the files
-# when it updates itself, so this runs every time).
+# GPU and the sandbox stay off. The in-game overlay is off in Steam's own
+# settings (tools/steam-overlay-off.py: it does not draw under Wine). Its DLLs
+# stay in place: without them Steam reinstalled itself at every start, and an
+# unsigned stand-in made it refuse to start games ("Corrupt file signature").
+overlay_off() {
+  local f
+  # Siliconium 2026-11-19 builds moved the DLLs aside or put a stand-in there
+  for f in GameOverlayRenderer.dll GameOverlayRenderer64.dll; do
+    if [ -f "$steamdir/$f.off" ] && { [ ! -f "$steamdir/$f" ] || LC_ALL=C grep -aq SiliconiumNoOverlay "$steamdir/$f"; }; then
+      mv -f "$steamdir/$f.off" "$steamdir/$f"
+    fi
+  done
+  running && return 0   # Steam rewrites its settings when it exits
+  python3 -I "$kit/tools/steam-overlay-off.py" "$steamdir" $(catalog | tr ' ' '\n' | sed -n 's/^\([0-9]*\):.*/\1/p') 2> /dev/null ||
+    printf '%s\n' 'Warning: could not turn the Steam overlay off.' >&2
+}
+# A campaign's Multiplayer / Zombies button (steam://run/<app>) has Steam start
+# that part itself: Steam's launch options of these apps put silrelay.exe in
+# front, and tools/steam-relay.sh (beside Steam) starts the part through
+# launch.sh, with Siliconium's settings and fixes (tools/silrelay.c).
+relay_apps="209650 209660 202970 202990 212910 42700 42710 10180 10190 42680 42690 209160 209170"
+relay_setup() {
+  local pub="$WINEPREFIX/drive_c/users/Public/Siliconium"
+  mkdir -p "$pub/relay" || return 1
+  cmp -s "$kit/payload/steam/silrelay.exe" "$pub/silrelay.exe" || cp "$kit/payload/steam/silrelay.exe" "$pub/silrelay.exe"
+  running || python3 -I "$kit/tools/steam-launch-options.py" "$steamdir" 'C:\\users\\Public\\Siliconium\\silrelay.exe' $relay_apps 2> /dev/null ||
+    printf '%s\n' 'Warning: could not set Steam launch options for in-game part switches.' >&2
+  (nohup bash "$kit/tools/steam-relay.sh" > /dev/null 2>&1 &)
+}
 start_steam() {
   . "$kit/tools/configure-ds4.sh"
   configure_ds4_xinput || printf '%s\n' 'Warning: could not set up PlayStation controller XInput mapping.' >&2
-  for f in GameOverlayRenderer.dll GameOverlayRenderer64.dll; do
-    [ -f "$steamdir/$f" ] && mv -f "$steamdir/$f" "$steamdir/$f.off"
-  done
+  overlay_off
+  relay_setup
   (cd "$steamdir" && nohup "$wine" Steam.exe "$@" -cef-disable-gpu -cef-disable-gpu-compositing \
     -cef-disable-sandbox > "$home/logs/steam.log" 2>&1 &)
 }
@@ -213,6 +239,14 @@ store)
   ensure_running
   steam_cmd "steam://store/$main"
   ;;
+# The game's Steam Workshop page (mods and maps): Steam downloads what the
+# player subscribes to and the game lists it (Black Ops III: its Mods menu)
+workshop)
+  need_steam
+  read -r main _ <<< "$(apps_of "${2:-}")"; [ -n "${main:-}" ] || die "unknown game: ${2:-}"
+  ensure_running
+  steam_cmd "steam://url/SteamWorkshopPage/$main"
+  ;;
 start)
   need_steam
   running || start_steam -silent
@@ -225,6 +259,6 @@ gamedir) gamedir "${2:?appid}" ;;
 state) app_state "${2:?appid}" ;;
 launch) steam_cmd -applaunch "${2:?appid}" ;;
 *)
-  die "usage: steam.sh status | library | setup | open | download <id> | download-all | store <id> | start | wait | gamedir <appid> | state <appid> | launch <appid>"
+  die "usage: steam.sh status | library | setup | open | download <id> | download-all | store <id> | workshop <id> | start | wait | gamedir <appid> | state <appid> | launch <appid>"
   ;;
 esac

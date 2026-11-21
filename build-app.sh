@@ -25,6 +25,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/Siliconium"
 strip -S "$app/Contents/MacOS/Siliconium"   # no build paths in the app
 cp "$build/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+cp "$root/CHANGELOG.md" "$app/Contents/Resources/CHANGELOG.md"   # "What's new" after an update
 ditto "$root/kit" "$app/Contents/Resources/kit"
 # Finder metadata must not end up in the app (or its release zip)
 find "$app" -name '.DS_Store' -delete

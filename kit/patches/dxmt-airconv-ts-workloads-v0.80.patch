@@ -1,0 +1,136 @@
+DXMT v0.80 (589adb7) airconv: emulated tessellation (D3D11 hull/domain -> Metal
+object/mesh), three fixes in src/airconv/dxbc_converter_ts.cpp. Built into the
+unix half (winemetal.so, LLVM 15.0.7 with DXMT CI's flags, see TESTING.md) and
+shipped as payload/steam/aw-winemetal.so for Call of Duty: Advanced Warfare only.
+The three bugs are still present on upstream main (0df8610, 2026-11-10): not fixed upstream.
+
+1. get_max_potential_workload_count(QUAD) under-counted: the quad workload
+   generator (shaders/air_tessellation.metal, gen_workload_quad_impl) emits 9
+   workloads for inner factors 8 and 7 (or 8 and 5) where ceil((f-1)/4)*4+(f&1)
+   declares 8 (5 vs 4 at factor 4). The extra workload was written past the
+   object payload and the object stage dispatched more mesh threadgroups than
+   the pipeline declared: GPU page fault (kIOGPUCommandBufferCallbackErrorPageFault)
+   seconds into play in Advanced Warfare, whose hull shaders are all quad/integer.
+   Now the exact maximum, by running the generator's loop over every inner pair.
+2. air.max_mesh_work_groups declared one patch's workloads while an object
+   threadgroup carries patch_per_group patches and dispatches all of theirs.
+3. The shared workload counter was cleared by each patch right before adding
+   (no barrier between the two patches of a group, nor before the count is read).
+diff --git a/src/airconv/dxbc_converter_ts.cpp b/src/airconv/dxbc_converter_ts.cpp
+index 6ab04bb..75b0ba3 100644
+--- a/src/airconv/dxbc_converter_ts.cpp
++++ b/src/airconv/dxbc_converter_ts.cpp
+@@ -114,10 +114,37 @@ get_max_potential_workload_count(uint32_t max_tess_factor, SM50ShaderInternal *p
+     return 0;
+   case microsoft::D3D11_SB_TESSELLATOR_DOMAIN_TRI:
+     return std::ceil((max_tess_factor - 1) / 4.0) * 3 + (max_tess_factor & 1);
+-  case microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD:
+-    return std::ceil((max_tess_factor - 1) / 4.0) * 4 + (max_tess_factor & 1);
+-    ;
++  case microsoft::D3D11_SB_TESSELLATOR_DOMAIN_QUAD: {
++    // Siliconium: the quad workload generator (air_tessellation.metal,
++    // gen_workload_quad_impl) emits 4 workloads per ring pair, rings up to
++    // min(inner0, inner1) / 2 and pairing capped by max(inner0, inner1) / 2,
++    // plus 1 when the smaller inner factor is odd. With unequal inner factors of
++    // mixed parity (8 and 7, 8 and 5) that is 9 for a maximum factor of 8, one
++    // more than the closed form ceil((f-1)/4)*4 + (f&1) gave: the extra workload
++    // was written past the payload and the object stage dispatched more mesh
++    // threadgroups than the pipeline declared (Advanced Warfare: GPU page fault
++    // in play). Take the exact maximum over every pair of integer inner factors
++    // up to the maximum (a superset of what every partitioning mode can produce).
++    uint32_t worst = 0;
++    for (uint32_t a = 1; a <= max_tess_factor; a++) {
++      for (uint32_t b = 1; b <= max_tess_factor; b++) {
++        uint32_t min_in = std::min(a, b), rings = min_in / 2, u = std::max(a, b) / 2, count = 0;
++        for (uint32_t r = 0; r < u && r < rings; r++, u--) {
++          if (r + 1 == u) {
++            count += 2;
++            break;
++          }
++          count += 4;
++        }
++        if (min_in & 1)
++          count += 1;
++        worst = std::max(worst, count);
++      }
++    }
++    return worst;
+   }
++  }
++  return 0;
+ }
+ 
+ size_t
+@@ -265,7 +292,12 @@ convert_dxbc_vertex_hull_shader(
+ 
+   uint32_t max_workload_count = get_max_potential_workload_count(factor_int, pHullStage);
+ 
+-  func_signature.UseMaxMeshWorkgroupSize(max_workload_count);
++  // Siliconium: one object threadgroup carries patch_per_group patches and
++  // dispatches the workloads of all of them (the payload holds
++  // max_workload_count * patch_per_group); declaring only one patch's count let
++  // it dispatch more mesh threadgroups than the pipeline allows (Advanced
++  // Warfare: GPU page fault once two patches of a group were tessellated high)
++  func_signature.UseMaxMeshWorkgroupSize(max_workload_count * patch_per_group);
+ 
+   constexpr uint32_t size_workload_info = sizeof(TessMeshWorkload);
+ 
+@@ -606,12 +638,13 @@ convert_dxbc_vertex_hull_shader(
+     /* populate patch constant output */
+ 
+     auto write_patch_constant = llvm::BasicBlock::Create(context, "write_patch_constant", function);
++    auto workloads_written = llvm::BasicBlock::Create(context, "workloads_written", function);
+     auto dispatch_mesh = llvm::BasicBlock::Create(context, "dispatch_mesh", function);
+     auto real_return = llvm::BasicBlock::Create(context, "real_return", function);
+ 
+     builder.CreateCondBr(
+         builder.CreateICmp(llvm::CmpInst::ICMP_EQ, resource_map.thread_id_in_patch, builder.getInt32(0)),
+-        write_patch_constant, real_return
++        write_patch_constant, workloads_written
+     );
+ 
+     builder.SetInsertPoint(write_patch_constant);
+@@ -653,8 +686,20 @@ convert_dxbc_vertex_hull_shader(
+     );
+     workload_count->setAlignment(llvm::Align(4));
+ 
+-    // clear value
+-    air.CreateAtomicRMW(llvm::AtomicRMWInst::And, workload_count, builder.getInt32(0));
++    // Siliconium: clear the counter once, at the function entry, before the
++    // barriers every thread passes. Each patch's thread used to clear it here,
++    // right before adding its own workloads: with two patches per object
++    // threadgroup one could clear it after the other had already added, both
++    // then wrote the same workload slots (torn workloads, more vertices than
++    // the mesh holds) and the GPU page-faulted (Advanced Warfare).
++    {
++      auto saved_block = builder.GetInsertBlock();
++      auto saved_point = builder.GetInsertPoint();
++      auto &entry = function->getEntryBlock();
++      builder.SetInsertPoint(&entry, entry.getFirstInsertionPt());
++      builder.CreateStore(builder.getInt32(0), workload_count);
++      builder.SetInsertPoint(saved_block, saved_point);
++    }
+ 
+     switch (pHullStage->tessellation_domain) {
+     case microsoft::D3D11_SB_TESSELLATOR_DOMAIN_ISOLINE:
+@@ -681,9 +726,18 @@ convert_dxbc_vertex_hull_shader(
+     }
+     }
+ 
++    builder.CreateBr(workloads_written);
++
++    // Siliconium: every patch's workloads are written before the count is read
++    // (the first patch's thread used to read it while the second was still adding)
++    builder.SetInsertPoint(workloads_written);
++    air.CreateBarrier(llvm::air::MemFlags::Threadgroup);
+     builder.CreateCondBr(
+-        builder.CreateICmp(llvm::CmpInst::ICMP_EQ, patch_offset_in_group, builder.getInt32(0)), dispatch_mesh,
+-        real_return
++        builder.CreateAnd(
++            builder.CreateICmp(llvm::CmpInst::ICMP_EQ, patch_offset_in_group, builder.getInt32(0)),
++            builder.CreateICmp(llvm::CmpInst::ICMP_EQ, resource_map.thread_id_in_patch, builder.getInt32(0))
++        ),
++        dispatch_mesh, real_return
+     );
+ 
+     builder.SetInsertPoint(dispatch_mesh);

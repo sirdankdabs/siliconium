@@ -10,14 +10,16 @@ import UniformTypeIdentifiers
 
 /// The sidebar's tabs and the games in each, in order.
 enum GameTab: String, CaseIterable, Identifiable {
-    case steam, plutonium, bo3, iw4x, others
+    // (the sidebar's order, owner 2026-11-20: Steam, Plutonium, CoD4X, IW4X, BOIII/EZZ, Offline)
+    case steam, plutonium, cod4x, iw4x, bo3, others
     var id: String { rawValue }
     var title: String {
         switch self {
         case .plutonium: "Plutonium"
-        case .bo3: "Black Ops III"
+        case .bo3: "BOIII/EZZ"
+        case .cod4x: "CoD4X"
         case .iw4x: "IW4X"
-        case .others: "Campaigns"
+        case .others: "Offline"
         case .steam: "Steam"
         }
     }
@@ -25,8 +27,11 @@ enum GameTab: String, CaseIterable, Identifiable {
         switch self {
         case .plutonium: [.waw, .bo1, .bo2, .iw5]
         case .bo3: [.boiii, .bo3]
+        case .cod4x: [.cod4x]
         case .iw4x: [.iw4]
-        case .others: [.iw6, .bo2s, .bo2c]
+        // Black Ops II Campaign (Steam), .bo2s, left the sidebar (2026-11-20, owner): the
+        // Steam Library plays Steam's Black Ops II campaign; its code path stays
+        case .others: [.iw6, .bo2c]
         case .steam: [.steam]
         }
     }
@@ -34,7 +39,7 @@ enum GameTab: String, CaseIterable, Identifiable {
 }
 
 enum Game: String, CaseIterable, Identifiable {
-    case waw, bo1, bo2, iw5, iw4, iw6, bo2s, bo2c, bo3, boiii, steam
+    case waw, bo1, bo2, iw5, iw4, iw6, bo2s, bo2c, bo3, boiii, steam, cod4x
     var id: String { rawValue }
 
     var title: String {
@@ -44,12 +49,20 @@ enum Game: String, CaseIterable, Identifiable {
         case .bo2: "Black Ops II"
         case .iw5: "Modern Warfare 3"
         case .iw4: "Modern Warfare 2"
-        case .iw6: "Ghosts Campaign"
+        case .iw6: "Ghosts"
         case .bo2s: "Black Ops II Campaign (Steam)"
-        case .bo2c: "Black Ops II Campaign (Offline)"
+        case .bo2c: "Black Ops II"
         case .bo3: "Black Ops III for Mac"
         case .boiii: "Black Ops III"
         case .steam: "Steam Library"
+        case .cod4x: "Call of Duty 4"
+        }
+    }
+    /// A game option that hurts the game on a Mac (shown on its page)
+    var avoid: String? {
+        switch self {
+        case .bo2, .bo2c: "Keep Depth of Field off in the game's options: on a Mac it makes the game lag badly."
+        default: nil
         }
     }
     /// Release year, shown like an atomic number on the game's tile.
@@ -63,6 +76,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .iw6: "2013"
         case .bo3, .boiii: "2015"
         case .steam: "10"
+        case .cod4x: "2007"
         }
     }
     /// Who runs it, under the code on the game's tile.
@@ -75,6 +89,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .bo3: "Steam"
         case .boiii: "Ezz"
         case .steam: "Steam"
+        case .cod4x: "CoD4X"
         }
     }
     var subtitle: String {
@@ -90,6 +105,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .boiii: "BOIII · Ezz community servers"
         case .waw: "Plutonium · Zombies, Campaign, Multiplayer"
         case .steam: "Steam for Windows · download your Call of Duty games"
+        case .cod4x: "CoD4X · Multiplayer"
         }
     }
     var symbol: String {
@@ -105,6 +121,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .boiii: "3.square.fill"
         case .waw: "4.circle.fill"
         case .steam: "cart.fill"
+        case .cod4x: "scope"
         }
     }
     /// The short engine code shown in the sidebar's game badge.
@@ -118,6 +135,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .iw6: "IW6"
         case .bo3, .boiii: "T7"
         case .steam: "St"
+        case .cod4x: "IW3"
         }
     }
     var colors: [Color] {
@@ -132,6 +150,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .boiii: [Color(red: 0.98, green: 0.52, blue: 0.10), Color(red: 0.35, green: 0.12, blue: 0.03)]
         case .waw: [Color(red: 0.62, green: 0.58, blue: 0.36), Color(red: 0.16, green: 0.15, blue: 0.08)]
         case .steam: [Color(red: 0.16, green: 0.47, blue: 0.80), Color(red: 0.05, green: 0.10, blue: 0.20)]
+        case .cod4x: [Color(red: 0.36, green: 0.50, blue: 0.30), Color(red: 0.08, green: 0.13, blue: 0.07)]
         }
     }
     /// Settings key of the game folder, for the Plutonium games.
@@ -145,10 +164,11 @@ enum Game: String, CaseIterable, Identifiable {
         case .iw6: "IW6_DIR"
         case .bo2c: "BO2C_DIR"
         case .boiii: "BOIII_DIR"
+        case .cod4x: "COD4X_DIR"
         default: nil
         }
     }
-    var usesEngine: Bool { self == .waw || self == .bo1 || self == .bo2 || self == .iw5 || self == .iw4 || self == .iw6 || self == .bo2c || self == .bo2s || self == .boiii || self == .steam }
+    var usesEngine: Bool { self == .waw || self == .bo1 || self == .bo2 || self == .iw5 || self == .iw4 || self == .iw6 || self == .bo2c || self == .bo2s || self == .boiii || self == .steam || self == .cod4x }
     var plutoniumID: String? {
         switch self {
         case .waw: "t4"
@@ -172,6 +192,15 @@ struct SteamTitle: Identifiable {
     var linked: Game? = nil
     /// Steam's own copy can't be used by the linked game (why)
     var note: String? = nil
+    /// A visible button that plays this download with the linked game's client
+    /// (its label), besides the ⋯ menu's "Use this download in…"
+    var linkedButton: String? = nil
+    /// The game has a Steam Workshop (mods and maps)
+    var workshop = false
+    /// Game options that break the game on a Mac (Siliconium turns them off at every start)
+    var avoid: String? = nil
+    /// A known problem on a Mac that Siliconium cannot fix yet (shown under Play)
+    var known: String? = nil
     /// What Play starts (launch.sh steam <id>-<mode>): the part and its executable
     var modes: [Mode] = []
     struct Mode: Identifiable {
@@ -180,6 +209,34 @@ struct SteamTitle: Identifiable {
         let exe: String
         var symbol: String { id == "mp" ? "person.3.fill" : id == "zm" ? "hand.raised.fill" : "figure.walk" }
     }
+    /// Community fixes the player can choose for this game (kit/tools/steam-mods.sh, same ids)
+    var mods: [Mod] = []
+    struct Mod: Identifiable {
+        let id: String       // settings.conf STEAM_MOD_<GAME>=<id>
+        let title: String
+        let parts: String    // what it applies to, as the player sees it
+        let about: String    // the ⓘ text
+        let source: String   // its author's page
+        let license: String
+        var warning: String? = nil
+        /// Not a fix: choosing it opens the linked game's tab (its own client)
+        var opensLinked = false
+    }
+
+    /// Modern Warfare 2 and 3 (Steam's 64-bit campaigns): one fix for both
+    static let iwPad = Mod(id: "iwpad", title: "IW-Pad", parts: "Campaign",
+        about: "Real controller support for the campaign (analog sticks, console aim assist, controller button prompts and menu navigation) in place of Siliconium's keyboard-and-mouse controller mapping; the mouse keeps working. It works only with Steam's current 64-bit game, which it checks. Siliconium downloads it from its GitHub release the first time and takes its files out of the game's folder when the game quits.",
+        source: "https://github.com/GalvarinoDev/IW-Pad", license: "GPL-3.0 (by GalvarinoDev)")
+
+    /// The multiplayer community clients, each in its own tab (as Ezz's BOIII for
+    /// Black Ops III): choosing one opens that tab, which plays this same Steam
+    /// download when it has no game folder of its own
+    static let iw4x = Mod(id: "iw4x", title: "IW4X", parts: "Multiplayer",
+        about: "Not a fix: opens the IW4X tab, the community multiplayer client (dedicated servers, mods, its own server list) that plays this same Steam download when that tab has no game folder of its own. IW4X's launcher adds its own files next to the game's and keeps them up to date: its client, its maps and DLC (about 3 GB), and on the first start a copy of the game's maps converted for its client (about 4 GB, takes a while). Steam's own files are not changed.",
+        source: "https://github.com/iw4x/launcher", license: "GPL-3.0", opensLinked: true)
+    static let cod4x = Mod(id: "cod4x", title: "CoD4X", parts: "Multiplayer",
+        about: "Not a fix: opens the CoD4X tab, the community multiplayer client (its own servers and server list, security and bug fixes, no PunkBuster) that plays this same Steam download when that tab has no game folder of its own. CoD4X needs its own copy of the 1.7 executable and its loader in place of two of the game's files, so it plays from a copy of this download in Siliconium's folder (made with APFS clones: it takes no extra disk space) and Steam's own files are never changed. Siliconium installs it from CoD4X's official releases; it keeps itself up to date.",
+        source: "https://cod4x.ovh", license: "Free (CoD4X team; launcher and loader MIT)", opensLinked: true)
 
     static let catalog: [SteamTitle] = [
         .init(id: "cod1", title: "Call of Duty", year: "2003", badge: "CoD",
@@ -190,29 +247,64 @@ struct SteamTitle: Identifiable {
               modes: [.init(id: "sp", title: "Campaign", exe: "CoD2SP_s.exe"), .init(id: "mp", title: "Multiplayer", exe: "CoD2MP_s.exe")]),
         .init(id: "cod4", title: "Call of Duty 4: Modern Warfare", year: "2007", badge: "IW3",
               colors: [Color(red: 0.36, green: 0.50, blue: 0.30), Color(red: 0.08, green: 0.13, blue: 0.07)],
-              modes: [.init(id: "sp", title: "Campaign", exe: "iw3sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw3mp.exe")]),
+              linked: .cod4x,
+              modes: [.init(id: "sp", title: "Campaign", exe: "iw3sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw3mp.exe")],
+              mods: [.init(id: "iw3spmod", title: "IW3SP-MOD", parts: "Campaign",
+                           about: "The campaign with real controller support (analog sticks, console aim assist, controller button prompts and menus), no frame-rate cap, raw mouse input and many fixes. Siliconium downloads it from its author the first time (about 14 MB), keeps its updater off, and takes its files out of the game's folder when the game quits: the game's own files are never changed.",
+                           source: "https://gitea.com/JerryALT/iw3sp_mod", license: "GPL-3.0 (by JerryALT)"),
+                     cod4x]),
         .init(id: "waw", title: "World at War", year: "2008", badge: "T4",
               colors: Game.waw.colors, linked: .waw,
-              modes: [.init(id: "sp", title: "Campaign & Zombies", exe: "CoDWaW.exe"), .init(id: "mp", title: "Multiplayer", exe: "CoDWaWmp.exe")]),
+              modes: [.init(id: "sp", title: "Campaign & Zombies", exe: "CoDWaW.exe"), .init(id: "mp", title: "Multiplayer", exe: "CoDWaWmp.exe")],
+              mods: [.init(id: "t4me", title: "T4Me", parts: "Campaign & Zombies",
+                           about: "T4M Enhanced: higher engine limits (fewer missing textures and crashes with big maps and mods), an unlocked field of view, controller navigation in menus and gamepad auto-aim, and a HUD-scale fix. Drawing stays on Siliconium's own DXVK and audio on the game's own; it never patches the game's executable. Siliconium downloads it from its GitHub release the first time and takes its files out of the game's folder when the game quits.",
+                           source: "https://github.com/JBShady/T4M-Enhanced", license: "No licence: downloaded from its author, never shipped")]),
         .init(id: "mw2", title: "Modern Warfare 2", year: "2009", badge: "IW4",
               colors: Game.iw4.colors, linked: .iw4,
-              modes: [.init(id: "sp", title: "Campaign", exe: "iw4sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw4mp.exe")]),
+              known: "Known issue: the cutscene videos sometimes show colored blocks for a moment. Gameplay is not affected.",
+              modes: [.init(id: "sp", title: "Campaign", exe: "iw4sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw4mp.exe")],
+              mods: [iwPad, iw4x]),
         .init(id: "bo1", title: "Black Ops", year: "2010", badge: "T5",
               colors: Game.bo1.colors, linked: .bo1,
+              // BO1 Gamepad Plus was tried and taken out (session 11): under Wine
+              // it saw no controller, crashed with the x87 sidecar and left
+              // Zombies on "Connecting..." without it
               modes: [.init(id: "sp", title: "Campaign & Zombies", exe: "BlackOps.exe"), .init(id: "mp", title: "Multiplayer", exe: "BlackOpsMP.exe")]),
         .init(id: "mw3", title: "Modern Warfare 3", year: "2011", badge: "IW5",
               colors: Game.iw5.colors,
               note: "Steam's Modern Warfare 3 is the 64-bit update; Plutonium needs the 32-bit game.",
-              modes: [.init(id: "sp", title: "Campaign", exe: "iw5sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw5mp.exe")]),
+              known: "Known issue: the cutscene videos sometimes show colored blocks for a moment. Gameplay is not affected.",
+              modes: [.init(id: "sp", title: "Campaign", exe: "iw5sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw5mp.exe")],
+              mods: [iwPad]),
         .init(id: "bo2", title: "Black Ops II", year: "2012", badge: "T6",
               colors: Game.bo2.colors, linked: .bo2,
-              modes: [.init(id: "sp", title: "Campaign", exe: "t6sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "t6mp.exe"), .init(id: "zm", title: "Zombies", exe: "t6zm.exe")]),
+              avoid: "Keep Depth of Field off in the game's options: on a Mac it makes the game lag badly.",
+              modes: [.init(id: "sp", title: "Campaign", exe: "t6sp.exe"), .init(id: "mp", title: "Multiplayer", exe: "t6mp.exe"), .init(id: "zm", title: "Zombies", exe: "t6zm.exe")],
+              mods: [.init(id: "t6spmod", title: "T6SP-Mod", parts: "Campaign",
+                           about: "Rattpak's campaign client: a developer console, unlocked settings (a field of view above 90), gamepad aim assist (pc_aim_assist 1) and its own autoexec config. Multiplayer and Zombies are not touched. Siliconium downloads it from its GitHub release the first time and takes its files out of the game's folder when the game quits.",
+                           source: "https://github.com/Rattpak/T6SP-Mod-Release", license: "Closed source: downloaded from its author, never shipped",
+                           warning: "Antivirus tools flag it because it injects a DLL into the game (that is how it works).")]),
         .init(id: "ghosts", title: "Ghosts", year: "2013", badge: "IW6",
               colors: Game.iw6.colors, linked: .iw6,
+              avoid: "Keep Ambient Occlusion (SSAO) and Tessellation off in the game's options: on a Mac they freeze the GPU within minutes. Siliconium turns them off at every start.",
               modes: [.init(id: "sp", title: "Campaign", exe: "iw6sp64_ship.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw6mp64_ship.exe")]),
         .init(id: "aw", title: "Advanced Warfare", year: "2014", badge: "S1",
               colors: [Color(red: 0.85, green: 0.70, blue: 0.25), Color(red: 0.22, green: 0.16, blue: 0.04)],
+              // measured 2026-11-20: ~100 s loading screen after the intro video with warm
+              // caches (the game's own shader preload, one CPU thread); minutes more the first time
+              known: "Entering a mission takes a while: after its intro video the game preloads its shaders (about 1-2 minutes). The first time is longer while Siliconium builds its shader cache; later loads are faster.",
               modes: [.init(id: "sp", title: "Campaign", exe: "s1_sp64_ship.exe"), .init(id: "mp", title: "Multiplayer", exe: "s1_mp64_ship.exe")]),
+        // Black Ops III: one executable for the campaign, Zombies and
+        // Multiplayer (chosen in its own menu); its own setup (launch.sh t7
+        // Steam path: BOIII's settings, display mode and video decoders)
+        .init(id: "bo3", title: "Black Ops III", year: "2015", badge: "T7",
+              colors: Game.boiii.colors, linked: .boiii, linkedButton: "Play with BOIII", workshop: true,
+              modes: [.init(id: "sp", title: "Play", exe: "BlackOps3.exe")],
+              // T7Patch was tried and taken out (session 10): under Wine the game
+              // crashed (+devmap) or hung loading a map with it
+              mods: [.init(id: "boiii", title: "Ezz (BOIII)", parts: "Its own tab",
+                           about: "Not a fix: opens the Black Ops III tab, where Ezz's BOIII client plays this same Steam download.",
+                           source: "https://github.com/Ezz-lol/boiii-free", license: "GPL-3.0", opensLinked: true)]),
     ]
 }
 
@@ -228,6 +320,12 @@ struct GameWindowTarget {
     var startsOutsideScript = false
     var isBOIII = false
     var acceptsFullscreenWindows = false
+    /// Call of Duty / Call of Duty 2 (Steam, campaign and multiplayer): their
+    /// fullscreen window sits at a raised level (21; CoD2 captured: shielding
+    /// level), so it was never seen and Siliconium stayed in front (menu bar
+    /// shown, CoD1's intro played behind it). Such a game is also handed the
+    /// activation explicitly (macOS 14 only lets the active app do it)
+    var acceptsRaisedWindows = false
 
     static func game(_ game: Game, mode: String) -> Self {
         switch game {
@@ -241,6 +339,7 @@ struct GameWindowTarget {
         case .boiii: .init(executable: "boiii.exe", isBOIII: true)
         case .bo3: .init(executable: "codblkops3_exe", startsOutsideScript: true)
         case .steam: .init(executable: "steam.exe", startsOutsideScript: true)
+        case .cod4x: .init(executable: "iw3mp.exe")
         }
     }
 
@@ -257,7 +356,8 @@ struct GameWindowTarget {
             as? [[String: Any]] ?? []
         let visibleWindows = windows.filter { window in
             guard let layer = window[kCGWindowLayer as String] as? Int,
-                  layer == 0 || (acceptsFullscreenWindows && layer >= Int(CGWindowLevelForKey(.mainMenuWindow))),
+                  layer == 0 || (acceptsFullscreenWindows && layer >= Int(CGWindowLevelForKey(.mainMenuWindow))) ||
+                  (acceptsRaisedWindows && layer > 0),
                   let bounds = window[kCGWindowBounds as String] as? [String: CGFloat] else { return false }
             return (bounds["Width"] ?? 0) >= 300 && (bounds["Height"] ?? 0) >= 170
         }
@@ -287,6 +387,9 @@ struct GameWindowTarget {
             guard parts.count == 2, let pid = Int32(parts[0]),
                   let name = parts[1].lowercased().split(whereSeparator: { $0 == "/" || $0 == "\\" }).last else { continue }
             if name == executable || (plutoniumMode != nil && name == "plutonium-launcher-win32.exe") { return pid }
+            // (name is lowercased; Call of Duty's "CoDSP.exe" never matched. Other
+            // mixed-case Steam executables have the same mismatch: not changed untested)
+            if acceptsRaisedWindows && name == executable.lowercased() { return pid }
             if isBOIII && (name == "blackops3.exe" || (name.hasPrefix("boiii-") && name.hasSuffix(".exe"))) {
                 return pid
             }
@@ -326,6 +429,7 @@ extension Game {
                     PlayMode(id: "zombies", title: "Zombies", symbol: "figure.walk")]
         case .iw5: [PlayMode(id: "mp", title: "Multiplayer", symbol: "person.3.fill")]
         case .iw4: [PlayMode(id: "play", title: "Play IW4X", symbol: "play.fill")]
+        case .cod4x: [PlayMode(id: "play", title: "Play CoD4X", symbol: "play.fill")]
         case .iw6, .bo2c, .bo2s: [PlayMode(id: "play", title: "Play Campaign", symbol: "flag.fill")]
         case .boiii: [PlayMode(id: "launcher", title: "Open BOIII", symbol: "play.fill")]
         default: []
@@ -582,6 +686,7 @@ final class AppState: ObservableObject {
         }
     }
     @Published var errorLog: String?          // a file under Paths.home the last error named
+    @Published var whatsNew: String?          // this version's release notes, once after an update
     @Published var bo3Latest: String?
     @Published var bo3: [String: String] = [:]   // bo3.sh status: game, state, installed
     @Published var zd: [String: String] = [:]    // zombies-declassified.sh status: installed, latest
@@ -724,6 +829,11 @@ final class AppState: ObservableObject {
             guard has("BlackOps3.exe") else {
                 return "That is not a Windows Black Ops III folder: BlackOps3.exe is missing."
             }
+        case .cod4x:
+            // CoD4X brings its own iw3mp.exe (1.7) but needs the game's data
+            guard has("iw3mp.exe"), has("main"), has("zone") else {
+                return "That is not a Windows Call of Duty 4 folder: choose the one with iw3mp.exe, main/ and zone/."
+            }
         case .bo2s, .bo3, .steam:
             return nil
         }
@@ -797,6 +907,7 @@ final class AppState: ObservableObject {
         case .iw6: "Choose the Ghosts folder containing iw6sp64_ship.exe, zone/prologue.ff, bink2w64.dll and steam_api64.dll."
         case .bo2c: "Your Black Ops II folder, with t6sp.exe and zone/ inside (it can be anywhere: copied from a PC, an external drive, the Mac Steam app's folder…)."
         case .boiii: "The Windows game's folder, with BlackOps3.exe and zone/ inside."
+        case .cod4x: "Choose the Call of Duty 4 folder (Windows game files, with iw3mp.exe, main/ and zone/). Siliconium installs CoD4X, which then keeps itself up to date. Steam's own download is never changed: CoD4X plays from its own copy of it."
         default: ""
         }
     }
@@ -949,7 +1060,8 @@ final class AppState: ObservableObject {
         }
         running = .steam
         runScript("launch.sh", ["steam", "\(title.id)-\(mode.id)"], title: "Loading…",
-                  gameWindow: .init(executable: mode.exe, acceptsFullscreenWindows: title.id == "ghosts" || title.id == "aw")) { [weak self] in
+                  gameWindow: .init(executable: mode.exe, acceptsFullscreenWindows: title.id == "ghosts" || title.id == "aw",
+                                    acceptsRaisedWindows: title.id == "cod1" || title.id == "cod2")) { [weak self] in
             self?.running = nil
         }
     }
@@ -959,6 +1071,49 @@ final class AppState: ObservableObject {
         }
     }
     func openSteamStore(_ id: String) { runScript("steam.sh", ["store", id], title: nil) }
+    func openSteamWorkshop(_ id: String) { runScript("steam.sh", ["workshop", id], title: nil) }
+    /// The linked game's tab, with Steam's download as its folder when it has
+    /// no usable folder of its own (a folder the player chose is kept: BOIII
+    /// keeps its stats there)
+    func openInLinkedGame(_ game: Game, _ steamFolder: String) {
+        if let key = game.folderKey, let current = settings[key], !current.isEmpty,
+           gameFolderProblem(game, URL(fileURLWithPath: current)) == nil {
+            goTo = game
+            return
+        }
+        useSteamFolder(game, steamFolder)
+    }
+    /// Games downloaded in the Steam Library that a client tab plays: BOIII
+    /// (Black Ops III), IW4X (Modern Warfare 2's multiplayer) and CoD4X (Call of
+    /// Duty 4) use that folder when they have none they can use, so the same
+    /// download plays from Steam or with the community client; a folder the
+    /// player chose stays
+    func detectSteamDownloads() {
+        detectSteamFolder("311210", for: .boiii)
+        detectSteamFolder("10190", for: .iw4)
+        detectSteamFolder("7940", for: .cod4x)
+    }
+    func detectSteamFolder(_ app: String, for game: Game) {
+        guard let key = game.folderKey else { return }
+        Task.detached {
+            let state = Self.capture("steam.sh", ["state", app]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let dir = Self.capture("steam.sh", ["gamedir", app]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard state == "installed", !dir.isEmpty else { return }
+            await MainActor.run {
+                if let current = self.settings[key], !current.isEmpty,
+                   self.gameFolderProblem(game, URL(fileURLWithPath: current)) == nil { return }
+                guard self.gameFolderProblem(game, URL(fileURLWithPath: dir)) == nil else { return }
+                self.settings[key] = dir
+                self.settings.save()
+                self.refreshToken += 1
+            }
+        }
+    }
+    /// The game's folder is a download of the Steam Library (found there on its
+    /// own or chosen from it)
+    func folderIsSteamLibrary(_ game: Game) -> Bool {
+        folder(for: game)?.path.contains("/prefix-steam/drive_c/Program Files (x86)/Steam/steamapps/common/") == true
+    }
     /// Points a Siliconium game (Plutonium, IW4X, Ghosts) at Steam's download of it.
     func useSteamFolder(_ game: Game, _ path: String) {
         guard let key = game.folderKey, !path.isEmpty else { return }
@@ -1007,6 +1162,8 @@ final class AppState: ObservableObject {
         case .iw6: engineInstalled && iw6PrefixReady && folderUsable(for: .iw6)
         // boiii.exe is downloaded by launch.sh when Play finds none
         case .boiii: engineInstalled && prefixReady && folderUsable(for: .boiii)
+        // CoD4X runs in Steam's prefix (launch.sh makes it when missing, without Steam)
+        case .cod4x: engineInstalled && folderUsable(for: .cod4x)
         case .bo2c: engineInstalled && folderUsable(for: .bo2c) && campaign["ready"] == "yes"
         case .bo2s: engineInstalled && steamCampaign["steam"] == "installed" && steamCampaign["game"] == "installed"
         case .bo3: bo3Installed
@@ -1034,6 +1191,7 @@ final class AppState: ObservableObject {
             panel.directoryURL = folder(for: game) ?? downloads
         case .bo2c: panel.message = "Choose the Black Ops II campaign folder: t6sp.exe and zone/."
         case .boiii: panel.message = "Choose the Windows Black Ops III folder: BlackOps3.exe and zone/."
+        case .cod4x: panel.message = "Choose the Call of Duty 4 folder with iw3mp.exe, main/ and zone/ (Siliconium installs CoD4X)."
         default: panel.message = "Choose the \(game.title) game folder."
         }
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -1129,6 +1287,7 @@ final class AppState: ObservableObject {
     func removeSetup(_ what: String) {
         let titles = ["waw": "Removing the World at War setup", "bo1": "Removing the Black Ops setup", "bo2": "Removing the Black Ops II setup",
                       "iw5": "Removing the Modern Warfare 3 setup", "iw4": "Removing the Modern Warfare 2 setup",
+                      "cod4x": "Removing the CoD4X setup",
                       "all": "Removing the engine and Plutonium", "bo3": "Removing BO3 Mac Client",
                       "bo2c": "Removing the campaign setup", "bo2s": "Removing Steam and its campaign",
                       "iw6": "Removing the Ghosts campaign setup"]
@@ -1140,6 +1299,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// The community fix chosen for a Steam game (nil: none, the game as it is)
+    func steamMod(_ title: SteamTitle) -> SteamTitle.Mod? {
+        let id = settings["STEAM_MOD_\(title.id.uppercased())"]
+        return title.mods.first { $0.id == id && !$0.opensLinked }
+    }
+    func setSteamMod(_ title: SteamTitle, _ mod: SteamTitle.Mod?) {
+        settings["STEAM_MOD_\(title.id.uppercased())"] = mod?.id
+        settings.save()
+    }
+
     /// BO3MacFix's ranked spoofing: opt-in (see BO3View for the risks).
     var bo3SpoofRanked: Bool { settings["BO3_SPOOF_RANKED"] == "1" }
     func setBO3SpoofRanked(_ on: Bool) {
@@ -1149,6 +1318,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshBO3() {
+        detectSteamDownloads()
         Task.detached {
             var d: [String: String] = [:]
             for line in Self.capture("bo3.sh", ["status"]).split(separator: "\n") {
@@ -1231,6 +1401,40 @@ final class AppState: ObservableObject {
 
     nonisolated static let repository = "sirdankdabs/siliconium"
     var appVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0" }
+
+    /// "What's new": this version's notes (its CHANGELOG section, bundled by
+    /// build-app.sh) once, at the first start after an update. Siliconium 1.0.0
+    /// did not record its version: with no record, an existing settings file
+    /// means Siliconium ran here before (an update), none a new install.
+    func showWhatsNewAfterUpdate() {
+        let key = "lastRunVersion", defaults = UserDefaults.standard
+        let last = defaults.string(forKey: key)
+        defaults.set(appVersion, forKey: key)
+        let updated = last.map { Self.isNewer(appVersion, than: $0) }
+            ?? FileManager.default.fileExists(atPath: Paths.settings.path)
+        if updated, let notes = Self.releaseNotes(for: appVersion) { whatsNew = notes }
+    }
+
+    /// The CHANGELOG section "## <version> …" up to its "**Details**" line
+    nonisolated static func releaseNotes(for version: String) -> String? {
+        guard let url = Bundle.main.url(forResource: "CHANGELOG", withExtension: "md"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var lines: [String] = [], inside = false
+        for line in text.components(separatedBy: "\n") {
+            if line.hasPrefix("## ") {
+                if inside { break }
+                let heading = String(line.dropFirst(3))
+                inside = heading == version || heading.hasPrefix(version + " ")
+                continue
+            }
+            if inside {
+                if line.hasPrefix("**Details**") { break }
+                lines.append(line)
+            }
+        }
+        let notes = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return notes.isEmpty ? nil : notes
+    }
     var kitVersion: String? {
         (try? String(contentsOf: Paths.kit.appendingPathComponent("VERSION"), encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1541,6 +1745,16 @@ final class AppState: ObservableObject {
                    process.isRunning || (target.startsOutsideScript && process.terminationStatus == 0) {
                     self?.progress = nil
                     self?.mainWindow()?.orderOut(nil)
+                    if target.acceptsRaisedWindows, let game = NSRunningApplication(processIdentifier: pid) {
+                        // hand the activation to the game before hiding (macOS 14+:
+                        // Wine's own request is ignored while another app is active)
+                        if #available(macOS 14.0, *) {
+                            NSApp.yieldActivation(to: game)
+                            game.activate(from: NSRunningApplication.current, options: [])
+                        } else {
+                            game.activate(options: [.activateIgnoringOtherApps])
+                        }
+                    }
                     NSApp.hide(nil)
                     if target.startsOutsideScript {
                         while !Task.isCancelled && kill(pid, 0) == 0 {

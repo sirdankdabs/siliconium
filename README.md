@@ -5,7 +5,7 @@
 <h1 align="center">Siliconium</h1>
 
 <p align="center">
-  <b>The classic Call of Duty games on Apple silicon, in one app.</b><br>
+  <b>Call of Duty on Apple silicon, in one app.</b><br>
   World at War · Black Ops · Black Ops II · Black Ops III · Modern Warfare 2 · Modern Warfare 3 · Ghosts
 </p>
 
@@ -50,6 +50,10 @@ Choose your game folder, press **Install**, press **Play**. Siliconium brings it
 | **IW6** | Ghosts | Offline | Campaign | 140-160 FPS |
 
 Measured in game with the display at 160 Hz. Your numbers depend on your Mac and settings.
+
+**New in 1.1.0**
+- **Steam Library:** play the Steam versions of Call of Duty, Call of Duty 2, Call of Duty 4, World at War, Modern Warfare 2, Black Ops, Modern Warfare 3, Black Ops II, Ghosts, Advanced Warfare and Black Ops III from Steam's own files, with Siliconium's setup. What is verified per game: [COMPATIBILITY.md](COMPATIBILITY.md).
+- **CoD4X:** Call of Duty 4 multiplayer through the CoD4X client, from your Steam download (Steam's files are never changed).
 
 > **Optional: Black Ops III for Mac.** Siliconium can also run the Mac version of Black Ops III from Steam on the community servers (BO3 Mac Client with BO3MacFix). It is hidden by default because Ezz is the recommended way to play. Turn it on in **View → Show Black Ops III for Mac (Steam)**.
 
@@ -126,6 +130,7 @@ bo3/      BO3 Mac Client and BO3MacFix sources (optional Black Ops III for Mac)
 - **Sikarugir** (Gcenx and contributors): the engine's x86_64 libraries.
 - **athei**: [x87sidecar](https://github.com/athei/x87sidecar). **Lifeisawful**: [rosettax87](https://github.com/Lifeisawful/rosettax87).
 - **DXVK** (Philip Rebohle and contributors), **Sporif** (dxvk-async), **3Shain**: [DXMT](https://github.com/3Shain/dxmt). **Khronos**: MoltenVK.
+- **SciTech Software** (GLDirect, original author Keith Harrison), **MrRendroc** ([GLDirect 5](https://github.com/MrRendroc/gldirect)) and **Brian Paul** (Mesa 6.0): Call of Duty's OpenGL on Direct3D 9 (MIT; notices in `kit/payload/steam/cod1-gl/LICENSE.txt`).
 - **BO3MacFix** by Emma / InvoxiPlayGames and Anthony / serious, with **T7Patch** work by its authors.
 - **atom0s**: [Steamless](https://github.com/atom0s/Steamless) (CC BY-NC-ND 4.0).
 - **Logo-2K**: [Zombies Declassified](https://github.com/Logo-2K/zombies-declassified).

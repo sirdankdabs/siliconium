@@ -1,0 +1,90 @@
+SIL_REAPPLY_GAMMA=1: winemac applies the program's last SetDeviceGammaRamp again when the app
+becomes active / recaptures the displays (Call of Duty came back at half brightness after Cmd+Tab).
+Apply after the other winemac patches.
+
+--- a/dlls/winemac.drv/display.c	2026-11-20 20:10:00
++++ b/dlls/winemac.drv/display.c	2026-11-20 20:10:26
+@@ -1018,6 +1018,35 @@
+ done:
+     free(red);
+     return ret;
++}
++
++/* SIL_REAPPLY_GAMMA=1: the ramp the program set last is applied again when it
++   becomes active. Wine releases the displays when a fullscreen program loses
++   focus, and macOS then restores its own gamma; the program does not set its
++   ramp again when it comes back (on Windows the ramp stays), so Call of Duty
++   (its overbright lighting doubles the picture through the ramp) came back at
++   half brightness. */
++static pthread_mutex_t saved_gamma_lock = PTHREAD_MUTEX_INITIALIZER;
++static CGGammaValue saved_gamma[3 * 256];
++static int saved_gamma_entries;
++
++void macdrv_reapply_gamma(void)
++{
++    static int enabled = -1;
++
++    if (enabled < 0)
++    {
++        const char *value = getenv("SIL_REAPPLY_GAMMA");
++        enabled = value && atoi(value) > 0;
++    }
++    if (!enabled) return;
++
++    pthread_mutex_lock(&saved_gamma_lock);
++    if (saved_gamma_entries)
++        CGSetDisplayTransferByTable(CGMainDisplayID(), saved_gamma_entries, saved_gamma,
++                                    saved_gamma + saved_gamma_entries,
++                                    saved_gamma + 2 * saved_gamma_entries);
++    pthread_mutex_unlock(&saved_gamma_lock);
+ }
+ 
+ /***********************************************************************
+@@ -1056,6 +1085,15 @@
+     err = CGSetDisplayTransferByTable(CGMainDisplayID(), win_entries, red, green, blue);
+     if (err != kCGErrorSuccess)
+         WARN("failed to set display gamma table: %d\n", err);
++    else if (win_entries <= 256)
++    {
++        pthread_mutex_lock(&saved_gamma_lock);
++        memcpy(saved_gamma, red, win_entries * sizeof(red[0]));
++        memcpy(saved_gamma + win_entries, green, win_entries * sizeof(red[0]));
++        memcpy(saved_gamma + 2 * win_entries, blue, win_entries * sizeof(red[0]));
++        saved_gamma_entries = win_entries;
++        pthread_mutex_unlock(&saved_gamma_lock);
++    }
+ 
+ done:
+     free(red);
+--- a/dlls/winemac.drv/cocoa_app.m	2026-11-20 20:10:00
++++ b/dlls/winemac.drv/cocoa_app.m	2026-11-20 20:10:26
+@@ -889,7 +889,11 @@
+             if (anyFullscreen)
+             {
+                 if ([self areDisplaysCaptured] || CGCaptureAllDisplays() == CGDisplayNoErr)
++                {
++                    if (!displaysCapturedForFullscreen)
++                        macdrv_reapply_gamma();
+                     displaysCapturedForFullscreen = TRUE;
++                }
+             }
+             else if (displaysCapturedForFullscreen)
+             {
+@@ -2654,6 +2658,7 @@
+         forceNextMouseMoveAbsolute = TRUE;
+ 
+         update_game_presentation();
++        macdrv_reapply_gamma();
+     }
+ 
+     - (void)applicationDidChangeScreenParameters:(NSNotification *)notification
+--- a/dlls/winemac.drv/macdrv_cocoa.h	2026-11-20 20:10:00
++++ b/dlls/winemac.drv/macdrv_cocoa.h	2026-11-20 20:10:26
+@@ -139,6 +139,7 @@
+ extern bool right_command_is_ctrl;
+ extern bool allow_immovable_windows;
+ extern bool use_confinement_cursor_clipping;
++extern void macdrv_reapply_gamma(void);
+ extern bool cursor_clipping_locks_windows;
+ extern bool use_precise_scrolling;
+ extern int gl_surface_mode;

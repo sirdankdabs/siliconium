@@ -1,0 +1,5 @@
+# T7Patch v3.09 (Scroptss, github.com/Scroptss/T7Patch; no licence: downloaded, never shipped)
+# zip https://github.com/Scroptss/T7Patch/releases/download/v3.09/Linux.Steamdeck.and.Manual.Windows.Install.v3.09.zip sha256 2ba9a3ad6e491f991561dae411522cfdb20111a639317669a5810675982409cf; files in its linux/ folder
+fe05893af78173bdae36bd8202f8e69739d7c1d16c562941eef25a0b5e7c57d2 616960 dsound.dll
+4af81afd6a56a687b98347fdcfeb1e89757539a6e76cb05601a74beb505f6a3d 230912 t7patch.dll
+17614526688ee9d8c85fe89ade78700687ef19d04885dfc133e7ba587fdda811 136192 t7patchloader.dll

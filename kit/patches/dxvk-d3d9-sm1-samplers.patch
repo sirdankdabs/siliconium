@@ -1,0 +1,144 @@
+Shader model 1 samplers (implicit type, e.g. Call of Duty 2 menus): own bindings for the
+3D, cube and cube depth-compare variants, which Metal cannot alias with the 2D ones
+(MSL "undeclared identifier s0_3dSmplr/s0_cubeSmplr/s0_cube_shadowSmplr").
+Apply after dxvk-d3d9.patch. Base: CrossOver 26.3 sources/dxvk + Gcenx 9c00fdf9
+src/dxvk/dxvk_pipecompiler.{cpp,h}; build: CXXFLAGS="-include cstdint" meson setup
+build32 --cross-file build-win32.txt --buildtype release (no b_ndebug), ninja
+src/d3d9/d3d9.dll, i686-w64-mingw32-strip, "Wine builtin DLL\0" at offset 64.
+
+diff --git a/src/d3d9/d3d9_device.cpp b/src/d3d9/d3d9_device.cpp
+index 7efd3f4..2c9b0c2 100644
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -6001,12 +6001,16 @@ namespace dxvk {
+     EmitCs([this,
+       cSlot      = slot,
+       cDepthSlot = depthSlot,
++      cVariantSlot   = computeVariantSlotId(samplerInfo.first, samplerInfo.second, 0),
++      cVariantStride = caps::MaxTexturesVS + caps::MaxTexturesPS,
+       cKey       = key
+     ] (DxvkContext* ctx) {
+       auto pair = m_samplers.find(cKey);
+       if (pair != m_samplers.end()) {
+         ctx->bindResourceSampler(cSlot, pair->second);
+         ctx->bindResourceSampler(cDepthSlot, pair->second);
++        for (uint32_t v = 0; v < SamplerVariantSlotCount; v++)
++          ctx->bindResourceSampler(cVariantSlot + v * cVariantStride, pair->second);
+         return;
+       }
+ 
+@@ -6048,6 +6052,8 @@ namespace dxvk {
+ 
+         m_samplers.insert(std::make_pair(cKey, sampler));
+         ctx->bindResourceSampler(cDepthSlot, sampler);
++        for (uint32_t v = 0; v < SamplerVariantSlotCount; v++)
++          ctx->bindResourceSampler(cVariantSlot + v * cVariantStride, sampler);
+         ctx->bindResourceSampler(cSlot, std::move(sampler));
+ 
+         m_samplerCount++;
+@@ -6074,9 +6080,12 @@ namespace dxvk {
+     EmitCs([
+       cSlot      = slot,
+       cDepthSlot = computeDepthSlotId(shaderSampler.first, uint32_t(shaderSampler.second)),
++      cVariantSlot = computeVariantSlotId(shaderSampler.first, uint32_t(shaderSampler.second), 0),
+       cImageView = commonTex->GetSampleView(srgb)
+     ](DxvkContext* ctx) {
+       ctx->bindResourceView(cDepthSlot, cImageView, nullptr);
++      for (uint32_t v = 0; v < SamplerVariantSlotCount; v++)
++        ctx->bindResourceView(cVariantSlot + v * (caps::MaxTexturesVS + caps::MaxTexturesPS), cImageView, nullptr);
+       ctx->bindResourceView(cSlot, cImageView, nullptr);
+     });
+   }
+@@ -6094,6 +6103,8 @@ namespace dxvk {
+ 
+         ctx->bindResourceView(slot, nullptr, nullptr);
+         ctx->bindResourceView(computeDepthSlotId(shaderSampler.first, uint32_t(shaderSampler.second)), nullptr, nullptr);
++        for (uint32_t v = 0; v < SamplerVariantSlotCount; v++)
++          ctx->bindResourceView(computeVariantSlotId(shaderSampler.first, uint32_t(shaderSampler.second), v), nullptr, nullptr);
+       }
+     });
+   }
+@@ -7353,6 +7364,8 @@ namespace dxvk {
+         uint32_t slot = computeResourceSlotId(samplerInfo.first, DxsoBindingType::Image, uint32_t(samplerInfo.second));
+         ctx->bindResourceView(slot, nullptr, nullptr);
+         ctx->bindResourceView(computeDepthSlotId(samplerInfo.first, uint32_t(samplerInfo.second)), nullptr, nullptr);
++        for (uint32_t v = 0; v < SamplerVariantSlotCount; v++)
++          ctx->bindResourceView(computeVariantSlotId(samplerInfo.first, uint32_t(samplerInfo.second), v), nullptr, nullptr);
+       }
+     });
+ 
+diff --git a/src/dxso/dxso_compiler.cpp b/src/dxso/dxso_compiler.cpp
+index 4b1dbd4..f3d5d2c 100644
+--- a/src/dxso/dxso_compiler.cpp
++++ b/src/dxso/dxso_compiler.cpp
+@@ -839,10 +839,19 @@ namespace dxvk {
+       for (uint32_t i = 0; i < SamplerTypeCount; i++) {
+         auto samplerType = static_cast<DxsoSamplerType>(i);
+ 
+-        DclSampler(idx, binding, samplerType, false, implicit);
++        // one binding per variant (see computeVariantSlotId)
++        DclSampler(idx, samplerType == SamplerTypeTexture3D
++            ? computeVariantSlotId(m_programInfo.type(), idx, 0)
++            : samplerType == SamplerTypeTextureCube
++            ? computeVariantSlotId(m_programInfo.type(), idx, 1)
++            : binding,
++          samplerType, false, implicit);
+ 
+         if (samplerType != SamplerTypeTexture3D)
+-          DclSampler(idx, depthBinding, samplerType, true, implicit);
++          DclSampler(idx, samplerType == SamplerTypeTextureCube
++              ? computeVariantSlotId(m_programInfo.type(), idx, 2)
++              : depthBinding,
++            samplerType, true, implicit);
+       }
+     }
+ 
+@@ -867,6 +876,19 @@ namespace dxvk {
+       depthResource.slot = depthBinding;
+       m_resourceSlots.push_back(depthResource);
+     }
++
++    // and the 3D, cube and cube depth-compare variants' own slots
++    if (implicit) {
++      static const VkImageViewType variantViews[SamplerVariantSlotCount] = {
++        VK_IMAGE_VIEW_TYPE_3D, VK_IMAGE_VIEW_TYPE_CUBE, VK_IMAGE_VIEW_TYPE_CUBE };
++
++      for (uint32_t v = 0; v < SamplerVariantSlotCount; v++) {
++        DxvkResourceSlot variantResource = resource;
++        variantResource.slot = computeVariantSlotId(m_programInfo.type(), idx, v);
++        variantResource.view = variantViews[v];
++        m_resourceSlots.push_back(variantResource);
++      }
++    }
+   }
+ 
+ 
+diff --git a/src/dxso/dxso_util.h b/src/dxso/dxso_util.h
+index 097df3f..23db259 100644
+--- a/src/dxso/dxso_util.h
++++ b/src/dxso/dxso_util.h
+@@ -66,6 +66,23 @@ namespace dxvk {
+       + (shaderStage == DxsoProgramType::PixelShader ? caps::MaxTexturesVS : 0);
+   }
+ 
++  // Shaders that do not declare their samplers' types (shader model 1, e.g.
++  // Call of Duty 2's menus) get every variant of each sampler and pick one
++  // with a spec constant. The 3D, cube and cube depth-compare variants shared
++  // the colour and depth bindings, which Metal cannot place either ("undeclared
++  // identifier s0_3dSmplr"): they get their own bindings too, after the depth
++  // ones. The device binds the same image and sampler to all of them; a view
++  // of another type gets DXVK's dummy image, which the shader never samples.
++  constexpr uint32_t SamplerVariantSlotCount = 3;
++
++  constexpr uint32_t computeVariantSlotId(
++        DxsoProgramType shaderStage,
++        uint32_t        bindingIndex,
++        uint32_t        variant) { // 0: 3D, 1: cube, 2: cube depth-compare
++    return computeDepthSlotId(shaderStage, bindingIndex)
++      + (variant + 1) * (caps::MaxTexturesVS + caps::MaxTexturesPS);
++  }
++
+   uint32_t RegisterLinkerSlot(DxsoSemantic semantic);
+ 
+ }
+\ No newline at end of file

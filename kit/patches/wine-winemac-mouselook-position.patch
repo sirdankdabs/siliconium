@@ -1,0 +1,69 @@
+Mouse look (WINE_MAC_MOUSELOOK=2): keep Wine's cursor position while the Mac cursor
+is detached. Apply after wine-winemac-mouselook.patch (and the other winemac patches).
+
+--- a/dlls/winemac.drv/cocoa_app.m	2026-11-19 14:16:02
++++ b/dlls/winemac.drv/cocoa_app.m	2026-11-19 14:16:02
+@@ -1351,6 +1351,28 @@
+         return enabled;
+     }
+ 
++    /* WINE_MAC_MOUSELOOK=2: mouse look, and while it is on Wine's own cursor
++       position is the cursor position. Wine asks the driver for the position
++       when it has not changed for 100 ms; the detached Mac cursor stays where
++       the first warp put it (the centre), so in menus drawn by the game
++       (Modern Warfare 2 and 3 on Steam) the pointer jumped to the centre
++       whenever the mouse stopped. Other values keep the behaviour as it was. */
++    static BOOL mouselook_keeps_position(void)
++    {
++        static int keep = -1;
++        if (keep < 0)
++        {
++            const char *v = getenv("WINE_MAC_MOUSELOOK");
++            keep = v && v[0] == '2';
++        }
++        return keep;
++    }
++
++    - (BOOL) mouseLookKeepsPosition
++    {
++        return mouseLook && mouselook_keeps_position();
++    }
++
+     - (void) endMouseLook
+     {
+         if (mouseLook)
+@@ -2970,13 +2992,22 @@
+  */
+ int macdrv_get_cursor_position(CGPoint *pos)
+ {
++    __block int ret = TRUE;
++
+     OnMainThread(^{
++        WineApplicationController* controller = [WineApplicationController sharedController];
++        /* 2: keep Wine's position (mouse look, see mouselook_keeps_position) */
++        if ([controller mouseLookKeepsPosition])
++        {
++            ret = 2;
++            return;
++        }
+         NSPoint location = [NSEvent mouseLocation];
+-        location = [[WineApplicationController sharedController] flippedMouseLocation:location];
++        location = [controller flippedMouseLocation:location];
+         *pos = cgpoint_win_from_mac(NSPointToCGPoint(location));
+     });
+ 
+-    return TRUE;
++    return ret;
+ }
+ 
+ /***********************************************************************
+--- a/dlls/winemac.drv/mouse.c	2026-11-19 14:16:02
++++ b/dlls/winemac.drv/mouse.c	2026-11-19 14:16:02
+@@ -692,6 +692,7 @@
+     BOOL ret;
+ 
+     ret = macdrv_get_cursor_position(&pt);
++    if (ret == 2) return TRUE;  /* mouse look: the server position stays */
+     if (ret)
+     {
+         TRACE("pointer at (%g,%g) server pos %d,%d\n", pt.x, pt.y, pos->x, pos->y);

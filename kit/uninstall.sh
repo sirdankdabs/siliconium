@@ -8,6 +8,8 @@
 #   uninstall.sh bo2    forget the Black Ops II folder
 #   uninstall.sh iw5    forget the Modern Warfare 3 folder
 #   uninstall.sh iw4    forget the Modern Warfare 2 (IW4X) folder
+#   uninstall.sh cod4x  forget the Call of Duty 4 (CoD4X) folder; CoD4X's copy of
+#                       a Steam download goes to the Trash
 #   uninstall.sh iw6    forget the Ghosts folder and trash its campaign prefix
 #   uninstall.sh boiii  forget the Black Ops III (Windows) folder
 #   uninstall.sh bo2s   Black Ops II campaign through Steam: Steam's prefix
@@ -112,6 +114,15 @@ iw4)
   step "Removing the Modern Warfare 2 setup"
   forget IW4_DIR
   step "Modern Warfare 2 can be set up again"
+  ;;
+cod4x)
+  stop_games
+  step "Removing the CoD4X setup"
+  forget COD4X_DIR
+  # CoD4X's copy of Steam's Call of Duty 4 (APFS clones, made again by Play);
+  # CoD4X's profiles and identity stay in Steam's prefix (AppData\Local\CallofDuty4MW)
+  trash "$home/cod4x"
+  step "CoD4X can be set up again"
   ;;
 iw6)
   [ ! -d "$home/prefix-iw6" ] ||

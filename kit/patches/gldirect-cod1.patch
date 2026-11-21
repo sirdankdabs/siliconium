@@ -1,0 +1,1598 @@
+GLDirect 5 (github.com/MrRendroc/gldirect, commit 69ed709; SciTech Software's
+GLDirect, MIT, with Mesa 6.0, MIT) as Siliconium builds it for Call of Duty
+(Steam): kit/payload/steam/cod1-gl/opengl32.dll, OpenGL 1.x on Direct3D 9,
+which DXVK then runs on Vulkan/Metal.
+
+- mingw-w64 port: include paths with forward slashes, SEH compatibility and
+  static declarations (src/mingw_compat.h, forced in with -include).
+- Mesa extension strings and S3TC (DXT1/3/5 compressed textures) in the driver:
+  Call of Duty needs them to draw its world.
+- Compiled-effect cache through d3dcompiler_43 (Wine's D3DX effect compiler
+  lacks fx_2_0 in D3DCompile), effects compiled on a worker thread, fewer effect
+  variants (disabled texture units and lights out of the key, sampler states set
+  on the device), effect table bound (a full table crashed).
+- Direct glDrawElements path, lit-without-lights HLSL fix, intro movies visible
+  on non-4:3 displays.
+- src/gld_prof.c: optional sampling profiler (off unless GLD_PROFILE is set).
+
+Build: see TESTING.md ("GLDirect"). Apply with `git apply` on 69ed709.
+
+diff --git a/mesa/include/GL/wmesa.h b/mesa/include/GL/wmesa.h
+index dc1ec89..f94c952 100644
+--- a/mesa/include/GL/wmesa.h
++++ b/mesa/include/GL/wmesa.h
+@@ -50,7 +50,7 @@ extern "C" {
+ #endif
+ 
+ 
+-#include "gl\gl.h"
++#include "gl/gl.h"
+ 
+ #pragma warning (disable:4273)
+ #pragma warning( disable : 4244 ) /* '=' : conversion from 'const double ' to 'float ', possible loss of data */
+diff --git a/src/dx9/gld5_driver.c b/src/dx9/gld5_driver.c
+index a6eb8e8..c664c15 100644
+--- a/src/dx9/gld5_driver.c
++++ b/src/dx9/gld5_driver.c
+@@ -342,6 +342,9 @@ void gld_Clear_DX9(
+ //      gldLogPrintf(GLDLOG_INFO, "Rect %d,%d %d,%d", x,y,width,height);
+     }
+ 
++    { extern int gldTraceThisFrame;
++      if (gldTraceThisFrame) gldLogPrintf(GLDLOG_SYSTEM, "FR clear flags=%lx all=%d %d,%d %dx%d col=%08lx cmask=%08x",
++          dwFlags, all, x, y, width, height, (unsigned long)Color, *colorMask); }
+     // dwFlags will be zero if there's nothing to clear
+     if (dwFlags) {
+         _GLD_DX9_DEV(Clear(
+@@ -760,6 +763,14 @@ void gld_NEW_SCISSOR(
+         rcRect.right    = ctx->Scissor.X + ctx->Scissor.Width; // + 1;
+         rcRect.top      = gldCtx->dwHeight - (ctx->Scissor.Y + ctx->Scissor.Height);
+         rcRect.bottom   = rcRect.top + ctx->Scissor.Height;
++        if (gldTraceVpOn()) {
++            static LONG ll = -99999, lt, lr, lb;
++            if (rcRect.left != ll || rcRect.top != lt || rcRect.right != lr || rcRect.bottom != lb) {
++                gldLogPrintf(GLDLOG_SYSTEM, "SC l=%ld t=%ld r=%ld b=%ld (gl %d,%d %dx%d)", rcRect.left, rcRect.top, rcRect.right, rcRect.bottom,
++                    ctx->Scissor.X, ctx->Scissor.Y, ctx->Scissor.Width, ctx->Scissor.Height);
++                ll = rcRect.left; lt = rcRect.top; lr = rcRect.right; lb = rcRect.bottom;
++            }
++        }
+         IDirect3DDevice9_SetScissorRect(gld->pDev, &rcRect);
+     }
+ 
+@@ -909,9 +920,14 @@ void gld_Viewport_DX9(
+     if (!gld || !gld->pDev)
+         return;
+ 
+-#if 0
+-    gldLogPrintf(GLDLOG_SYSTEM, ">> Viewport x=%d y=%d w=%d h=%d", x,y,w,h);
+-#endif
++    // Siliconium diagnostics: GLD_TRACE_VP=1 logs every viewport change
++    if (gldTraceVpOn()) {
++        static GLint lx = -99999, ly, lw, lh;
++        if (x != lx || y != ly || w != lw || h != lh) {
++            gldLogPrintf(GLDLOG_SYSTEM, "VP x=%d y=%d w=%d h=%d (surface %lux%lu)", x, y, w, h, gldCtx->dwWidth, gldCtx->dwHeight);
++            lx = x; ly = y; lw = w; lh = h;
++        }
++    }
+ 
+ 	if (glb.bFAKK2) {
+ 		gld->fViewportY = (y < 0) ? y : 0.0f;
+@@ -1105,6 +1121,8 @@ void gldSetupDriverPointers_DX9(
+     ctx->Driver.TexSubImage1D           = gld_TexSubImage1D_DX9;
+     ctx->Driver.TexSubImage2D           = gld_TexSubImage2D_DX9;
+     ctx->Driver.TexSubImage3D           = _mesa_store_texsubimage3d;
++    ctx->Driver.CompressedTexImage2D    = gld_CompressedTexImage2D_DX9;
++    ctx->Driver.CompressedTexSubImage2D = gld_CompressedTexSubImage2D_DX9;
+     
+     ctx->Driver.CopyTexImage1D          = gldCopyTexImage1D_DX9; //NULL;
+     ctx->Driver.CopyTexImage2D          = gldCopyTexImage2D_DX9; //NULL;
+diff --git a/src/dx9/gld5_extensions.c b/src/dx9/gld5_extensions.c
+index d184e9f..984866f 100644
+--- a/src/dx9/gld5_extensions.c
++++ b/src/dx9/gld5_extensions.c
+@@ -145,6 +145,18 @@ GLD_extension GLD_extList[] = {
+     {	(PROC)glPointParameterfEXT,		"glPointParameterfEXT"		},
+     {	(PROC)glPointParameterfvEXT,	"glPointParameterfvEXT"		},
+ 
++    // GL 1.2 core (GL_VERSION is Mesa's "1.2" now) and GL_EXT_draw_range_elements
++    {	(PROC)glDrawRangeElements,		"glDrawRangeElements"		},
++    {	(PROC)glDrawRangeElementsEXT,	"glDrawRangeElementsEXT"	},
++    // GL_ARB_texture_compression (Call of Duty needs it with S3TC)
++    {	(PROC)glCompressedTexImage1DARB,	"glCompressedTexImage1DARB"	},
++    {	(PROC)glCompressedTexImage2DARB,	"glCompressedTexImage2DARB"	},
++    {	(PROC)glCompressedTexImage3DARB,	"glCompressedTexImage3DARB"	},
++    {	(PROC)glCompressedTexSubImage1DARB,	"glCompressedTexSubImage1DARB"	},
++    {	(PROC)glCompressedTexSubImage2DARB,	"glCompressedTexSubImage2DARB"	},
++    {	(PROC)glCompressedTexSubImage3DARB,	"glCompressedTexSubImage3DARB"	},
++    {	(PROC)glGetCompressedTexImageARB,	"glGetCompressedTexImageARB"	},
++
+     {	(PROC)glLockArraysEXT,			"glLockArraysEXT"			},
+     {	(PROC)glUnlockArraysEXT,		"glUnlockArraysEXT"			},
+ 	{	NULL,							"\0"						}
+@@ -296,6 +308,10 @@ void gldEnableExtensions_DX9(
+ 	const char *gld_enable_extensions[] = {
+ 		"GL_EXT_texture_env_add",	// Quake 3
+ 		"GL_ARB_texture_env_add",	// Quake 3
++		// Call of Duty requires S3TC ("missing one or more features"
++		// otherwise): DXT blocks go to Direct3D's DXT textures as they are
++		"GL_ARB_texture_compression",
++		"GL_EXT_texture_compression_s3tc",
+ 		NULL
+ 	};
+ 	
+diff --git a/src/dx9/gld5_texture.c b/src/dx9/gld5_texture.c
+index dfc84a0..cacf9ea 100644
+--- a/src/dx9/gld5_texture.c
++++ b/src/dx9/gld5_texture.c
+@@ -573,6 +573,21 @@ D3DFORMAT _gldGLFormatToD3DFormat(
+ 		return D3DFMT_A8R8G8B8;
+ 	case GL_RGB5_A1:
+ 		return D3DFMT_A1R5G5B5;
++	// Compressed internal formats with uncompressed pixels (glTexImage2D):
++	// kept uncompressed (Direct3D's DXT surfaces cannot be filled texel by
++	// texel here); glCompressedTexImage2D uses DXT surfaces directly
++	case GL_COMPRESSED_RGB_ARB:
++	case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
++	case GL_RGB_S3TC:
++	case GL_RGB4_S3TC:
++		return D3DFMT_X8R8G8B8;
++	case GL_COMPRESSED_RGBA_ARB:
++	case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
++	case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
++	case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
++	case GL_RGBA_S3TC:
++	case GL_RGBA4_S3TC:
++		return D3DFMT_A8R8G8B8;
+ 	}
+ 
+ 	// Return an acceptable default
+@@ -1477,6 +1492,19 @@ const struct gl_texture_format* gld_ChooseTextureFormat_DX9(
+ 		return &_mesa_texformat_argb8888;
+ 	case GL_RGB5_A1:
+ 		return &_mesa_texformat_argb1555;
++	// Compressed internal formats (see _gldGLFormatToD3DFormat)
++	case GL_COMPRESSED_RGB_ARB:
++	case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
++	case GL_RGB_S3TC:
++	case GL_RGB4_S3TC:
++		return &_mesa_texformat_rgb565;
++	case GL_COMPRESSED_RGBA_ARB:
++	case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
++	case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
++	case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
++	case GL_RGBA_S3TC:
++	case GL_RGBA4_S3TC:
++		return &_mesa_texformat_argb8888;
+ 	default:
+ 		_mesa_problem(NULL, "unexpected format in fxDDChooseTextureFormat");
+ 		return NULL;
+@@ -1641,6 +1669,9 @@ void gld_TexImage2D_DX9(
+ 	if (!tObj || !texImage)
+ 		return;
+ 
++	if (gldTraceVpOn() && (width >= 128 || height >= 128) && level == 0)
++		gldLogPrintf(GLDLOG_SYSTEM, "TI tex=%u %dx%d ifmt=0x%x fmt=0x%x type=0x%x", tObj->Name, width, height, internalFormat, format, type);
++
+ 	// GLQUAKE FIX
+ 	// Test for input alpha data with non-alpha internalformat
+ 	if (((internalFormat==3) || (internalFormat==GL_RGB)) && (format==GL_RGBA)) {
+@@ -1873,6 +1904,21 @@ void gld_TexSubImage2D_DX9( GLcontext *ctx, GLenum target, GLint level,
+ 	if (!tObj || !texImage)
+ 		return;
+ 
++	// Siliconium (GLD_CINEMATIC_FIX): a large streamed upload = a cinematic frame
++	if (width >= 256 && height >= 256) {
++		extern int gldFrameNo, gldCineFrame;
++		gldCineFrame = gldFrameNo;
++	}
++
++	if (gldTraceVpOn() && (width >= 128 || height >= 128)) {
++		static GLuint ln; static GLsizei lw, lh; static int cnt;
++		if (tObj->Name != ln || width != lw || height != lh) {
++			gldLogPrintf(GLDLOG_SYSTEM, "TS tex=%u %d,%d %dx%d fmt=0x%x type=0x%x (img %dx%d) after %d same", tObj->Name, xoffset, yoffset, width, height, format, type,
++				texImage->Width, texImage->Height, cnt);
++			ln = tObj->Name; lw = width; lh = height; cnt = 0;
++		} else cnt++;
++	}
++
+ 	pTex = (IDirect3DTexture9*)tObj->DriverData;
+ 	if (!pTex)
+ 		return; // Texture has not been created
+@@ -1927,6 +1973,170 @@ void gld_TexSubImage1D_DX9( GLcontext *ctx, GLenum target, GLint level,
+ 	gld_TexSubImage2D_DX9(ctx, target, level, xoffset, 0, width, 1, format, type, pixels, packing, texObj, texImage);
+ }
+ 
++//---------------------------------------------------------------------------
++// GL_ARB_texture_compression + GL_EXT_texture_compression_s3tc:
++// S3TC DXT1/3/5 blocks are Direct3D's DXT1/3/5 blocks, copied as they are.
++//---------------------------------------------------------------------------
++
++static D3DFORMAT _gldS3TCFormat(
++	GLenum internalFormat,
++	const struct gl_texture_format **mesaFormat)
++{
++	switch (internalFormat) {
++	case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
++		*mesaFormat = &_mesa_texformat_rgb_dxt1;
++		return D3DFMT_DXT1;
++	case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
++		*mesaFormat = &_mesa_texformat_rgba_dxt1;
++		return D3DFMT_DXT1;
++	case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
++		*mesaFormat = &_mesa_texformat_rgba_dxt3;
++		return D3DFMT_DXT3;
++	case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
++		*mesaFormat = &_mesa_texformat_rgba_dxt5;
++		return D3DFMT_DXT5;
++	}
++	*mesaFormat = NULL;
++	return D3DFMT_UNKNOWN;
++}
++
++//---------------------------------------------------------------------------
++
++static void _gldCopyS3TCBlocks(
++	IDirect3DTexture9 *pTex,
++	GLint level,
++	D3DFORMAT d3dFormat,
++	GLint xoffset,
++	GLint yoffset,
++	GLsizei width,
++	GLsizei height,
++	GLsizei imageSize,
++	const GLvoid *data)
++{
++	D3DLOCKED_RECT	lr;
++	RECT			rc;
++	const GLubyte	*src = (const GLubyte *)data;
++	int				blockBytes = (d3dFormat == D3DFMT_DXT1) ? 8 : 16;
++	int				blocksW = (width + 3) / 4;
++	int				blocksH = (height + 3) / 4;
++	int				rowBytes, y;
++
++	if (!pTex || !data || level >= (GLint)IDirect3DTexture9_GetLevelCount(pTex))
++		return;
++	if (blocksW < 1) blocksW = 1;
++	if (blocksH < 1) blocksH = 1;
++	rowBytes = blocksW * blockBytes;
++	if (imageSize < rowBytes * blocksH) {
++		gldLogPrintf(GLDLOG_WARN, "CompressedTexImage: %d bytes for %dx%d", imageSize, width, height);
++		return;
++	}
++	// Whole blocks only (as glCompressedTexSubImage2D requires)
++	SetRect(&rc, xoffset, yoffset, xoffset + blocksW * 4, yoffset + blocksH * 4);
++	{
++		D3DSURFACE_DESC d;
++		IDirect3DTexture9_GetLevelDesc(pTex, level, &d);
++		if (rc.right > (LONG)d.Width) rc.right = d.Width;
++		if (rc.bottom > (LONG)d.Height) rc.bottom = d.Height;
++	}
++	if (FAILED(IDirect3DTexture9_LockRect(pTex, level, &lr, &rc, 0)))
++		return;
++	for (y = 0; y < blocksH; y++)
++		memcpy((GLubyte *)lr.pBits + y * lr.Pitch, src + y * rowBytes, rowBytes);
++	IDirect3DTexture9_UnlockRect(pTex, level);
++}
++
++//---------------------------------------------------------------------------
++
++void gld_CompressedTexImage2D_DX9(
++	GLcontext *ctx,
++	GLenum target,
++	GLint level,
++	GLint internalFormat,
++	GLsizei width,
++	GLsizei height,
++	GLint border,
++	GLsizei imageSize,
++	const GLvoid *data,
++	struct gl_texture_object *tObj,
++	struct gl_texture_image *texImage)
++{
++	GLD_context			*gldCtx	= GLD_GET_CONTEXT(ctx);
++	GLD_driver_dx9		*gld	= GLD_GET_DX9_DRIVER(gldCtx);
++	IDirect3DTexture9	*pTex;
++	const struct gl_texture_format *mesaFormat;
++	D3DFORMAT			d3dFormat;
++
++	if (!tObj || !texImage)
++		return;
++	d3dFormat = _gldS3TCFormat(internalFormat, &mesaFormat);
++	if (d3dFormat == D3DFMT_UNKNOWN) {
++		_mesa_error(ctx, GL_INVALID_ENUM, "glCompressedTexImage2D(internalFormat)");
++		return;
++	}
++	texImage->TexFormat		= mesaFormat;
++	texImage->FetchTexel	= mesaFormat->FetchTexel2D;
++	texImage->IsCompressed	= GL_TRUE;
++	texImage->CompressedSize = imageSize;
++	if (target != GL_TEXTURE_2D)
++		return; // this driver draws 1D/2D textures only
++
++	pTex = (IDirect3DTexture9*)tObj->DriverData;
++	if (level == 0) {
++		// Keep the Direct3D texture only if it has the same size and format
++		if (pTex) {
++			D3DSURFACE_DESC d;
++			IDirect3DTexture9_GetLevelDesc(pTex, 0, &d);
++			if (d.Width != (UINT)width || d.Height != (UINT)height || d.Format != d3dFormat) {
++				tObj->DriverData = NULL;
++				IDirect3DTexture9_Release(pTex);
++				pTex = NULL;
++			}
++		}
++		if (!pTex) {
++			HRESULT hr = IDirect3DDevice9_CreateTexture(gld->pDev, width, height,
++				glb.bUseMipmaps ? 0 : 1, 0, d3dFormat, D3DPOOL_MANAGED, &pTex, NULL);
++			if (FAILED(hr)) {
++				gldLogError(GLDLOG_ERROR, "CompressedTexImage2D: CreateTexture", hr);
++				return;
++			}
++			tObj->DriverData = pTex;
++		}
++	}
++	if (!pTex)
++		return;
++	_gldCopyS3TCBlocks(pTex, level, d3dFormat, 0, 0, width, height, imageSize, data);
++}
++
++//---------------------------------------------------------------------------
++
++void gld_CompressedTexSubImage2D_DX9(
++	GLcontext *ctx,
++	GLenum target,
++	GLint level,
++	GLint xoffset,
++	GLint yoffset,
++	GLsizei width,
++	GLsizei height,
++	GLenum format,
++	GLsizei imageSize,
++	const GLvoid *data,
++	struct gl_texture_object *tObj,
++	struct gl_texture_image *texImage)
++{
++	IDirect3DTexture9	*pTex;
++	D3DSURFACE_DESC		d;
++
++	if (!tObj || target != GL_TEXTURE_2D)
++		return;
++	pTex = (IDirect3DTexture9*)tObj->DriverData;
++	if (!pTex || level >= (GLint)IDirect3DTexture9_GetLevelCount(pTex))
++		return;
++	IDirect3DTexture9_GetLevelDesc(pTex, level, &d);
++	if (d.Format != D3DFMT_DXT1 && d.Format != D3DFMT_DXT3 && d.Format != D3DFMT_DXT5)
++		return;
++	_gldCopyS3TCBlocks(pTex, level, d.Format, xoffset, yoffset, width, height, imageSize, data);
++}
++
+ //---------------------------------------------------------------------------
+ 
+ void gld_DeleteTexture_DX9(
+diff --git a/src/dx9/gld5_wgl.c b/src/dx9/gld5_wgl.c
+index 070451d..0033e92 100644
+--- a/src/dx9/gld5_wgl.c
++++ b/src/dx9/gld5_wgl.c
+@@ -627,7 +627,7 @@ BOOL gldResizeDrawable_DX(
+ 
+ 	// Notify Effects of impending Reset
+ 	for (i=0; i<gld->nEffects; i++) {
+-		ID3DXEffect_OnLostDevice(gld->Effects[i].pEffect);
++		if (gld->Effects[i].pEffect) ID3DXEffect_OnLostDevice(gld->Effects[i].pEffect);
+ 	}
+ 
+ 	// Clear the presentation parameters (sets all members to zero)
+@@ -729,7 +729,7 @@ BOOL gldResizeDrawable_DX(
+ 
+ 	// Notify Effects that Reset has been called
+ 	for (i=0; i<gld->nEffects; i++) {
+-		ID3DXEffect_OnResetDevice(gld->Effects[i].pEffect);
++		if (gld->Effects[i].pEffect) ID3DXEffect_OnResetDevice(gld->Effects[i].pEffect);
+ 	}
+ 
+ 	// Necessary for D3D HW TnL resize when normals not present.(DaveM)
+@@ -1195,6 +1195,11 @@ BOOL gldInitialiseMesa_DX(
+ 
+ //---------------------------------------------------------------------------
+ 
++// Siliconium diagnostics: GLD_TRACE_FRAME=<n>: frame n's clears and draws in the log
++int gldFrameNo, gldTraceThisFrame;
++int gldCineFrame = -1000;	// last frame that uploaded a cinematic frame (gld5_texture.c)
++static int gldTraceFrameAt = -2;
++
+ BOOL gldSwapBuffers_DX(
+ 	GLD_ctx *ctx,
+ 	HDC hDC,
+@@ -1244,6 +1249,11 @@ BOOL gldSwapBuffers_DX(
+ 
+ 	IDirect3DDevice9_BeginScene(gld->pDev);
+ 	ctx->bSceneStarted = TRUE;
++	gldFrameNo++;
++	if (gldTraceFrameAt == -2) { const char *v = getenv("GLD_TRACE_FRAME"); gldTraceFrameAt = v ? atoi(v) : -1; }
++	gldTraceThisFrame = (gldTraceFrameAt >= 0 && gldFrameNo == gldTraceFrameAt);
++	if (gldTraceThisFrame) gldLogPrintf(GLDLOG_SYSTEM, "FR ---- frame %d begins", gldFrameNo);
++	if (gldTraceFrameAt >= 0 && gldFrameNo == gldTraceFrameAt + 1) gldLogPrintf(GLDLOG_SYSTEM, "FR ---- frame %d presented", gldFrameNo - 1);
+ 
+ 	if (glb.bDisableZTrick) {
+ 		// Force clear of target and depth every frame
+diff --git a/src/dx9/gld_dlist.c b/src/dx9/gld_dlist.c
+index 7bf125d..db7ea1a 100644
+--- a/src/dx9/gld_dlist.c
++++ b/src/dx9/gld_dlist.c
+@@ -1256,7 +1256,7 @@ void GLAPIENTRY gld_save_VertexAttrib4fvNV(
+ //---------------------------------------------------------------------------
+ //---------------------------------------------------------------------------
+ 
+-static void gldSaveFlushVertices(
++void gldSaveFlushVertices(
+ 	GLcontext *ctx)
+ {
+ 	GLD_context				*gldCtx	= GLD_GET_CONTEXT(ctx);
+diff --git a/src/dx9/gld_shaders.c b/src/dx9/gld_shaders.c
+index 9f10c90..786c695 100644
+--- a/src/dx9/gld_shaders.c
++++ b/src/dx9/gld_shaders.c
+@@ -42,6 +42,8 @@
+ #include "gld_context.h"
+ #include "gld_log.h"
+ #include "gldirect5.h"
++#define COBJMACROS
++#include <d3dcommon.h>
+ 
+ #include "glheader.h"
+ #include "context.h"
+@@ -329,14 +331,9 @@ static const char *g_pszGLD_HLSL_light =
+ 
+ static const char *g_pszSamplerTemplate =
+ "\n"
+-"sampler Sampler%d = sampler_state\n"
++"sampler Sampler%d : register(s%d) = sampler_state\n"
+ "{\n"
+ "    Texture   = (g_texDiffuse%d);\n"
+-"    MipFilter = %s;\n"
+-"    MinFilter = %s;\n"
+-"    MagFilter = %s;\n"
+-"    AddressU  = %s;\n"
+-"    AddressV  = %s;\n"
+ "};\n";
+ 
+ //---------------------------------------------------------------------------
+@@ -1195,7 +1192,8 @@ static char *_gldBuildShaderText(
+ 				pszMagFilter = _gldMagFilter(pTexState->Unit[i].MagFilter);
+ 				pszWrapS = _gldWrap(pTexState->Unit[i].WrapS);
+ 				pszWrapT = _gldWrap(pTexState->Unit[i].WrapT);
+-				sprintf(szLine, g_pszSamplerTemplate, i, i, pszMipFilter, pszMinFilter, pszMagFilter, pszWrapS, pszWrapT);
++				// Siliconium: filters/wrap are device sampler states now (gldApplySamplers)
++				sprintf(szLine, g_pszSamplerTemplate, i, i, i);
+ 				strcat(pszHLSL, szLine);
+ 			}
+ 		}
+@@ -1289,7 +1287,15 @@ static char *_gldBuildShaderText(
+ 
+ 	// Lighting
+ 	if (pState->Light.Enabled) {
+-		strcat(pszHLSL, "    float4 _Ambient, _Diffuse, _Specular;\n");
++		// Initialised: with lighting on and no light enabled the alpha below
++		// still reads _Diffuse (GL: the material's diffuse alpha, 1 by
++		// default, or the vertex colour's with colour material on diffuse).
++		// Wine's HLSL compiler refuses uninitialised variables (X4000).
++		strcat(pszHLSL, "    float4 _Ambient = 0, _Diffuse = float4(0,0,0,1), _Specular = 0;\n");
++		if (pState->Light.ColorMaterial.Enabled &&
++			(pState->Light.ColorMaterial.Mode == GL_DIFFUSE ||
++			 pState->Light.ColorMaterial.Mode == GL_AMBIENT_AND_DIFFUSE))
++			strcat(pszHLSL, "    _Diffuse.a = In.Diff.a;\n");
+ 		if (pState->Light.TwoSide) {
+ 			strcat(pszHLSL, "    if (normal.z < 0) {\n");
+ 			// Back material
+@@ -1496,6 +1502,313 @@ static char *_gldBuildShaderText(
+ 
+ //---------------------------------------------------------------------------
+ 
++
++//---------------------------------------------------------------------------
++// Compiled-effect cache (Siliconium). Building an effect from HLSL text
++// compiles it (~110 ms each under Wine: 59 effects = 6.5 s of hitches in
++// Call of Duty's timedemo). With GLD_SHADER_CACHE=<folder> the compiled
++// fx_2_0 binary of each effect is kept there, named by a hash of the GL
++// state it was built from (+ this build's date, so a new build never reads
++// another build's effects), and loaded directly the next time.
++//---------------------------------------------------------------------------
++
++typedef HRESULT (WINAPI *GLD_PFN_D3DCOMPILE)(const void *, SIZE_T, const char *,
++	const void *, void *, const char *, const char *, UINT, UINT, ID3D10Blob **, ID3D10Blob **);
++
++static unsigned long long _gldFnv(unsigned long long h, const void *p, size_t n)
++{
++	const unsigned char *b = (const unsigned char *)p;
++	while (n--) { h ^= *b++; h *= 0x100000001b3ULL; }
++	return h;
++}
++
++// Siliconium: the cache file of an effect state (see GLD_SHADER_GEN_ID)
++static int _gldEffectCachePath(GLD_driver_dx9 *gld, const GLD_effect_state *pState, DWORD dwFlags,
++	const char *pszDir, char *szPath)
++{
++	unsigned long long h;
++	if (!pszDir || !*pszDir)
++		return 0;
++	h = _gldFnv(0xcbf29ce484222325ULL, pState, sizeof(*pState));
++	// Generator id: change it whenever the generated HLSL text or GLD_effect_state changes
++	// (was the build date/time, so every rebuild threw the cache away)
++#define GLD_SHADER_GEN_ID "siliconium-s11-samplers-1"
++	h = _gldFnv(h, GLD_SHADER_GEN_ID, sizeof(GLD_SHADER_GEN_ID));
++	h = _gldFnv(h, &gld->d3dCaps9.VertexShaderVersion, sizeof(DWORD));
++	h = _gldFnv(h, &gld->d3dCaps9.PixelShaderVersion, sizeof(DWORD));
++	h = _gldFnv(h, &dwFlags, sizeof(dwFlags));
++	_snprintf(szPath, MAX_PATH, "%s\\%016llx.fxo", pszDir, h);
++	szPath[MAX_PATH - 1] = 0;
++	return 1;
++}
++
++static HRESULT _gldCreateEffectCached(
++	GLD_driver_dx9 *gld,
++	const GLD_effect_state *pState,
++	const char *pszEffect,
++	DWORD dwFlags,
++	ID3DXEffect **ppEffect,
++	ID3DXBuffer **ppErrors)
++{
++	static GLD_PFN_D3DCOMPILE pCompile = NULL;
++	static int iTried = 0;
++	const char *pszDir = getenv("GLD_SHADER_CACHE");
++	char szPath[MAX_PATH];
++	unsigned long long h;
++	HANDLE hFile;
++	HRESULT hr;
++
++	{ static int once; if (!once) { once = 1; gldLogPrintf(GLDLOG_INFO, "Effect cache: %s", pszDir ? pszDir : "(off)"); } }
++	if (!pszDir || !*pszDir)
++		goto from_text;
++	if (!_gldEffectCachePath(gld, pState, dwFlags, pszDir, szPath))
++		goto from_text;
++
++	// Cached binary?
++	hFile = CreateFileA(szPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
++	if (hFile != INVALID_HANDLE_VALUE) {
++		DWORD dwSize = GetFileSize(hFile, NULL), dwRead = 0;
++		void *pData = (dwSize && dwSize != INVALID_FILE_SIZE) ? malloc(dwSize) : NULL;
++		BOOL bOk = pData && ReadFile(hFile, pData, dwSize, &dwRead, NULL) && dwRead == dwSize;
++		CloseHandle(hFile);
++		if (bOk) {
++			hr = D3DXCreateEffect(gld->pDev, pData, dwSize, NULL, NULL, dwFlags, gld->pEffectPool, ppEffect, NULL);
++			free(pData);
++			if (SUCCEEDED(hr))
++				return hr;
++		} else if (pData) {
++			free(pData);
++		}
++	}
++
++	// Compile to fx_2_0 binary, keep it, build the effect from it
++	if (!iTried) {
++		HMODULE hMod = LoadLibraryA("d3dcompiler_43.dll");
++		iTried = 1;
++		if (hMod)
++			pCompile = (GLD_PFN_D3DCOMPILE)GetProcAddress(hMod, "D3DCompile");
++	}
++	if (pCompile) {
++		ID3D10Blob *pCode = NULL, *pErr = NULL;
++		hr = pCompile(pszEffect, strlen(pszEffect), NULL, NULL, NULL, NULL, "fx_2_0", dwFlags, 0, &pCode, &pErr);
++		if (FAILED(hr))
++			gldLogPrintf(GLDLOG_WARN, "Effect cache: D3DCompile fx_2_0 hr=0x%08x %s", (unsigned)hr,
++				pErr ? (const char *)ID3D10Blob_GetBufferPointer(pErr) : "");
++		if (pErr) ID3D10Blob_Release(pErr);
++		if (SUCCEEDED(hr) && pCode) {
++			const void *pData = ID3D10Blob_GetBufferPointer(pCode);
++			DWORD dwSize = (DWORD)ID3D10Blob_GetBufferSize(pCode), dwWritten = 0;
++			hr = D3DXCreateEffect(gld->pDev, pData, dwSize, NULL, NULL, dwFlags, gld->pEffectPool, ppEffect, NULL);
++			if (FAILED(hr))
++				gldLogPrintf(GLDLOG_WARN, "Effect cache: CreateEffect from fx_2_0 binary hr=0x%08x", (unsigned)hr);
++			if (SUCCEEDED(hr)) {
++				char szTmp[MAX_PATH + 8];
++				CreateDirectoryA(pszDir, NULL);
++				_snprintf(szTmp, sizeof(szTmp), "%s.%lu", szPath, GetCurrentProcessId());
++				szTmp[sizeof(szTmp) - 1] = 0;
++				hFile = CreateFileA(szTmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
++				if (hFile != INVALID_HANDLE_VALUE) {
++					BOOL bOk = WriteFile(hFile, pData, dwSize, &dwWritten, NULL) && dwWritten == dwSize;
++					CloseHandle(hFile);
++					if (!bOk || !MoveFileExA(szTmp, szPath, MOVEFILE_REPLACE_EXISTING))
++						DeleteFileA(szTmp);
++				}
++				// GLD_EFFECT_DUMP=1 (diagnostics): the HLSL text (.fx) and the raw key state
++				// (.st) of every newly compiled effect, next to its .fxo
++				if (getenv("GLD_EFFECT_DUMP")) {
++					DWORD dw;
++					_snprintf(szTmp, sizeof(szTmp), "%s.fx", szPath); szTmp[sizeof(szTmp) - 1] = 0;
++					hFile = CreateFileA(szTmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
++					if (hFile != INVALID_HANDLE_VALUE) { WriteFile(hFile, pszEffect, (DWORD)strlen(pszEffect), &dw, NULL); CloseHandle(hFile); }
++					_snprintf(szTmp, sizeof(szTmp), "%s.st", szPath); szTmp[sizeof(szTmp) - 1] = 0;
++					hFile = CreateFileA(szTmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
++					if (hFile != INVALID_HANDLE_VALUE) { WriteFile(hFile, pState, sizeof(*pState), &dw, NULL); CloseHandle(hFile); }
++				}
++				ID3D10Blob_Release(pCode);
++				return hr;
++			}
++			ID3D10Blob_Release(pCode);
++		}
++	}
++
++from_text:
++	return D3DXCreateEffect(gld->pDev, pszEffect, strlen(pszEffect), NULL, NULL,
++		dwFlags, gld->pEffectPool, ppEffect, ppErrors);
++}
++
++
++//---------------------------------------------------------------------------
++// Siliconium: asynchronous effect compiles (GLD_ASYNC_EFFECTS=1, needs
++// GLD_SHADER_CACHE). A state met for the first time used to be compiled on
++// the game thread (10-170 ms each, the hitches when a new area or light
++// combination appears). Now an effect whose binary is not in the cache is
++// compiled by one worker thread (D3DCompile + the .fxo file; no Direct3D
++// calls there); its draws are skipped until the game thread finds the job
++// done and builds the effect from the binary (~1 ms).
++//---------------------------------------------------------------------------
++
++typedef struct {
++	char				*pszText;
++	char				szPath[MAX_PATH];
++	DWORD				dwFlags;
++	GLD_effect_state	State;
++	void				*pData;		// fx_2_0 binary (NULL: failed)
++	DWORD				dwSize;
++	volatile LONG		lDone;
++} GLD_effect_job;
++
++#define GLD_JOB_QUEUE 4096
++static GLD_effect_job		*gldJobQueue[GLD_JOB_QUEUE];
++static volatile LONG		gldJobHead, gldJobTail;
++static CRITICAL_SECTION		gldJobLock;
++static HANDLE				gldJobEvent, gldJobThread;
++
++static int _gldAsyncEnabled(void)
++{
++	static int on = -1;
++	if (on < 0) {
++		const char *v = getenv("GLD_ASYNC_EFFECTS"), *d = getenv("GLD_SHADER_CACHE");
++		on = v && atoi(v) > 0 && d && *d;
++	}
++	return on;
++}
++
++static GLD_PFN_D3DCOMPILE _gldGetCompiler(void)
++{
++	static GLD_PFN_D3DCOMPILE pCompile = NULL;
++	static volatile LONG lTried = 0;
++	if (!InterlockedExchange(&lTried, 1)) {
++		HMODULE hMod = LoadLibraryA("d3dcompiler_43.dll");
++		if (hMod)
++			pCompile = (GLD_PFN_D3DCOMPILE)GetProcAddress(hMod, "D3DCompile");
++	}
++	return pCompile;
++}
++
++static void _gldWriteFileAtomic(const char *pszPath, const void *pData, DWORD dwSize)
++{
++	char szTmp[MAX_PATH + 16];
++	HANDLE hFile;
++	DWORD dwWritten = 0;
++	BOOL bOk;
++	_snprintf(szTmp, sizeof(szTmp), "%s.%lu", pszPath, GetCurrentProcessId());
++	szTmp[sizeof(szTmp) - 1] = 0;
++	hFile = CreateFileA(szTmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
++	if (hFile == INVALID_HANDLE_VALUE)
++		return;
++	bOk = WriteFile(hFile, pData, dwSize, &dwWritten, NULL) && dwWritten == dwSize;
++	CloseHandle(hFile);
++	if (!bOk || !MoveFileExA(szTmp, pszPath, MOVEFILE_REPLACE_EXISTING))
++		DeleteFileA(szTmp);
++}
++
++static DWORD WINAPI _gldJobWorker(LPVOID p)
++{
++	for (;;) {
++		GLD_effect_job *job = NULL;
++		WaitForSingleObject(gldJobEvent, INFINITE);
++		for (;;) {
++			EnterCriticalSection(&gldJobLock);
++			if (gldJobHead != gldJobTail) {
++				job = gldJobQueue[gldJobHead % GLD_JOB_QUEUE];
++				gldJobHead++;
++			} else {
++				job = NULL;
++			}
++			LeaveCriticalSection(&gldJobLock);
++			if (!job)
++				break;
++			{
++				GLD_PFN_D3DCOMPILE pCompile = _gldGetCompiler();
++				ID3D10Blob *pCode = NULL, *pErr = NULL;
++				HRESULT hr = pCompile ? pCompile(job->pszText, strlen(job->pszText), NULL, NULL, NULL, NULL,
++					"fx_2_0", job->dwFlags, 0, &pCode, &pErr) : E_FAIL;
++				if (pErr) ID3D10Blob_Release(pErr);
++				if (SUCCEEDED(hr) && pCode) {
++					DWORD n = (DWORD)ID3D10Blob_GetBufferSize(pCode);
++					void *d = malloc(n);
++					if (d) {
++						memcpy(d, ID3D10Blob_GetBufferPointer(pCode), n);
++						_gldWriteFileAtomic(job->szPath, d, n);
++						if (getenv("GLD_EFFECT_DUMP")) {
++							char sz[MAX_PATH + 8];
++							_snprintf(sz, sizeof(sz), "%s.fx", job->szPath); sz[sizeof(sz) - 1] = 0;
++							_gldWriteFileAtomic(sz, job->pszText, (DWORD)strlen(job->pszText));
++							_snprintf(sz, sizeof(sz), "%s.st", job->szPath); sz[sizeof(sz) - 1] = 0;
++							_gldWriteFileAtomic(sz, &job->State, sizeof(job->State));
++						}
++						job->pData = d;
++						job->dwSize = n;
++					}
++				}
++				if (pCode) ID3D10Blob_Release(pCode);
++			}
++			InterlockedExchange(&job->lDone, 1);
++		}
++	}
++	return 0;
++}
++
++static BOOL _gldQueueJob(GLD_effect_job *job)
++{
++	BOOL bOk = FALSE;
++	if (!gldJobThread) {
++		InitializeCriticalSection(&gldJobLock);
++		gldJobEvent = CreateEventA(NULL, FALSE, FALSE, NULL);
++		gldJobThread = CreateThread(NULL, 0, _gldJobWorker, NULL, 0, NULL);
++		if (gldJobThread)
++			SetThreadPriority(gldJobThread, THREAD_PRIORITY_BELOW_NORMAL);
++	}
++	if (!gldJobThread || !gldJobEvent)
++		return FALSE;
++	EnterCriticalSection(&gldJobLock);
++	if (gldJobTail - gldJobHead < GLD_JOB_QUEUE) {
++		gldJobQueue[gldJobTail % GLD_JOB_QUEUE] = job;
++		gldJobTail++;
++		bOk = TRUE;
++	}
++	LeaveCriticalSection(&gldJobLock);
++	if (bOk)
++		SetEvent(gldJobEvent);
++	return bOk;
++}
++
++static int _gldFinishEffect(GLD_driver_dx9 *gld, GLD_effect *pGLDEffect, HRESULT hr, DWORD dwFlags);
++
++// The game thread: a finished job becomes the effect (call before using it)
++static void _gldPollJob(GLD_driver_dx9 *gld, GLD_effect *pGLDEffect)
++{
++	GLD_effect_job *job = (GLD_effect_job *)pGLDEffect->pJob;
++	HRESULT hr = E_FAIL;
++	if (!job || !job->lDone)
++		return;
++	pGLDEffect->pJob = NULL;
++	if (job->pData)
++		hr = D3DXCreateEffect(gld->pDev, job->pData, job->dwSize, NULL, NULL, pGLDEffect->dwFlags,
++			gld->pEffectPool, &pGLDEffect->pEffect, NULL);
++	if (FAILED(hr))
++		gldLogPrintf(GLDLOG_WARN, "Async effect failed (hr=0x%08x); default effect used", (unsigned)hr);
++	_gldFinishEffect(gld, pGLDEffect, hr, pGLDEffect->dwFlags);
++	free(job->pData);
++	free(job->pszText);
++	free(job);
++}
++
++// Waits for every job of this context (before its effects are released)
++static void _gldWaitJobs(GLD_driver_dx9 *gld)
++{
++	int i, n;
++	for (i=0; i<gld->nEffects; i++) {
++		GLD_effect_job *job = (GLD_effect_job *)gld->Effects[i].pJob;
++		if (!job) continue;
++		for (n=0; n<500 && !job->lDone; n++) Sleep(10);
++		if (job->lDone) { free(job->pData); free(job->pszText); free(job); }
++		gld->Effects[i].pJob = NULL;	// (a job still running after 5 s is leaked, not freed under the worker)
++	}
++}
++
++//---------------------------------------------------------------------------
++static LARGE_INTEGER gldT0; static LONGLONG gldFreq;
+ static int _gldFindEffect(
+ 	GLD_driver_dx9 *gld,
+ 	const GLD_effect_state *pEffectState)
+@@ -1507,6 +1820,7 @@ static int _gldFindEffect(
+ 	ID3DXEffect		*pEffect;
+ 	char			*pszEffect;
+ 	GLD_handles		*pHandles;
++	ID3DXBuffer		*pErrors = NULL;
+ 
+ 	// See if effect has already been cached.
+ 	pGLDEffect = gld->Effects;
+@@ -1518,6 +1832,11 @@ static int _gldFindEffect(
+ 	//
+ 	// Effect not found. Create it.
+ 	//
++	if (gld->nEffects >= GLD_MAX_EFFECTS) {
++		static int once;
++		if (!once) { once = 1; gldLogPrintf(GLDLOG_ERROR, "Effect table full (%d)", GLD_MAX_EFFECTS); }
++		return -1;
++	}
+ 
+ 	// Reset all vars in effect
+ 	ZeroMemory(pGLDEffect, sizeof(GLD_effect));
+@@ -1553,18 +1872,64 @@ static int _gldFindEffect(
+ 
+ 	// dwFlags |= D3DXSHADER_USE_LEGACY_D3DX9_31_DLL;
+ 
+-	hr = D3DXCreateEffect(
+-			gld->pDev,				// device
+-			pszEffect,				// .fx filename and path
+-			strlen(pszEffect),
+-			NULL,					// macro defines
+-			NULL,					// includes
+-			dwFlags,				// Flags
+-			gld->pEffectPool,		// pool
+-			&pGLDEffect->pEffect,	// pointer to DX9 effect
+-			NULL					// Ptr to buffer returning compile errors
+-			);
++	pGLDEffect->dwFlags = dwFlags;
++
++	// Siliconium: not in the cache yet -> compiled by the worker thread
++	if (_gldAsyncEnabled()) {
++		char szPath[MAX_PATH];
++		if (_gldEffectCachePath(gld, pEffectState, dwFlags, getenv("GLD_SHADER_CACHE"), szPath) &&
++			GetFileAttributesA(szPath) == INVALID_FILE_ATTRIBUTES) {
++			GLD_effect_job *job = (GLD_effect_job *)calloc(1, sizeof(GLD_effect_job));
++			if (job) {
++				job->pszText = pszEffect;
++				strcpy(job->szPath, szPath);
++				job->dwFlags = dwFlags;
++				job->State = *pEffectState;
++				if (_gldQueueJob(job)) {
++					pGLDEffect->pJob = job;
++					i = gld->nEffects;
++					gld->nEffects++;
++					gldLogPrintf(GLDLOG_INFO, "Effect %d queued", i);
++					return i;
++				}
++				free(job);
++			}
++		}
++	}
++
++	{ LARGE_INTEGER f; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&gldT0); gldFreq = f.QuadPart; }
++	hr = _gldCreateEffectCached(gld, pEffectState, pszEffect, dwFlags, &pGLDEffect->pEffect, &pErrors);
++	{ LARGE_INTEGER t1; QueryPerformanceCounter(&t1);
++	  gldLogPrintf(GLDLOG_INFO, "CreateEffect %d: %.1f ms", gld->nEffects, (t1.QuadPart - gldT0.QuadPart) * 1000.0 / gldFreq); }
++	if (FAILED(hr)) {
++		// Log why (and the effect's text) once per failing state
++		gldLogPrintf(GLDLOG_ERROR, "D3DXCreateEffect failed (hr=0x%08x, effect %d): %s",
++			(unsigned)hr, gld->nEffects,
++			pErrors ? (const char *)ID3DXBuffer_GetBufferPointer(pErrors) : "(no error text)");
++		gldLogMessage(GLDLOG_ERROR, pszEffect);
++	}
++	if (pErrors) {
++		ID3DXBuffer_Release(pErrors);
++		pErrors = NULL;
++	}
+ 	free(pszEffect); // Done with effect text. Free memory before we return
++	return _gldFinishEffect(gld, pGLDEffect, hr, dwFlags);
++}
++
++// The rest of an effect's creation (default effect when it failed, parameter
++// handles, technique); returns its index, or -1
++static int _gldFinishEffect(
++	GLD_driver_dx9 *gld,
++	GLD_effect *pGLDEffect,
++	HRESULT hr,
++	DWORD dwFlags)
++{
++	int				i;
++	ID3DXEffect		*pEffect;
++	GLD_handles		*pHandles;
++	ID3DXBuffer		*pErrors = NULL;
++	BOOL			bQueued = (pGLDEffect != &gld->Effects[gld->nEffects]);
++
+ 	if (FAILED(hr)) {
+ #if 0
+ 		return -1;
+@@ -1579,9 +1944,12 @@ static int _gldFindEffect(
+ 				dwFlags,				// Flags
+ 				gld->pEffectPool,		// pool
+ 				&pGLDEffect->pEffect,	// pointer to DX9 effect
+-				NULL					// Ptr to buffer returning compile errors
++				&pErrors				// Ptr to buffer returning compile errors
+ 				);
+ 		if (FAILED(hr)) {
++			gldLogPrintf(GLDLOG_ERROR, "Default effect failed too (hr=0x%08x): %s", (unsigned)hr,
++				pErrors ? (const char *)ID3DXBuffer_GetBufferPointer(pErrors) : "(no error text)");
++			if (pErrors) ID3DXBuffer_Release(pErrors);
+ 			return -1;
+ 		}
+ #endif
+@@ -1644,13 +2012,49 @@ static int _gldFindEffect(
+ 	// Obtain Techniques
+ 	pGLDEffect->hTechnique = ID3DXEffect_GetTechniqueByName(pGLDEffect->pEffect, "tecGLDirect");
+ 
+-	// Return
++	// Return (an effect from a finished job already has its slot)
++	if (bQueued)
++		return (int)(pGLDEffect - gld->Effects);
+ 	i = gld->nEffects;
+ 	gld->nEffects++;
++	gldLogPrintf(GLDLOG_INFO, "Effect %d created", i);
+ 	return i;
+ }
+ 
+ //---------------------------------------------------------------------------
++// Siliconium: device sampler states (see GLD_driver_dx9.SamplerState)
++void _gldConvertMinFilter(GLenum minfilter, D3DTEXTUREFILTERTYPE *min_filter, D3DTEXTUREFILTERTYPE *mip_filter);
++
++static DWORD _gldSamplerWrap(GLenum Wrap)
++{
++	if (glb.bBugdom)
++		return D3DTADDRESS_WRAP;
++	switch (Wrap) {
++	case GL_CLAMP:
++	case GL_CLAMP_TO_EDGE:
++		return D3DTADDRESS_CLAMP;
++	case GL_MIRRORED_REPEAT:
++		return D3DTADDRESS_MIRROR;
++	}
++	return D3DTADDRESS_WRAP;
++}
++
++void gldApplySamplers(
++	GLD_driver_dx9 *gld)
++{
++	static const D3DSAMPLERSTATETYPE type[5] = {
++		D3DSAMP_MINFILTER, D3DSAMP_MIPFILTER, D3DSAMP_MAGFILTER, D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV };
++	int i, k;
++	for (i=0; i<GLD_MAX_TEXTURE_UNITS_DX9; i++) {
++		if (!(gld->SamplerUnits & (1u << i)))
++			continue;
++		for (k=0; k<5; k++)
++			IDirect3DDevice9_SetSamplerState(gld->pDev, i, type[k], gld->SamplerState[i][k]);
++	}
++}
++
++//---------------------------------------------------------------------------
++
+ //---------------------------------------------------------------------------
+ 
+ void gldUpdateShaders(
+@@ -1666,6 +2070,7 @@ void gldUpdateShaders(
+ 	const struct gl_light			*glLit;
+ 	UINT							uiBytes;
+ 	BOOL							bEffectChanged = FALSE;
++	GLuint							uiSamplerUnits = 0;
+ 
+ 	//
+ 	// Fill in  a GLD_effect structure containing the current GL state.
+@@ -1686,7 +2091,9 @@ void gldUpdateShaders(
+ 		gldES.Texture._TexMatEnabled	= ctx->Texture._TexMatEnabled;
+ 		for (i=0; i<GLD_MAX_TEXTURE_UNITS_DX9; i++) {
+ 			GLuint UnitMask = (GLuint)1 << i;
+-			if (ctx->Texture._EnabledUnits && UnitMask) {
++			// Siliconium: was "&&" (any unit enabled), so disabled units' stale
++			// state went into the key and duplicated identical effects
++			if (ctx->Texture._EnabledUnits & UnitMask) {
+ 				// Obtain pointers
+ 				const struct gl_texture_unit *glUnit	= &ctx->Texture.Unit[i];
+ 				GLD_effect_texunit *gldUnit				= &gldES.Texture.Unit[i];
+@@ -1699,16 +2106,27 @@ void gldUpdateShaders(
+ 					gldUnit->_GenBitQ		= glUnit->_GenBitQ;
+ 				}
+ 				gldUnit->TexGenEnabled	= glUnit->TexGenEnabled;
++				// Siliconium: filters and wrap modes are not part of the effect any more
++				// (they made one effect per texture parameter combination); they are
++				// set as device sampler states for each enabled unit
+ 				if (glUnit->_Current) {
+-					gldUnit->MagFilter		= glUnit->_Current->MagFilter;
+-					gldUnit->MinFilter		= glUnit->_Current->MinFilter;
+-					gldUnit->WrapS			= glUnit->_Current->WrapS;
+-					gldUnit->WrapT			= glUnit->_Current->WrapT;
++					const struct gl_texture_object *tObj = glUnit->_Current;
++					D3DTEXTUREFILTERTYPE minf, mipf;
++					_gldConvertMinFilter(tObj->MinFilter, &minf, &mipf);
++					gld->SamplerState[i][0] = minf;
++					gld->SamplerState[i][1] = mipf;
++					gld->SamplerState[i][2] = (tObj->MagFilter == GL_LINEAR) ? D3DTEXF_LINEAR : D3DTEXF_POINT;
++					gld->SamplerState[i][3] = _gldSamplerWrap(tObj->WrapS);
++					gld->SamplerState[i][4] = _gldSamplerWrap(tObj->WrapT);
++					uiSamplerUnits |= UnitMask;
+ 				}
+ 			}
+ 		}
+ 	}
+ 
++	gld->SamplerUnits = uiSamplerUnits;
++	gldApplySamplers(gld);
++
+ 	//
+ 	// Fog
+ 	//
+@@ -1726,7 +2144,11 @@ void gldUpdateShaders(
+ 		gldES.Light.TwoSide					= ctx->Light.Model.TwoSide;
+ 		for (i=0; i<GLD_MAX_LIGHTS_DX9; i++) {
+ 			gldES.Light.Light[i].Enabled	= ctx->Light.Light[i].Enabled;
+-			gldES.Light.Light[i]._Flags		= ctx->Light.Light[i]._Flags;
++			// Siliconium: a disabled light's type (positional/spot) is not used by the
++			// shader but was in the key: CoD1 reuses lights with other types, which made
++			// 62 % of its effects duplicates (and each one a compile hitch)
++			if (ctx->Light.Light[i].Enabled)
++				gldES.Light.Light[i]._Flags	= ctx->Light.Light[i]._Flags;
+ 		}
+ 	}
+ 
+@@ -1742,6 +2164,8 @@ void gldUpdateShaders(
+ 	gld->iCurEffect = i;
+ 
+ 	pGLDEffect = &gld->Effects[i];
++	if (pGLDEffect->pJob)
++		_gldPollJob(gld, pGLDEffect);	// Siliconium: async compile finished?
+ 	pEffect = pGLDEffect->pEffect;
+ 
+ 	// Sanity Check
+@@ -1904,6 +2328,7 @@ void gldReleaseShaders(
+ {
+ 	int i;
+ 
++	_gldWaitJobs(gld);	// Siliconium: no job may finish into a released table
+ 	SAFE_RELEASE(gld->pEffectPool);
+ 
+ 	for (i=0; i<gld->nEffects; i++) {
+@@ -1944,6 +2369,7 @@ void gldBeginEffect(
+ 	ID3DXEffect_Begin(pGLDEffect->pEffect, &uPasses, dwFlags);
+ 	ASSERT(uPasses == 1);
+ 	ID3DXEffect_BeginPass(pGLDEffect->pEffect, 0);
++	gldApplySamplers(gld);
+ }
+ 
+ //---------------------------------------------------------------------------
+diff --git a/src/dx9/gld_tnl_dx9.c b/src/dx9/gld_tnl_dx9.c
+index 8c6511a..00689bd 100644
+--- a/src/dx9/gld_tnl_dx9.c
++++ b/src/dx9/gld_tnl_dx9.c
+@@ -835,6 +835,78 @@ static void GLAPIENTRY d3dEnd(void)
+ 		goto d3dEnd_bail; // Nothing to do...
+ 	}
+ 
++	// Siliconium (GLD_CINEMATIC_FIX=1, Call of Duty): with a display that is not
++	// 4:3 the game draws an opaque black full-screen quad (white 8x8 texture,
++	// black vertices, depth test on) over its intro movies, so they played as
++	// a black screen (Apple's OpenGL too: it is the game's own draw). While a
++	// movie is streaming (a large TexSubImage2D in the last 60 frames) exactly
++	// that quad is dropped; nothing else changes.
++	{
++		static int iFix = -1;
++		extern int gldFrameNo, gldCineFrame;
++		if (iFix < 0) { const char *v = getenv("GLD_CINEMATIC_FIX"); iFix = v && atoi(v) > 0; }
++		if (iFix && gldFrameNo - gldCineFrame <= 60 && ctx->Depth.Test &&
++			ctx->Driver.CurrentExecPrimitive == GL_TRIANGLES && gld->dwPrimVert == 6 &&
++			ctx->Texture._EnabledUnits == 1 && ctx->Texture.Unit[0]._Current &&
++			ctx->Texture.Unit[0]._Current->Image[0] &&
++			ctx->Texture.Unit[0]._Current->Image[0]->Width <= 8 &&
++			ctx->Texture.Unit[0]._Current->Image[0]->Height <= 8) {
++			GLuint k; BOOL bBlack = TRUE;
++			float x0=1e9f,y0=1e9f,x1=-1e9f,y1=-1e9f;
++			for (k = 0; k < 6; k++) { const GLD_4D_VERTEX *v = &gld->pPrim[k];
++				if (v->Diffuse != 0xff000000) bBlack = FALSE;
++				if (v->Position.x < x0) x0 = v->Position.x; if (v->Position.x > x1) x1 = v->Position.x;
++				if (v->Position.y < y0) y0 = v->Position.y; if (v->Position.y > y1) y1 = v->Position.y; }
++			if (bBlack && x0 <= 0.0f && y0 <= 0.0f && x1 >= (float)ctx->Viewport.Width && y1 >= (float)ctx->Viewport.Height) {
++				static int once;
++				if (!once) { once = 1; gldLogPrintf(GLDLOG_INFO, "Cinematic: dropped the black full-screen quad over the movie"); }
++				gld->dwPrimVert = 0;
++				goto d3dEnd_bail;
++			}
++		}
++	}
++
++	{ extern int gldTraceThisFrame;
++	  if (gldTraceThisFrame) {
++		GLuint k; float x0=1e9f,y0=1e9f,x1=-1e9f,y1=-1e9f;
++		for (k = 0; k < gld->dwPrimVert; k++) { const GLD_4D_VERTEX *v = &gld->pPrim[k];
++			if (v->Position.x < x0) x0 = v->Position.x; if (v->Position.x > x1) x1 = v->Position.x;
++			if (v->Position.y < y0) y0 = v->Position.y; if (v->Position.y > y1) y1 = v->Position.y; }
++		gldLogPrintf(GLDLOG_SYSTEM, "FR end mode=%d n=%u tex=%d en=0x%x eff=%d col0=%08x bbox %.0f,%.0f-%.0f,%.0f blend=%d %x/%x atest=%d depth=%d cmask=%08x",
++			ctx->Driver.CurrentExecPrimitive, gld->dwPrimVert,
++			ctx->Texture.Unit[0]._Current ? (int)ctx->Texture.Unit[0]._Current->Name : -1, ctx->Texture._EnabledUnits, gld->iCurEffect,
++			(unsigned)gld->pPrim[0].Diffuse, x0, y0, x1, y1, ctx->Color.BlendEnabled, ctx->Color.BlendSrcRGB, ctx->Color.BlendDstRGB,
++			ctx->Color.AlphaEnabled, ctx->Depth.Test, *(const GLuint *)&ctx->Color.ColorMask);
++	  } }
++	// Siliconium diagnostics: GLD_TRACE_TEX=<GL texture name>: vertices drawn with it
++	{
++		static int iTraceTex = -2, nTraced;
++		if (iTraceTex == -2) { const char *v = getenv("GLD_TRACE_TEX"); iTraceTex = v ? atoi(v) : -1; }
++		if (iTraceTex >= 0 && nTraced < 12 && (!getenv("GLD_TRACE_TEXMODE") || ctx->Driver.CurrentExecPrimitive == atoi(getenv("GLD_TRACE_TEXMODE"))) && ctx->Texture.Unit[0]._Current &&
++			(int)ctx->Texture.Unit[0]._Current->Name == iTraceTex) {
++			GLuint k;
++			const GLfloat *m = ctx->_ModelProjectMatrix.m;
++			nTraced++;
++			gldLogPrintf(GLDLOG_SYSTEM, "TX mode=%d n=%u eff=%d en=0x%x tex2d=%d MVP diag %.5f %.5f %.5f %.5f t %.3f %.3f %.3f",
++				ctx->Driver.CurrentExecPrimitive, gld->dwPrimVert, gld->iCurEffect, ctx->Texture._EnabledUnits,
++				ctx->Texture.Unit[0]._ReallyEnabled, m[0], m[5], m[10], m[15], m[12], m[13], m[14]);
++			{ const struct gl_texture_object *t = ctx->Texture.Unit[0]._Current;
++			  const struct gl_texture_image *im = t ? t->Image[0] : NULL;
++			  gldLogPrintf(GLDLOG_SYSTEM, "TX tex %dx%d ifmt=0x%x fmt=0x%x env=0x%x min=0x%x mag=0x%x wrap=0x%x/0x%x afunc=0x%x aref=%.3f texmat=%d",
++				im ? im->Width : -1, im ? im->Height : -1, im ? im->IntFormat : 0, im ? im->Format : 0,
++				ctx->Texture.Unit[0].EnvMode, t ? t->MinFilter : 0, t ? t->MagFilter : 0, t ? t->WrapS : 0, t ? t->WrapT : 0,
++				ctx->Color.AlphaFunc, ctx->Color.AlphaRef, ctx->Texture._TexMatEnabled);
++			  gldLogPrintf(GLDLOG_SYSTEM, "TX depth test=%d func=0x%x mask=%d clear=%.3f range %.3f-%.3f stencil=%d func=0x%x ref=%d scissor=%d cull=%d",
++				ctx->Depth.Test, ctx->Depth.Func, ctx->Depth.Mask, ctx->Depth.Clear, ctx->Viewport.Near, ctx->Viewport.Far,
++				ctx->Stencil.Enabled, ctx->Stencil.Function[0], ctx->Stencil.Ref[0], ctx->Scissor.Enabled, ctx->Polygon.CullFlag); }
++			for (k = 0; k < gld->dwPrimVert && k < 6; k++) {
++				const GLD_4D_VERTEX *v = &gld->pPrim[k];
++				gldLogPrintf(GLDLOG_SYSTEM, "TX  v%u pos %.1f %.1f %.3f %.3f col %08x tc %.4f %.4f", k,
++					v->Position.x, v->Position.y, v->Position.z, v->Position.w, (unsigned)v->Diffuse, v->Tex0.x, v->Tex0.y);
++			}
++		}
++	}
++
+ 	nGLPrimitives = nD3DPrimitives = nD3DVertices = 0;
+ 
+ 	// Calculate primitive count
+@@ -1121,6 +1193,11 @@ static void d3dFlushVertices(
+ 	// Runtime Shaders. Should use these all the time.
+ 	//
+ 
++	// Siliconium: no usable effect (table full / compile failed): skip the batch
++	// (indexing Effects[-1] read a NULL effect and crashed)
++	if (gld->iCurEffect < 0 || !gld->Effects[gld->iCurEffect].pEffect)
++		goto bail;
++
+ 	{
+ 		GLD_effect	*pGLDEffect;
+ 		pGLDEffect = &gld->Effects[gld->iCurEffect];
+@@ -1186,6 +1263,190 @@ static void GLAPIENTRY _gldDrawElements(GLenum mode, GLsizei count, GLenum type,
+ 	glEnd();
+ }
+ 
++//---------------------------------------------------------------------------
++// Siliconium: fast glDrawElements for GL_TRIANGLES with plain client arrays.
++// Mesa's default DrawElements replays every index as glArrayElement ->
++// glMultiTexCoord/glColor/glNormal/glVertex (5-6 dispatched calls a vertex;
++// ~4 ms a frame for Call of Duty under Rosetta). This fills GLDirect's
++// primitive buffer directly with exactly what d3dVertex4f would have stored
++// (same colour conversion, same current-attribute fallbacks and side effects)
++// and ends the primitive with the same d3dEnd. Anything unusual (other
++// primitive types, index buffer objects, other array types or arrays,
++// vertex programs, GLD_FASTDRAW=0) goes the original way.
++//---------------------------------------------------------------------------
++
++static int		s_iFastDraw = -1;		// -1: not read yet
++static GLubyte	s_ubToColour[256];		// gldClampedColour's result for UBYTE_TO_FLOAT(u)
++
++static int _gldFastArraysOK(GLcontext *ctx)
++{
++	const struct gl_array_attrib *a = &ctx->Array;
++	GLuint i;
++
++	if (a->ElementArrayBufferObj && a->ElementArrayBufferObj->Name)
++		return 0;
++	if (ctx->VertexProgram.Enabled)
++		return 0;
++	if (!a->Vertex.Enabled || a->Vertex.Type != GL_FLOAT || a->Vertex.Size < 2 || a->Vertex.Size > 4)
++		return 0;
++	if (a->Color.Enabled && !((a->Color.Type == GL_UNSIGNED_BYTE || a->Color.Type == GL_FLOAT) &&
++			(a->Color.Size == 3 || a->Color.Size == 4)))
++		return 0;
++	if (a->Normal.Enabled && a->Normal.Type != GL_FLOAT)
++		return 0;
++	if (a->Index.Enabled || a->EdgeFlag.Enabled || a->FogCoord.Enabled || a->SecondaryColor.Enabled)
++		return 0;
++	for (i = 0; i < ctx->Const.MaxTextureCoordUnits; i++) {
++		if (!a->TexCoord[i].Enabled)
++			continue;
++		if (i > 1 || a->TexCoord[i].Type != GL_FLOAT || a->TexCoord[i].Size < 1 || a->TexCoord[i].Size > 4)
++			return 0;
++	}
++	return 1;
++}
++
++#define GLD_ARRAY_BASE(arr) ((const GLubyte *)((arr)->BufferObj->Data + (GLuint)(arr)->Ptr))
++
++static __inline void _gldReadTex(GLfloat *d, const GLfloat *s, GLint size)
++{
++	// = _mesa_noop_MultiTexCoord{1,2,3,4}fvARB
++	d[0] = s[0];
++	d[1] = size > 1 ? s[1] : 0.0f;
++	d[2] = size > 2 ? s[2] : 0.0f;
++	d[3] = size > 3 ? s[3] : 1.0f;
++}
++
++static void GLAPIENTRY d3dDrawElementsFast(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices)
++{
++	{ extern int gldTraceThisFrame;
++	  if (gldTraceThisFrame) { GET_CURRENT_CONTEXT(tctx);
++		gldLogPrintf(GLDLOG_SYSTEM, "FR drawelements mode=%d count=%d tex=%d en=0x%x", mode, count,
++			tctx->Texture.Unit[0]._Current ? (int)tctx->Texture.Unit[0]._Current->Name : -1, tctx->Texture._EnabledUnits); } }
++	GET_CURRENT_CONTEXT(ctx);
++	GLD_context		*gldCtx	= GLD_GET_CONTEXT(ctx);
++	GLD_driver_dx9	*gld	= GLD_GET_DX9_DRIVER(gldCtx);
++	const struct gl_array_attrib *a = &ctx->Array;
++	const GLubyte	*pV = NULL, *pC = NULL, *pN = NULL, *pT0 = NULL, *pT1 = NULL;
++	GLsizei			sV = 0, sC = 0, sN = 0, sT0 = 0, sT1 = 0;
++	GLint			nV, nC = 0, nT0 = 0, nT1 = 0;
++	GLboolean		bCUb = GL_FALSE;
++	GLfloat			cur[4], t0[4], t1[4], nrm[4];
++	D3DCOLOR		dwCurColour;
++	GLuint			elt = 0;
++	GLsizei			i;
++	GLD_4D_VERTEX	*pDst;
++
++	if (s_iFastDraw < 0) {
++		const char *e = getenv("GLD_FASTDRAW");
++		GLfloat c[4];
++		int k;
++		s_iFastDraw = (e && e[0] == '0') ? 0 : 1;
++		for (k = 0; k < 256; k++) {
++			c[0] = c[1] = c[2] = c[3] = UBYTE_TO_FLOAT(k);
++			s_ubToColour[k] = (GLubyte)(gldClampedColour(c) & 0xff);
++		}
++		gldLogPrintf(GLDLOG_INFO, "Fast DrawElements: %s", s_iFastDraw ? "on" : "off (GLD_FASTDRAW=0)");
++	}
++
++	if (!s_iFastDraw || mode != GL_TRIANGLES || !_gldFastArraysOK(ctx)) {
++		_mesa_noop_DrawElements(mode, count, type, indices);
++		return;
++	}
++
++	if (!_mesa_validate_DrawElements(ctx, mode, count, type, indices))
++		return;
++
++	d3dBegin(mode);
++	if (ctx->Driver.CurrentExecPrimitive != mode)
++		return; // glBegin failed (already recorded the error)
++
++	while (gld->dwPrimVert + (DWORD)count > gld->dwMaxPrimVerts)
++		_gldEnlargePrimitiveBuffer(gld);
++
++	// Current values for attributes without an array (as d3dVertex4f reads them)
++	COPY_4V(t0, ctx->Current.Attrib[VERT_ATTRIB_TEX0]);
++	COPY_4V(t1, ctx->Current.Attrib[VERT_ATTRIB_TEX1]);
++	COPY_4V(nrm, ctx->Current.Attrib[VERT_ATTRIB_NORMAL]);
++	COPY_4V(cur, ctx->Current.Attrib[VERT_ATTRIB_COLOR0]);
++	dwCurColour = gldClampedColour(cur);
++
++	nV = a->Vertex.Size; pV = GLD_ARRAY_BASE(&a->Vertex); sV = a->Vertex.StrideB;
++	if (a->Color.Enabled) {
++		nC = a->Color.Size; pC = GLD_ARRAY_BASE(&a->Color); sC = a->Color.StrideB;
++		bCUb = (a->Color.Type == GL_UNSIGNED_BYTE);
++	}
++	if (a->Normal.Enabled) { pN = GLD_ARRAY_BASE(&a->Normal); sN = a->Normal.StrideB; }
++	if (a->TexCoord[0].Enabled) { nT0 = a->TexCoord[0].Size; pT0 = GLD_ARRAY_BASE(&a->TexCoord[0]); sT0 = a->TexCoord[0].StrideB; }
++	if (ctx->Const.MaxTextureCoordUnits > 1 && a->TexCoord[1].Enabled) {
++		nT1 = a->TexCoord[1].Size; pT1 = GLD_ARRAY_BASE(&a->TexCoord[1]); sT1 = a->TexCoord[1].StrideB;
++	}
++
++	pDst = &gld->pPrim[gld->dwPrimVert];
++	for (i = 0; i < count; i++, pDst++) {
++		const GLfloat *v;
++		switch (type) {
++		case GL_UNSIGNED_SHORT:	elt = ((const GLushort *)indices)[i]; break;
++		case GL_UNSIGNED_INT:	elt = ((const GLuint *)indices)[i]; break;
++		default:				elt = ((const GLubyte *)indices)[i]; break;
++		}
++		if (pT0) _gldReadTex(t0, (const GLfloat *)(pT0 + elt * sT0), nT0);
++		if (pT1) _gldReadTex(t1, (const GLfloat *)(pT1 + elt * sT1), nT1);
++		if (pC) {
++			if (bCUb) {
++				const GLubyte *c = pC + elt * sC;
++				pDst->Diffuse = D3DCOLOR_RGBA(s_ubToColour[c[0]], s_ubToColour[c[1]], s_ubToColour[c[2]],
++					nC == 4 ? s_ubToColour[c[3]] : s_ubToColour[255]);
++			} else {
++				const GLfloat *c = (const GLfloat *)(pC + elt * sC);
++				cur[0] = c[0]; cur[1] = c[1]; cur[2] = c[2]; cur[3] = (nC == 4) ? c[3] : 1.0f;
++				pDst->Diffuse = gldClampedColour(cur);
++			}
++		} else {
++			pDst->Diffuse = dwCurColour;
++		}
++		if (pN) {
++			v = (const GLfloat *)(pN + elt * sN);
++			nrm[0] = v[0]; nrm[1] = v[1]; nrm[2] = v[2];
++		}
++		v = (const GLfloat *)(pV + elt * sV);
++		pDst->Position.x	= v[0];
++		pDst->Position.y	= v[1] - gld->fViewportY;
++		pDst->Position.z	= nV > 2 ? v[2] : 0.0f;
++		pDst->Position.w	= nV > 3 ? v[3] : 1.0f;
++		pDst->Tex0.x		= t0[0];
++		pDst->Tex0.y		= t0[1];
++		pDst->Tex0.z		= t0[2];
++		pDst->Tex0.w		= t0[3];
++		pDst->Tex1.x		= t1[0];
++		pDst->Tex1.y		= t1[1];
++		pDst->Tex1.z		= t1[2];
++		pDst->Tex1.w		= t1[3];
++		pDst->Normal.x		= nrm[0];
++		pDst->Normal.y		= nrm[1];
++		pDst->Normal.z		= nrm[2];
++	}
++	gld->dwPrimVert += count;
++
++	// Same side effects as the per-vertex calls: the current attributes are
++	// the last element's
++	if (pT0) COPY_4V(ctx->Current.Attrib[VERT_ATTRIB_TEX0], t0);
++	if (pT1) COPY_4V(ctx->Current.Attrib[VERT_ATTRIB_TEX1], t1);
++	if (pN) { ctx->Current.Attrib[VERT_ATTRIB_NORMAL][0] = nrm[0]; ctx->Current.Attrib[VERT_ATTRIB_NORMAL][1] = nrm[1];
++		ctx->Current.Attrib[VERT_ATTRIB_NORMAL][2] = nrm[2]; ctx->Current.Attrib[VERT_ATTRIB_NORMAL][3] = 1.0f; }
++	if (pC) {
++		GLfloat *dc = ctx->Current.Attrib[VERT_ATTRIB_COLOR0];
++		if (bCUb) {
++			const GLubyte *c = pC + elt * sC;
++			dc[0] = UBYTE_TO_FLOAT(c[0]); dc[1] = UBYTE_TO_FLOAT(c[1]); dc[2] = UBYTE_TO_FLOAT(c[2]);
++			dc[3] = nC == 4 ? UBYTE_TO_FLOAT(c[3]) : 1.0f;
++		} else {
++			COPY_4V(dc, cur);
++		}
++	}
++
++	d3dEnd();
++}
++
+ //---------------------------------------------------------------------------
+ // Create/Destroy
+ //---------------------------------------------------------------------------
+@@ -1305,6 +1566,9 @@ BOOL gldInstallD3DTnl(GLcontext *ctx)
+ 	vf->DrawElements			= _gldDrawElements;
+ #endif
+ 
++	// Siliconium: direct glDrawElements (falls back to Mesa's loopback when it cannot)
++	vf->DrawElements			= d3dDrawElementsFast;
++
+ 	// Install our own vertexformat
+ 	_mesa_install_exec_vtxfmt(ctx, vf);
+ 
+diff --git a/src/dx9/gldirect5.h b/src/dx9/gldirect5.h
+index 39c51cd..c9762a2 100644
+--- a/src/dx9/gldirect5.h
++++ b/src/dx9/gldirect5.h
+@@ -269,6 +269,9 @@ typedef struct {
+ 
+ //---------------------------------------------------------------------------
+ 
++// Siliconium: size of the effect table (GLDirect had a fixed 100 with no bound check)
++#define GLD_MAX_EFFECTS 4096	// Siliconium: CoD1 SP met 621+ distinct states in two levels (512 overflowed -> crash)
++
+ // The unique set of state handled by the effect
+ typedef struct {
+ 	GLD_effect_texture		Texture;
+@@ -328,6 +331,8 @@ typedef struct {
+ 	ID3DXEffect			*pEffect;				// The compiled Effect, ready for Direct3D to use
+ 	D3DXHANDLE			hTechnique;				// Technique handle
+ 	GLD_handles			Handles;			
++	void				*pJob;					// Siliconium: async compile still running (GLD_ASYNC_EFFECTS)
++	DWORD				dwFlags;				// compile flags (for the job's result)
+ } GLD_effect;
+ 
+ //---------------------------------------------------------------------------
+@@ -439,7 +444,11 @@ typedef struct {
+ 	int							iLastEffect;	// Index of previous effect (or -1)
+ 	int							iCurEffect;		// Index of current effect (or -1)
+ 	int							nEffects;		// Count of current effects
+-	GLD_effect					Effects[100];	// TODO: Use linked list
++	// Siliconium: sampler states (MIN, MIP, MAG, ADDRESSU, ADDRESSV) per unit, set on the
++	// device instead of inside each effect (they multiplied the effects to compile)
++	DWORD						SamplerState[GLD_MAX_TEXTURE_UNITS_DX9][5];
++	GLuint						SamplerUnits;	// units whose SamplerState is valid
++	GLD_effect					Effects[GLD_MAX_EFFECTS];	// Siliconium: was 100 with no bound check
+ 
+ 	// Keep track of direction of directional lights.
+ 	D3DXVECTOR4					LightDir[GLD_MAX_LIGHTS_DX9];
+@@ -486,6 +495,8 @@ void							gld_Bitmap_DX9(GLcontext *ctx, GLint x, GLint y, GLsizei width, GLsiz
+ const struct gl_texture_format*	gld_ChooseTextureFormat_DX9(GLcontext *ctx, GLint internalFormat, GLenum srcFormat, GLenum srcType);
+ void							gld_TexImage2D_DX9(GLcontext *ctx, GLenum target, GLint level, GLint internalFormat, GLint width, GLint height, GLint border, GLenum format, GLenum type, const GLvoid *pixels, const struct gl_pixelstore_attrib *packing, struct gl_texture_object *tObj, struct gl_texture_image *texImage);
+ void							gld_TexImage1D_DX9(GLcontext *ctx, GLenum target, GLint level, GLint internalFormat, GLint width, GLint border, GLenum format, GLenum type, const GLvoid *pixels, const struct gl_pixelstore_attrib *packing, struct gl_texture_object *texObj, struct gl_texture_image *texImage );
++void							gld_CompressedTexImage2D_DX9(GLcontext *ctx, GLenum target, GLint level, GLint internalFormat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const GLvoid *data, struct gl_texture_object *texObj, struct gl_texture_image *texImage);
++void							gld_CompressedTexSubImage2D_DX9(GLcontext *ctx, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const GLvoid *data, struct gl_texture_object *texObj, struct gl_texture_image *texImage);
+ void							gld_TexSubImage2D_DX9( GLcontext *ctx, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels, const struct gl_pixelstore_attrib *packing, struct gl_texture_object *texObj, struct gl_texture_image *texImage );
+ void							gld_TexSubImage1D_DX9(GLcontext *ctx, GLenum target, GLint level, GLint xoffset, GLsizei width, GLenum format, GLenum type, const GLvoid *pixels, const struct gl_pixelstore_attrib *packing, struct gl_texture_object *texObj, struct gl_texture_image *texImage);
+ void							gld_DeleteTexture_DX9(GLcontext *ctx, struct gl_texture_object *tObj);
+@@ -502,6 +513,9 @@ void							gldUpdateShaders(GLcontext *ctx);
+ void							gldReleaseShaders(GLD_driver_dx9 *gld);
+ void							gldBeginEffect(GLD_driver_dx9 *gld, int iEffect);
+ void							gldEndEffect(GLD_driver_dx9 *gld, int iEffect);
++void							gldApplySamplers(GLD_driver_dx9 *gld);
++// Siliconium diagnostics switch (GLD_TRACE_VP), read once
++static int gldTraceVpOn(void) { static int v = -1; if (v < 0) v = getenv("GLD_TRACE_VP") != NULL; return v; }
+ 
+ D3DCOLOR						gldClampedColour(GLfloat *c);
+ 
+diff --git a/src/gld_context.c b/src/gld_context.c
+index 73ddbe2..cdb31e8 100644
+--- a/src/gld_context.c
++++ b/src/gld_context.c
+@@ -460,7 +460,7 @@ static LONG __stdcall gldWndProc(
+ // ***********************************************************************
+ 
+ // Driver Window message handler
+-static LONG __stdcall GLD_EventWndProc(
++LONG __stdcall GLD_EventWndProc(
+ 	HWND hwnd,
+ 	UINT msg,
+ 	WPARAM wParam,
+@@ -910,10 +910,13 @@ HGLRC gldCreateContext(
+ // ***********************************************************************
+ // Make a GLDirect context current
+ // Used by wgl functions and gld functions
++void gldProfileStart(void); // Siliconium: gld_prof.c
+ BOOL gldMakeCurrent(
+ 	HDC a,
+ 	HGLRC b)
+ {
++	gldProfileStart(); // Siliconium: GLD_PROFILE diagnostics only
++
+ 	int context;
+ 	GLD_ctx* lpCtx;
+ 	HWND hWnd;
+diff --git a/src/gld_context.h b/src/gld_context.h
+index 7cde2d5..a9fd6b4 100644
+--- a/src/gld_context.h
++++ b/src/gld_context.h
+@@ -47,7 +47,7 @@
+ #endif // STRICT
+ #define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
+-#include <GL\gl.h>
++#include <GL/gl.h>
+ 
+ #include "gld_macros.h"
+ #include "gld_globals.h"
+diff --git a/src/gld_driver.c b/src/gld_driver.c
+index 9da1f20..67431b9 100644
+--- a/src/gld_driver.c
++++ b/src/gld_driver.c
+@@ -202,7 +202,9 @@ const GLubyte* _gldGetStringGeneric(
+ 	case GL_VENDOR:
+ 		return (const GLubyte *) g_szGLDVendor;
+ 	case GL_VERSION:
+-		return (const GLubyte *) g_szGLDVersion;
++		// Mesa's own version, from the extensions this context really has
++		// (was a fixed "1.1" string)
++		return NULL;
+ 	case GL_RENDERER:
+ 		sprintf(_gldRendererString, "GLDirect 5.0 %s%s%s%s (%s %s)",
+ 			_mesa_x86_cpu_features	? "x86"		: "",
+@@ -212,7 +214,9 @@ const GLubyte* _gldGetStringGeneric(
+ 			__DATE__, __TIME__);
+ 		return (const GLubyte *) _gldRendererString;
+ 	case GL_EXTENSIONS:
+-		return (const GLubyte *) g_szGLDExtensions;
++		// Mesa's own list of the extensions enabled for this context
++		// (was a fixed two-extension list written for Quake 3)
++		return NULL;
+ 	default:
+ 		return NULL; // Mesa will "fill in blanks" if we return NULL.
+ 	}
+diff --git a/src/gld_wgl.h b/src/gld_wgl.h
+index 703ef7e..2a7a9fb 100644
+--- a/src/gld_wgl.h
++++ b/src/gld_wgl.h
+@@ -46,7 +46,7 @@
+ #define WIN32_LEAN_AND_MEAN
+ 
+ #include <windows.h>
+-#include <GL\gl.h>
++#include <GL/gl.h>
+ 
+ #include "gld_context.h"
+ #include "gld_globals.h"
+diff --git a/src/mingw_compat.h b/src/mingw_compat.h
+new file mode 100644
+index 0000000..f61e09c
+--- /dev/null
++++ b/src/mingw_compat.h
+@@ -0,0 +1,9 @@
++/* mingw port: GCC has no MSVC structured exception handling; the __try blocks
++   only guard clean-up at DLL unload, so they run unguarded. */
++#ifndef MINGW_COMPAT_H
++#define MINGW_COMPAT_H
++#ifdef __GNUC__
++#define __try if (1)
++#define __except(x) else if (0)
++#endif
++#endif
+diff --git a/src/gld_prof.c b/src/gld_prof.c
+new file mode 100644
+index 0000000..be4245d
+--- /dev/null
++++ b/src/gld_prof.c
+@@ -0,0 +1,97 @@
++/*
++ * Siliconium: in-process sampling profiler (diagnostics only, off unless
++ * GLD_PROFILE="<start s>,<duration s>" is set). macOS tools cannot unwind
++ * Rosetta-translated code, so this thread suspends the GL thread every ~1 ms,
++ * reads its EIP and, at the end, writes "count module+offset" lines (plus a
++ * per-module summary) to GLD_PROFILE_OUT (default gldprof.txt).
++ */
++#include <windows.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define GLDPROF_MAX 400000
++static DWORD *s_eip;
++static HANDLE s_target;
++static volatile LONG s_started;
++
++typedef struct { DWORD eip; DWORD n; } eipcount;
++static int cmp_eip(const void *a, const void *b) { DWORD x = *(const DWORD *)a, y = *(const DWORD *)b; return x < y ? -1 : x > y; }
++static int cmp_n(const void *a, const void *b) { return ((const eipcount *)b)->n - ((const eipcount *)a)->n; }
++
++static void modname(DWORD eip, char *out, size_t sz, DWORD *off)
++{
++	HMODULE h = NULL;
++	char path[MAX_PATH], *p;
++	*off = eip;
++	if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++			(LPCSTR)(ULONG_PTR)eip, &h) && h && GetModuleFileNameA(h, path, sizeof(path))) {
++		p = strrchr(path, '\\');
++		_snprintf(out, sz, "%s", p ? p + 1 : path);
++		*off = eip - (DWORD)(ULONG_PTR)h;
++	} else {
++		_snprintf(out, sz, "?");
++	}
++	out[sz - 1] = 0;
++}
++
++static DWORD WINAPI sampler(LPVOID arg)
++{
++	const char *cfg = getenv("GLD_PROFILE"), *outp = getenv("GLD_PROFILE_OUT");
++	int start = 10, dur = 10, n = 0, i, nu = 0, nm = 0;
++	DWORD t0;
++	eipcount *u;
++	struct { char name[64]; DWORD n; } mods[64];
++	FILE *f;
++	sscanf(cfg, "%d,%d", &start, &dur);
++	timeBeginPeriod(1);
++	Sleep(start * 1000);
++	t0 = GetTickCount();
++	while (GetTickCount() - t0 < (DWORD)dur * 1000 && n < GLDPROF_MAX) {
++		CONTEXT c;
++		if (SuspendThread(s_target) == (DWORD)-1) break;
++		c.ContextFlags = CONTEXT_CONTROL;
++		if (GetThreadContext(s_target, &c)) s_eip[n++] = c.Eip;
++		ResumeThread(s_target);
++		Sleep(1);
++	}
++	timeEndPeriod(1);
++	qsort(s_eip, n, sizeof(DWORD), cmp_eip);
++	u = (eipcount *)malloc(sizeof(eipcount) * (n + 1));
++	for (i = 0; i < n; i++) {
++		if (nu && u[nu - 1].eip == s_eip[i]) u[nu - 1].n++;
++		else { u[nu].eip = s_eip[i]; u[nu].n = 1; nu++; }
++	}
++	for (i = 0; i < nu; i++) {
++		char m[64]; DWORD off; int k;
++		modname(u[i].eip, m, sizeof(m), &off);
++		for (k = 0; k < nm && strcmp(mods[k].name, m); k++) ;
++		if (k == nm && nm < 64) { strcpy(mods[nm].name, m); mods[nm].n = 0; nm++; }
++		if (k < nm) mods[k].n += u[i].n;
++	}
++	qsort(u, nu, sizeof(eipcount), cmp_n);
++	f = fopen(outp && *outp ? outp : "gldprof.txt", "w");
++	if (f) {
++		fprintf(f, "samples %d over %d s\n", n, dur);
++		for (i = 0; i < nm; i++) fprintf(f, "MOD %7lu %5.1f%% %s\n", mods[i].n, 100.0 * mods[i].n / (n ? n : 1), mods[i].name);
++		for (i = 0; i < nu && i < 3000; i++) {
++			char m[64]; DWORD off;
++			modname(u[i].eip, m, sizeof(m), &off);
++			fprintf(f, "EIP %6lu %s+0x%lx\n", u[i].n, m, off);
++		}
++		fclose(f);
++	}
++	free(u);
++	return 0;
++}
++
++void gldProfileStart(void)
++{
++	const char *cfg = getenv("GLD_PROFILE");
++	if (!cfg || !*cfg || InterlockedExchange(&s_started, 1)) return;
++	s_eip = (DWORD *)malloc(sizeof(DWORD) * GLDPROF_MAX);
++	if (!s_eip) return;
++	DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &s_target,
++		THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, 0);
++	CloseHandle(CreateThread(NULL, 0, sampler, NULL, 0, NULL));
++}

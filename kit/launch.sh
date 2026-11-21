@@ -84,9 +84,10 @@ engine="$home/engine"
 export WINEPREFIX="$home/prefix" CX_ROOT="$engine" WINESERVER="$engine/bin/wineserver"
 # Black Ops II's campaign has its own prefix; its game folder was made
 # Steam-free by bo2-campaign.sh (no Steam runs in it)
-if [ "${1:-}" = bo2c ] || [ "${1:-}" = bo2s ] || [ "${1:-}" = steam ]; then
+if [ "${1:-}" = bo2c ] || [ "${1:-}" = bo2s ] || [ "${1:-}" = steam ] || [ "${1:-}" = cod4x ]; then
   # bo2s and the Steam Library (steam): Steam for Windows in its own prefix
-  # (steam.sh), which starts the game
+  # (steam.sh), which starts the game. CoD4X (cod4x): the same prefix and
+  # Steam's Call of Duty 4 multiplayer setup, without Steam
   if [ "${1:-}" = bo2c ]; then export WINEPREFIX="$home/prefix-bo2c"; else export WINEPREFIX="$home/prefix-steam"; fi
   # its Wine server runs through a link outside the engine folder, so the app
   # doesn't count the campaign's prefix as a game running
@@ -110,6 +111,13 @@ game=${1:-}; mode=${2:-}
 [ "$game" = stop ] && { stop_all; WINEPREFIX="$home/prefix-bo2c" "$WINESERVER" -k 2>/dev/null
   WINEPREFIX="$home/prefix-steam" "$WINESERVER" -k 2>/dev/null; exit 0; }
 [ -x "$wine" ] || die "the engine is not installed"
+# CoD4X without the Steam Library set up yet: Steam's prefix, without Steam
+# (as steam.sh setup makes it; Steam for Windows can be added to it later)
+if [ "$game" = cod4x ] && [ ! -f "$WINEPREFIX/system.reg" ]; then
+  printf '==> %s\n' "Preparing Wine for CoD4X"
+  "$wine" wineboot --init > "$home/logs/steam-wineboot.log" 2>&1
+  "$WINESERVER" -w 2>/dev/null
+fi
 [ -d "$WINEPREFIX/drive_c" ] || die "the Wine prefix is not set up"
 # Engines installed by a quarantined (browser-downloaded) Siliconium carry the
 # quarantine flag, and Gatekeeper refuses to load them ("winemetal.so Not
@@ -135,11 +143,31 @@ case "$game:$mode" in
     . "$kit/tools/steam-games.sh"
     s_id=${mode%-*} s_part=${mode#*-}
     steam_title "$s_id" "$s_part" || die "unknown Steam Library game: $mode"
-    dir=$(bash "$kit/steam.sh" gamedir "$s_app") t=steam
+    # STEAM_APPLAUNCH=1 (settings.conf, for testing): let Steam start parts
+    # through Steam, as its Play button does (only for parts with their own app)
+    [ "${STEAM_APPLAUNCH:-}" = 1 ] && s_own=1
+    dir=$(bash "$kit/steam.sh" gamedir "$s_app") t=steam s_client=
     [ -n "$dir" ] && [ -f "$dir/$s_exe" ] ||
       die "$s_name is not downloaded in Steam yet: press Download in the Steam Library, then Play" ;;
-  *) die "usage: launch.sh waw|bo1|bo2|iw5 online|zombies|campaign|mp [name], launch.sh iw4 play|launcher, launch.sh iw6 play, launch.sh boiii play|launcher, launch.sh steam <game>-<sp|mp|zm>, or launch.sh stop" ;;
+  # CoD4X (tools/cod4x.sh): Call of Duty 4 multiplayer with the Steam Library's
+  # setup for it (steam cod4-mp) from CoD4X's own folder (a copy of Steam's
+  # download, or the folder the player chose), started without Steam
+  cod4x:play)
+    . "$kit/tools/steam-games.sh"
+    s_id=cod4 s_part=mp
+    steam_title cod4 mp || die "unknown Steam Library game: cod4-mp"
+    s_own=0 s_client=cod4x s_name=CoD4X
+    . "$kit/tools/cod4x.sh"
+    sil_cod4x_prepare "${COD4X_DIR:-}" || die "$c4_error"
+    dir=$c4_dir t=steam ;;
+  *) die "usage: launch.sh waw|bo1|bo2|iw5 online|zombies|campaign|mp [name], launch.sh iw4 play|launcher, launch.sh iw6 play, launch.sh boiii play|launcher, launch.sh steam <game>-<sp|mp|zm>, launch.sh cod4x play, or launch.sh stop" ;;
 esac
+# The community fix the player chose for this Steam game, if any
+# (tools/steam-mods.sh; none: nothing here changes). CoD4X is not one of them
+if [ "$t" = steam ]; then
+  . "$kit/tools/steam-mods.sh"
+  [ -n "${s_client:-}" ] || steam_mod_prepare "$dir" || die "$m_error"
+fi
 if [ "$t" = t7 ]; then
   [ -n "$dir" ] && [ -d "$dir" ] || die "the Black Ops III (Windows) folder is not set"
   # boiii.exe (Ezz's client): downloaded here the first time, checked against
@@ -245,8 +273,9 @@ if [ "${SDL_STICKS:-${SWITCH_STICKS:-1}}" != 0 ] && { [ "$t" != t5 ] || [ "${BO1
     1e8e5e30b24ff999a97d97cd5733f59c694dc1e01d1f66bbd7c5aa6e3d1b60a0 ||
     printf '%s\n' 'Warning: could not install the SDL controller update.' >&2
 fi
-if [ "$t" = t5 ]; then
-  install_own_engine_module winecoreaudio.so 570a756b9f72d4e26769431ea419719cebfbd14c9f1c52ddcd8abd2b61510883 ||
+if [ "$t" = t5 ] || [ "${s_id:-}" = bo1 ]; then   # Black Ops, Plutonium's or Steam's
+  install_own_engine_module winecoreaudio.so 570a756b9f72d4e26769431ea419719cebfbd14c9f1c52ddcd8abd2b61510883 \
+    fb6c9d52aefb1180e4c716c52f873929f91e6e0290a6955f23fe69cf7ab85c8d ||
     printf '%s\n' 'Warning: could not install the Black Ops audio update.' >&2
 fi
 # The cursor fix (see SIL_BO2_TRANSPARENT_CURSOR below): Black Ops II always;
@@ -279,7 +308,9 @@ if [ "$cursor_fix" = 1 ]; then
     f3a79c3d8d1f09588e78726263bab22f6acd045849de2a479bfae25150b04045 \
     6be7a63ece9504e8f4a7d8e8f4b2409f5bb683ea281cdd39509eef105eff380e \
     2509d6c5a391e5da36a1c97a9cc61bfbffa5b2275f36e197bc4c777ca1e27dd0 \
-    5412976bc72c5b4843eed6fac2048910befbebef21abf50ebf5627a44386547a ||
+    5412976bc72c5b4843eed6fac2048910befbebef21abf50ebf5627a44386547a \
+    0724dd99b4ad120402a956b9b1836647ccc9431201916c77938ac69f9e55ac95 \
+    eb5eb337107f33cf3fe728e2abd6b3ee6b84bc000768ff0f9d790e045b00108e ||
     printf '%s\n' 'Warning: could not install the Black Ops II cursor update.' >&2
 fi
 
@@ -359,7 +390,11 @@ read -r dw dh hz < <("$kit/tools/displaymode" current 2>/dev/null || true)
 # The frame-rate cap and the games' refresh settings follow it.
 case "$t" in
   t4|t5|iw4|iw5|t7|steam)
-    if on DISPLAY_MODE && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
+    # Steam's Ghosts runs borderless on the desktop as Siliconium's own Ghosts
+    # (t=iw6, not in this list): the desktop's rate, not the 1x mode's
+    desktop_rate=0
+    case "$t:${s_exe:-}" in steam:iw6sp64_ship.exe|steam:iw6mp64_ship.exe) desktop_rate=1 ;; esac
+    if [ "$desktop_rate" = 0 ] && on DISPLAY_MODE && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
       best_hz=$("$kit/tools/displaymode" best "$dw" "$dh" 2>/dev/null)
       [[ ${best_hz:-} =~ ^[1-9][0-9]*$ ]] && [ "$best_hz" -gt "${hz:-0}" ] && hz=$best_hz
     fi ;;
@@ -381,11 +416,16 @@ case "$t:$mode" in
   # of the game's size, which was slower here and left the window without frames.
   t6:*) : ;;
   # Steam Library: the fullscreen games (Direct3D 9, OpenGL) are held in a 1x
-  # mode of the desktop's size; BO2 keeps the desktop's mode as above, and
-  # Ghosts / Advanced Warfare run borderless.
+  # mode of the desktop's size; Ghosts runs borderless. Advanced Warfare is
+  # held too (its own setup, s1; not Ghosts'), and Black Ops III (t7) as
+  # BOIII is (DISPLAY_MODE: on a HiDPI desktop it otherwise switches to the
+  # panel's full pixel size).
+  # Black Ops II too, as Plutonium's BO2 is (hold_1x of its profile, further
+  # down): on the scaled desktop (a 4K panel mode at 153 Hz) Steam's BO2 Zombies
+  # missed 13-33 % of the refreshes; Plutonium's, held at 1x 160 Hz, none.
   steam:*)
-    case "$s_api" in
-      gl|d3d9|d3d9x64) [ -n "${dw:-}" ] && [ -n "${dh:-}" ] && hold_1x_size "$dw $dh" ;;
+    case "$s_api:$s_kind" in
+      gl:*|d3d9:*|d3d9x64:*|d3d11:t6|d3d11x64:s1|d3d11x64:t7) [ -n "${dw:-}" ] && [ -n "${dh:-}" ] && hold_1x_size "$dw $dh" ;;
     esac ;;
   t5:mp) hold_1x "$plutonium/storage/t5/players/config_mp.cfg" ;;
   t5:*) hold_1x "$plutonium/storage/t5/players/config.cfg" ;;
@@ -483,6 +523,11 @@ dxmt_config() {
   if [ "$cap" != 0 ] && on "${settings}_FRAME_PACING"; then
     config="d3d11.preferredMaxFrameRate=$cap;$config"
   fi
+  # <GAME>_TESS_FACTOR=4..64: d3d11.maxTessFactor (upstream ef11653); only
+  # DXMT builds that have it read it (none shipped now; DXMT ignores unknown
+  # options)
+  local tf="${settings}_TESS_FACTOR"
+  case "${!tf:-}" in [4-9]|[1-5][0-9]|6[0-4]) config="${config}d3d11.maxTessFactor=${!tf};" ;; esac
   printf '%s' "$config"
 }
 
@@ -544,13 +589,13 @@ if [ "$t" = iw6 ]; then
         # runs through the tessellation emulation of DXMT, which wrote outside its
         # threadgroup memory ~800 000 times in a few minutes ("Invalid
         # threadgroup store ... vshs_..."): heavy lag. Both every launch.
-        n = split("cl_loadHBAODLL=0 cl_loadTXAADLL=0 r_apex_turbulence=0 r_ssao=0_Off r_subdivLimit=0", a, " ")
+        n = split("cl_loadHBAODLL=0 cl_loadTXAADLL=0 r_apex_turbulence=0 r_ssao=0_Off r_tessellation=0_Off r_subdivLimit=0", a, " ")
         for (i = 1; i <= n; i++) { split(a[i], kv, "="); want[tolower(kv[1])] = kv[2]; name[tolower(kv[1])] = kv[1] }
         if (once) {
           # textures at full resolution: on "automatic" (r_picmip_manual 0)
           # Ghosts sizes them for the video memory it detects, and picked low
           # ones on Apple GPUs
-          n = split("r_tessellation=0_Off r_mbEnable=0 r_mbEnableA=0 r_fur_shader=0 r_picmip_manual=1 r_picmip=0 r_picmip_bump=0 r_picmip_spec=0 r_picmip_water=0", a, " ")
+          n = split("r_mbEnable=0 r_mbEnableA=0 r_fur_shader=0 r_picmip_manual=1 r_picmip=0 r_picmip_bump=0 r_picmip_spec=0 r_picmip_water=0", a, " ")
           for (i = 1; i <= n; i++) { split(a[i], kv, "="); want[tolower(kv[1])] = kv[2]; name[tolower(kv[1])] = kv[1] }
         }
       }
@@ -630,6 +675,22 @@ case "$cursor_fix" in
     fi
     ;;
 esac
+# - SIL_REAPPLY_GAMMA (Call of Duty, Steam): Wine gives the displays back to
+#   macOS when a fullscreen game loses focus, which also restores macOS's gamma;
+#   Call of Duty sets its ramp once (its overbright lighting doubles the picture
+#   through it), so after Cmd+Tab or minimize it came back at half brightness.
+#   winemac applies the game's last ramp again when it is active (as Windows
+#   keeps it).
+if [ "$t" = steam ] && [ "${s_id:-}" = cod1 ] && [ "$cursor_fix" = 1 ]; then
+  export SIL_REAPPLY_GAMMA=1
+  set_env __CX_UNIX_SIL_REAPPLY_GAMMA 1
+else
+  unset SIL_REAPPLY_GAMMA
+  if [ -n "${__CX_UNIX_SIL_REAPPLY_GAMMA:-}" ] ||
+     grep -q '^"__CX_UNIX_SIL_REAPPLY_GAMMA"=' "$WINEPREFIX/user.reg" 2>/dev/null; then
+    clear_env __CX_UNIX_SIL_REAPPLY_GAMMA
+  fi
+fi
 
 if [ "${X87:-1}" = 1 ] && [ -x "$engine/bin/x87sidecar" ]; then
   set_env X87_SIDECAR_PATH "$engine/bin/x87sidecar"
@@ -687,6 +748,13 @@ if [ "$t" = iw5 ] || [ "$t" = iw4 ] || [ "$t" = steam ]; then
     else set_env DXVK_ASYNC "${IW5_ASYNC_LEVEL:-1}"; fi
   else set_env DXVK_ASYNC 0; fi
   set_env DXVK_WARM_ASYNC 0; set_env DXVK_WARM_WAIT 0
+  # Black Ops on Steam: its BlackOps.exe is the executable Plutonium runs (the
+  # warming tag our DXVK reads is at the same address), so its one-frame
+  # shader warming pass compiles in the background and the load screen waits
+  # for it, as with Plutonium (BO1_WARM=0: off)
+  if { [ "$t:${s_exe:-}" = steam:BlackOps.exe ] || [ "$t:${s_exe:-}" = steam:BlackOpsMP.exe ]; } && on BO1_WARM; then
+    clear_env DXVK_WARM_ASYNC; clear_env DXVK_WARM_WAIT
+  fi
   if on "${shader_settings}_SHADER_CACHE"; then clear_env MVKCACHE_OFF; clear_env DXVK_STATE_CACHE
   else set_env MVKCACHE_OFF 1; set_env DXVK_STATE_CACHE 0; fi
   if on "${shader_settings}_METAL_PARALLEL"; then set_env MVK_CONFIG_SHOULD_MAXIMIZE_CONCURRENT_COMPILATION 1
@@ -743,7 +811,9 @@ elif [ "$t:$mode" = iw5:mp ]; then
 elif [ "$t:$mode" = t5:mp ]; then
   set_env MVKCACHE_FILE "$bo1_mp_mvk_cache"
 elif [ "$t" = steam ]; then
-  set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$home/cache/steam-$s_id/mvkcache.bin}"
+  # Black Ops Multiplayer keeps its own, as with Plutonium (bo1-mp)
+  if [ "${s_exe:-}" = BlackOpsMP.exe ]; then mkdir -p "$home/cache/steam-$s_id/mp"; set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$home/cache/steam-$s_id/mp/mvkcache.bin}"
+  else set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$home/cache/steam-$s_id/mvkcache.bin}"; fi
 elif grep -Fxq -e "\"MVKCACHE_FILE\"=\"$iw4_mvk_cache\"" \
                 -e "\"MVKCACHE_FILE\"=\"$iw5_mvk_cache\"" \
                 -e "\"MVKCACHE_FILE\"=\"$bo1_mp_mvk_cache\"" "$WINEPREFIX/user.reg" 2>/dev/null; then
@@ -753,6 +823,50 @@ set_env DXMT_CONFIG "$(dxmt_config BO2 "$maxfps")"
 if [ "$t" = steam ] && [ "$s_kind" = iw6 ]; then
   steam_ids=; on IW6_GPU_ID && steam_ids="dxgi.customVendorId=1002;dxgi.customDeviceId=67df;"
   set_env DXMT_CONFIG "$steam_ids$(dxmt_config IW6 "$maxfps")"
+fi
+# Advanced Warfare: DXMT's defaults (async pipelines, pacing at the refresh
+# rate) without Ghosts' AMD GPU id; AW_ASYNC / AW_FRAME_PACING=0 turn them off
+[ "$t" = steam ] && [ "${s_kind:-}" = s1 ] && set_env DXMT_CONFIG "$(dxmt_config AW "$maxfps")"
+# Black Ops II (Steam): the shader caches of Plutonium's BO2. DXMT keeps one
+# per executable (dxmt/<exe>/ in the user cache folder: shaders_*.db, the
+# translated shaders, and com.apple.metal, Metal's compiled ones), so Steam's
+# t6sp/t6mp/t6zm started cold although they draw the same shaders (620 of
+# t6mp's first 851 keys were already in Plutonium's): a 1.1 s freeze at the
+# first shot and textures black for a moment. DXMT_SHADER_CACHE_PATH moves the
+# database; Metal's folder has no setting, so it becomes a link. Steam's own
+# entries are merged in once. BO2_SHARED_CACHE=0 keeps them apart.
+if [ "$t" = steam ] && [ "${s_kind:-}" = t6 ] && on BO2_SHARED_CACHE; then
+  dxmt_cache="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)dxmt"
+  shared="$dxmt_cache/plutonium-bootstrapper-win32.exe"
+  own="$dxmt_cache/$s_exe"
+  if [ "$dxmt_cache" != dxmt ] && mkdir -p "$shared/com.apple.metal" "$own"; then
+    if [ ! -L "$own/com.apple.metal" ]; then
+      for db in "$own"/shaders_*.db; do
+        [ -f "$db" ] || continue
+        /usr/bin/sqlite3 "$shared/${db##*/}" "attach '$db' as s; create table if not exists main.cache_18 (key BLOB PRIMARY KEY, value BLOB NOT NULL); insert or ignore into main.cache_18 select key, value from s.cache_18;" 2>/dev/null || true
+      done
+      rm -rf "$own/com.apple.metal" && ln -s "$shared/com.apple.metal" "$own/com.apple.metal"
+    fi
+    set_env DXMT_SHADER_CACHE_PATH "$shared"
+  fi
+# Advanced Warfare with its own shader translator (AW_DXMT_FIX, when one is in the kit: see the Steam
+# block): its own translated-shader database, since DXMT keys translations by
+# shader and variant only and would reuse the ones the engine's translator made
+elif [ "$t" = steam ] && [ "${s_kind:-}" = s1 ] && { [ -f "${AW_DXMT_DIR:-/nonexistent}/x86_64-unix/winemetal.so" ] ||
+     { on AW_DXMT_FIX && [ -f "$kit/payload/steam/aw-winemetal.so" ]; }; }; then
+  aw_cache="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)dxmt/$s_exe/airconv-aw5"
+  # a whole DXMT build under test (AW_DXMT_DIR): its own database
+  [ -f "${AW_DXMT_DIR:-/nonexistent}/x86_64-unix/winemetal.so" ] && aw_cache="${aw_cache%/*}/test-$(basename "$AW_DXMT_DIR")"
+  if [ "${aw_cache#/}" != "$aw_cache" ] && mkdir -p "$aw_cache"; then set_env DXMT_SHADER_CACHE_PATH "$aw_cache"
+  else clear_env DXMT_SHADER_CACHE_PATH; fi
+# SIL_DXMT_SO=<winemetal.so> SIL_DXMT_CACHE=<absolute folder> (development
+# only): a Steam Library Direct3D 11 game runs from a clone of the engine with
+# that DXMT translator (see the Steam block) and its own translated-shader
+# database; nothing changes unless both are set
+elif [ "$t" = steam ] && [ -f "${SIL_DXMT_SO:-/nonexistent}" ] && case "${SIL_DXMT_CACHE:-}" in /?*) true ;; *) false ;; esac; then
+  mkdir -p "$SIL_DXMT_CACHE" && set_env DXMT_SHADER_CACHE_PATH "$SIL_DXMT_CACHE"
+elif [ "$t" = steam ]; then
+  clear_env DXMT_SHADER_CACHE_PATH
 fi
 # a MetalFX setting left by an earlier Siliconium build
 { grep -q '^"DXMT_METALFX_SPATIAL_SWAPCHAIN"=' "$WINEPREFIX/user.reg" 2>/dev/null &&
@@ -865,6 +979,7 @@ fi
 if [ "$t" = steam ]; then
   steamdir="$WINEPREFIX/drive_c/Program Files (x86)/Steam"
   log="$home/logs/steam-$s_id-$s_part.log"
+  [ -n "${s_client:-}" ] && log="$home/logs/$s_client.log"
   case "$s_kind" in
     iw6) capture=n ;;            # borderless
     t6)  capture=n ;;            # BO2 keeps the desktop's mode
@@ -875,6 +990,163 @@ if [ "$t" = steam ]; then
     steam_dxvk64 "$WINEPREFIX" "$kit" ||
       die "Could not install DXVK for $s_name (64-bit Direct3D 9): reinstall Siliconium."
     reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d9 /d native /f
+  fi
+  # Black Ops Multiplayer: Plutonium's multiplayer renderer (payload/bo1/
+  # mp-d3d9.dll, our DXVK with the multiplayer warming flag, DXVK_T5MP_WARM;
+  # Steam's BlackOpsMP.exe is the executable Plutonium runs) for that
+  # executable only, from Steam's 32-bit system folder; every other 32-bit
+  # Direct3D 9 game of the section keeps the engine's own DXVK (builtin)
+  if [ "$s_api" = d3d9 ]; then
+    if [ "$s_exe" = BlackOpsMP.exe ] && on BO1_MP_FAST_LOAD && on BO1_WARM && on BO1_ASYNC &&
+       [ -f "$kit/payload/bo1/mp-d3d9.dll" ]; then
+      # The renderer carries Wine's builtin mark (Plutonium puts it in a copy of
+      # the engine's DLL folder); as a native DLL Wine would take it for a
+      # placeholder and the game would not start: a copy with the standard
+      # DOS-stub text instead of the mark (bytes 64-79, never run)
+      mpdll="$WINEPREFIX/bo1-mp-d3d9.native.dll"
+      if [ ! -f "$mpdll" ] || [ "$kit/payload/bo1/mp-d3d9.dll" -nt "$mpdll" ]; then
+        cp "$kit/payload/bo1/mp-d3d9.dll" "$mpdll.tmp" &&
+          printf 'This program can' | dd of="$mpdll.tmp" bs=1 seek=64 conv=notrunc 2> /dev/null &&
+          mv -f "$mpdll.tmp" "$mpdll"
+      fi
+      cmp -s "$mpdll" "$WINEPREFIX/drive_c/windows/syswow64/d3d9.dll" ||
+        cp "$mpdll" "$WINEPREFIX/drive_c/windows/syswow64/d3d9.dll"
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d9 /d native /f
+      set_env DXVK_T5MP_WARM 1
+    elif [ "$s_id" = cod2 ] && [ -f "$kit/payload/steam/cod2-d3d9.dll" ]; then
+      # Call of Duty 2: our DXVK plus own bindings for the 3D and cube variants
+      # of shader model 1 samplers (patches/dxvk-d3d9-sm1-samplers.patch);
+      # Metal cannot share them and the menus were never drawn (black screen
+      # with the menu's sound). For its executables only, from Steam's 32-bit
+      # system folder, as Black Ops Multiplayer's renderer
+      cmp -s "$kit/payload/steam/cod2-d3d9.dll" "$WINEPREFIX/drive_c/windows/syswow64/d3d9.dll" ||
+        cp "$kit/payload/steam/cod2-d3d9.dll" "$WINEPREFIX/drive_c/windows/syswow64/d3d9.dll"
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d9 /d native /f
+      clear_env DXVK_T5MP_WARM
+    else
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d9 /d builtin /f
+      clear_env DXVK_T5MP_WARM
+    fi
+  fi
+  # Advanced Warfare: the engine's DXMT 0.80 (same 4 patches) plus upstream
+  # ab984cf (patches/dxmt-mesh-no-ps-v0.80.patch): a tessellation (mesh)
+  # pipeline with no pixel shader gets no colour attachments, else Metal
+  # aborts the game ("fragmentFunction must not be nil", after the first
+  # cutscene). For its executables only, from Steam's 64-bit system folder
+  # as a native DLL; every other game keeps the builtin (Wine's default for
+  # d3d11 loads the builtin even with this file there: it is not marked
+  # prefer-native). AW_DXMT_FIX=0: the engine's DXMT, as before.
+  # AW_DXMT_DIR=<folder with x86_64-windows/{d3d11,dxgi,d3d10core,winemetal}.dll
+  # and x86_64-unix/winemetal.so, builtin-marked>: a whole DXMT build under
+  # test for Advanced Warfare (development only; the engine stays untouched)
+  aw_dxmt_dir=
+  [ "${s_kind:-}" = s1 ] && [ -f "${AW_DXMT_DIR:-/nonexistent}/x86_64-unix/winemetal.so" ] &&
+    [ -f "$AW_DXMT_DIR/x86_64-windows/d3d11.dll" ] && aw_dxmt_dir=$AW_DXMT_DIR
+  # AW_D3D=dxvk AW_DXVK_DIR=<folder with a 64-bit DXVK d3d11.dll + dxgi.dll>:
+  # Advanced Warfare on DXVK (Vulkan → MoltenVK) instead of DXMT (development
+  # only). Native from Steam's 64-bit system folder for AW's exe only; the
+  # other games keep the builtin DXMT (not prefer-native, see below)
+  aw_dxvk=
+  [ "${s_kind:-}" = s1 ] && [ "${AW_D3D:-}" = dxvk ] && [ -f "${AW_DXVK_DIR:-/nonexistent}/d3d11.dll" ] &&
+    [ -f "$AW_DXVK_DIR/dxgi.dll" ] && aw_dxvk=$AW_DXVK_DIR
+  if [ "${s_kind:-}" = s1 ]; then
+    if [ -n "$aw_dxvk" ]; then
+      for d in d3d11 dxgi; do
+        cmp -s "$aw_dxvk/$d.dll" "$WINEPREFIX/drive_c/windows/system32/$d.dll" ||
+          cp "$aw_dxvk/$d.dll" "$WINEPREFIX/drive_c/windows/system32/$d.dll"
+        reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v $d /d native /f
+      done
+    else
+      reg delete "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v dxgi /f
+    fi
+  fi
+  if [ "${s_kind:-}" = s1 ] && [ -z "$aw_dxvk" ]; then
+    if [ -n "$aw_dxmt_dir" ]; then
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d11 /d builtin /f
+    elif on AW_DXMT_FIX && [ -f "$kit/payload/steam/aw-d3d11.dll" ]; then
+      cmp -s "$kit/payload/steam/aw-d3d11.dll" "$WINEPREFIX/drive_c/windows/system32/d3d11.dll" ||
+        cp "$kit/payload/steam/aw-d3d11.dll" "$WINEPREFIX/drive_c/windows/system32/d3d11.dll"
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d11 /d native /f
+    else
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d11 /d builtin /f
+    fi
+  fi
+  # Advanced Warfare with its own shader translator (winemetal.so, the unix
+  # half of DXMT, kit/payload/steam/aw-winemetal.so = v0.80 +
+  # patches/dxmt-airconv-ts-workloads-v0.80.patch): DXMT's emulated
+  # tessellation declared fewer mesh workloads than its quad generator emits,
+  # and AW's GPU page-faulted seconds into play. winemetal.so is shared by
+  # every Direct3D 11 game and Wine prefers the built-in modules next to its
+  # own loader, so AW runs from a clone of the engine's lib/wine with that
+  # file replaced (as Black Ops Multiplayer's renderer); every other game
+  # keeps the engine untouched. AW_DXMT_DIR (development only, see above)
+  # puts a whole DXMT build in that clone.
+  aw_engine=
+  sil_so=
+  [ -f "${SIL_DXMT_SO:-/nonexistent}" ] && case "${SIL_DXMT_CACHE:-}" in /?*) true ;; *) false ;; esac && sil_so=$SIL_DXMT_SO
+  if [ -n "${aw_dxmt_dir:-}" ] || [ -n "$sil_so" ] || { [ "${s_kind:-}" = s1 ] && on AW_DXMT_FIX && [ -f "$kit/payload/steam/aw-winemetal.so" ] &&
+     cmp -s "$engine/lib/wine/x86_64-windows/winemetal.dll" "$kit/payload/dxmt/x86_64-windows/winemetal.dll"; }; then
+    # (the PE half it must pair with: DXMT v0.80's; the engine's .so is re-signed, so not byte-equal)
+    for old in "$home/cache"/aw-engine.*; do   # left by a run that did not end normally
+      [ -d "$old" ] && /usr/bin/python3 -I -c 'import shutil, sys; shutil.rmtree(sys.argv[1])' "$old"
+    done
+    if aw_engine=$(mktemp -d "$home/cache/aw-engine.XXXXXX") && mkdir "$aw_engine/lib"; then
+      for entry in "$engine"/*; do [ "${entry##*/}" = lib ] || ln -s "$entry" "$aw_engine/"; done
+      for entry in "$engine/lib"/*; do [ "${entry##*/}" = wine ] || ln -s "$entry" "$aw_engine/lib/"; done
+      aw_so="$kit/payload/steam/aw-winemetal.so"; [ -n "${aw_dxmt_dir:-}" ] && aw_so="$aw_dxmt_dir/x86_64-unix/winemetal.so"
+      [ -n "$sil_so" ] && aw_so=$sil_so
+      if ! { cp -cRp "$engine/lib/wine" "$aw_engine/lib/wine" &&
+             { [ -z "${aw_dxmt_dir:-}" ] || cp "$aw_dxmt_dir"/x86_64-windows/*.dll "$aw_engine/lib/wine/x86_64-windows/"; } &&
+             cp "$aw_so" "$aw_engine/lib/wine/x86_64-unix/winemetal.so" &&
+             codesign -fs - "$aw_engine/lib/wine/x86_64-unix/winemetal.so" 2>/dev/null; }; then
+        /usr/bin/python3 -I -c 'import shutil, sys; shutil.rmtree(sys.argv[1])' "$aw_engine"; aw_engine=
+      fi
+    else
+      aw_engine=
+    fi
+  fi
+  # The pipeline lists shipped for Black Ops (gathered in Zombies) and World
+  # at War (Der Riese), and what Plutonium learned on this Mac: the same game
+  # files, so the same pipelines; DXVK compiles them while the game starts
+  # instead of while it is played. As with Plutonium: World at War's list for
+  # both parts (Plutonium's T4 multiplayer uses the same cache), Black Ops'
+  # for the campaign/Zombies only (its multiplayer learns its own)
+  case "$s_exe" in
+    BlackOps.exe) on BO1_SHADER_CACHE && /usr/bin/python3 -I "$kit/tools/statecache-merge.py" \
+      "$home/cache/steam-bo1/BlackOps.dxvk-cache" "$kit/payload/bo1/pipelines.dxvk-cache" \
+      "$home/cache/plutonium-bootstrapper-win32.dxvk-cache" 2>/dev/null || true ;;
+    CoDWaW.exe|CoDWaWmp.exe) on WAW_PIPELINES && /usr/bin/python3 -I "$kit/tools/statecache-merge.py" \
+      "$home/cache/steam-waw/${s_exe%.exe}.dxvk-cache" "$kit/payload/waw/pipelines.dxvk-cache" \
+      "$home/cache/plutonium-bootstrapper-win32.dxvk-cache" 2>/dev/null || true ;;
+  esac
+  # Black Ops and World at War: their own XAudio2 from the game's redist, as
+  # with Plutonium (Wine's left Black Ops' gunfire silent and World at War's
+  # music broken); Black Ops also reads its video memory through DirectDraw
+  # (no3d reports 128 MB and caps the textures to it). Per executable.
+  xa_dll= xa_cab= xa_on=
+  case "$s_exe" in
+    BlackOps.exe|BlackOpsMP.exe)
+      xa_dll=XAudio2_7 xa_cab=Jun2010_XAudio_x86.cab xa_on=BO1_XAUDIO
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\Direct3D" /v renderer /d no3d /f
+      if on BO1_VIDMEM; then reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\Direct3D" /v VideoMemorySize /d 4096 /f
+      else reg delete "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\Direct3D" /v VideoMemorySize /f; fi ;;
+    CoDWaW.exe|CoDWaWmp.exe) xa_dll=XAudio2_0 xa_cab=Mar2008_XAudio_x86.cab xa_on=WAW_XAUDIO ;;
+  esac
+  if [ -n "$xa_dll" ]; then
+    xa_lc=$(printf '%s' "$xa_dll" | tr '[:upper:]' '[:lower:]')
+    xa="$WINEPREFIX/$xa_lc.native.dll"
+    for cab in "$dir/redist/DirectX/$xa_cab" "$dir/DirectX/$xa_cab"; do   # Steam's WaW: DirectX/
+      [ ! -f "$xa" ] && [ -f "$cab" ] || continue
+      tmp=$(mktemp -d)
+      bsdtar -xf "$cab" -C "$tmp" "$xa_dll.dll" 2>/dev/null && cp "$tmp/$xa_dll.dll" "$xa"
+      rm -rf "$tmp"
+    done
+    if on "$xa_on" && [ -f "$xa" ]; then
+      cmp -s "$xa" "$WINEPREFIX/drive_c/windows/syswow64/$xa_lc.dll" || cp "$xa" "$WINEPREFIX/drive_c/windows/syswow64/$xa_lc.dll"
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v "$xa_lc" /d native /f
+    else
+      reg delete "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v "$xa_lc" /f
+    fi
   fi
   # Black Ops II: the hardware profile made on an Apple GPU, once (as for the campaign)
   if [ "$s_kind" = t6 ] && on BO2_HW_PROFILE && [ ! -f "$dir/players/.sil-defaults-hardware" ]; then
@@ -890,11 +1162,69 @@ if [ "$t" = steam ]; then
   # game stopped from the app or a crash: the app starts a game only when it
   # is not running, so they are stale here
   rm -f -- "$dir/__${s_exe%.exe}"
+  # Call of Duty (OpenGL), COD1_GLDIRECT (on by default; 0 = Apple's OpenGL): GLDirect 5
+  # (github.com/MrRendroc/gldirect, MIT: Mesa's OpenGL on Direct3D 9) as its
+  # opengl32, so it draws through the engine's DXVK like Call of Duty 2 instead of
+  # Apple's OpenGL (which waits for the GPU at each of ~45 vertex-buffer updates a
+  # frame). Wine finds a native opengl32 only next to the executable (not on the
+  # search path while its own is in the system folder), so the wrapper and its
+  # settings sit in the game folder (none of the game's files change) and are
+  # native for the game's two executables only (per-executable override; the
+  # multiplayer's CoDMP.exe is the one GLDirect was measured with: official
+  # Timedemo1, 45 → 138 fps); no3d keeps Wine's DirectDraw (the game asks it
+  # for video memory) from starting its own OpenGL through it. Off: the two
+  # files go (only if ours).
+  if [ "$s_id" = cod1 ]; then
+    if [ "${COD1_GLDIRECT:-1}" = 1 ] && [ -f "$kit/payload/steam/cod1-gl/opengl32.dll" ]; then
+      for f in opengl32.dll gldirect.ini; do
+        cmp -s "$kit/payload/steam/cod1-gl/$f" "$dir/$f" || cp "$kit/payload/steam/cod1-gl/$f" "$dir/$f"
+      done
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v opengl32 /d native /f
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\Direct3D" /v renderer /d no3d /f
+      # GLDirect builds a Direct3D effect (HLSL) per OpenGL state it meets;
+      # compiled once, each is kept in the game's cache (fx_2_0 binaries,
+      # named by the state + this build) so later starts draw without the
+      # ~100 ms compile hitches
+      mkdir -p "$home/cache/steam-cod1/gld"
+      gld_cache="$home/cache/steam-cod1/gld"
+      export GLD_SHADER_CACHE="Z:${gld_cache//\//\\}"
+      # an effect not in the cache yet is compiled on a worker thread (what
+      # it draws appears a few frames late the first time) instead of
+      # stopping the game: timedemo with an empty cache, worst frame
+      # 220 -> 37 ms, 1 % low 19 -> 53 fps. GLD_ASYNC_EFFECTS=0: in-line
+      export GLD_ASYNC_EFFECTS="${GLD_ASYNC_EFFECTS:-1}"
+      # the intro movies: on a display that is not 4:3 the game draws an
+      # opaque black quad over them (black screen, with Apple's OpenGL too);
+      # while a movie streams GLDirect drops exactly that quad
+      export GLD_CINEMATIC_FIX="${GLD_CINEMATIC_FIX:-1}"
+    else
+      for f in opengl32.dll gldirect.ini; do
+        [ -f "$dir/$f" ] && [ -f "$kit/payload/steam/cod1-gl/$f" ] && cmp -s "$kit/payload/steam/cod1-gl/$f" "$dir/$f" && rm -f "$dir/$f"
+      done
+      reg delete "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v opengl32 /f
+      reg delete "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\Direct3D" /v renderer /f
+    fi
+  fi
   # Wine's mouse look (winemac patch) keeps the Mac cursor detached while the
-  # game hides it: in the games that put their cursor back at the centre of
-  # the screen, the pointer jumped there whenever the mouse stopped (Ghosts,
-  # MW2, MW3). Off for those, as for Ghosts' campaign.
-  case "$s_kind:$s_id" in iw6:*|*:mw2|*:mw3) export WINE_MAC_MOUSELOOK=0 ;; esac
+  # game hides it; without it every recentring warps the Mac cursor and aiming
+  # feels heavy. Modern Warfare 2 and 3 draw their menus' pointer from Wine's
+  # cursor position, which jumped to the centre whenever the mouse stopped
+  # (Wine then asked the detached Mac cursor): 2 keeps Wine's position
+  # (wine-winemac-mouselook-position.patch). Ghosts / AW: off, as for Ghosts'
+  # campaign. WINE_MAC_MOUSELOOK in settings.conf wins.
+  # The other games draw their menu pointer the same way (Black Ops' jumped
+  # to the centre too): 2 for all but Ghosts / Advanced Warfare.
+  case "$s_kind" in
+    iw6|s1) export WINE_MAC_MOUSELOOK="${WINE_MAC_MOUSELOOK:-0}" ;;   # until tested in AW
+    *)      export WINE_MAC_MOUSELOOK="${WINE_MAC_MOUSELOOK:-2}" ;;
+  esac
+  # Black Ops III checks for Media Foundation's video decoders ("requires the
+  # Windows Media Feature Pack"): as for BOIII, the engine's winegstreamer
+  # (registered in Steam's prefix) with GStreamer and its plugins in lib64
+  if [ "$s_kind" = t7 ]; then
+    export GST_PLUGIN_SYSTEM_PATH_1_0="$engine/lib64/gstreamer-1.0" GST_PLUGIN_PATH_1_0= \
+           GST_REGISTRY_1_0="$home/cache/gstreamer-registry.bin"
+  fi
   # 32-bit games: 4 GB of address space instead of 2 (as Plutonium's
   # bootstrapper has). Steam's executables are not large-address-aware and
   # World at War ran out of memory under DXVK at 1440p (std::bad_alloc).
@@ -902,15 +1232,31 @@ if [ "$t" = steam ]; then
   # DXVK's logs go to Siliconium's logs, not into the game's folder
   mkdir -p "$home/logs/dxvk"; set_env DXVK_LOG_PATH "Z:${home//\//\\}\\logs\\dxvk"
   marker="$home/cache/steam-$s_id/.started-$s_part"; mkdir -p "$home/cache/steam-$s_id"
+  [ -n "${s_client:-}" ] && marker="$home/cache/steam-$s_id/.started-$s_client"
   first=1; [ -f "$marker" ] && first=0
   steam_args "${dw:-}" "${dh:-}" "${hz:-}" "$first"
-  steam_config "$dir" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/steam-$s_id"
+  if [ -n "${s_client:-}" ]; then
+    # CoD4X keeps its profiles in its AppData folder (fs_savepath
+    # %LOCALAPPDATA%\CallofDuty4MW: players\profiles\<name>, seen on its first
+    # start 2026-11-21), not in the game's folder: its settings go there
+    mkdir -p "$c4_home/players/profiles"
+    steam_config "$c4_home" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/steam-$s_id/$s_client-home"
+  else
+    steam_config "$dir" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/steam-$s_id"
+  fi
   # shellcheck disable=SC2206
   [ -n "${GAME_ARGS:-}" ] && s_argv+=($GAME_ARGS)
+  [ -n "${s_client:-}" ] || steam_mod_args "$dir"
+  # Frame statistics (MVKCACHE_FPS) for the OpenGL games, which do not go
+  # through MoltenVK: Wine's own frame-rate trace (every few seconds)
+  [ -n "${MVKCACHE_FPS:-}" ] && [ "$s_api" = gl ] && [ "$WINEDEBUG" = -all ] && export WINEDEBUG=-all,+fps
   reg_flush
   # A Steam opened meanwhile (the app's Open Steam) would not have this
   # environment: close it, Steam starts again below
   "$WINESERVER" -k 2>/dev/null; "$WINESERVER" -w 2>/dev/null
+  console=/nonexistent cseen=0
+  # (CoD4X runs CoD4X's own iw3mp.exe, which does not use Steam: no Steam)
+  if [ -z "${s_client:-}" ]; then
   clog="$steamdir/logs/connection_log.txt"
   seen=$(wc -l < "$clog" 2>/dev/null | tr -d ' '); seen=${seen:-0}
   bash "$kit/steam.sh" start || exit 1
@@ -925,7 +1271,8 @@ if [ "$t" = steam ]; then
   fi
   console="$steamdir/logs/console_log.txt"
   cseen=$(wc -l < "$console" 2>/dev/null | tr -d ' '); cseen=${cseen:-0}
-  printf '%s\n' "--- $(date) $s_name: ${s_argv[*]}" >> "$log"
+  fi
+  printf '%s\n' "--- $(date) $s_name: ${s_argv[*]:-}" >> "$log"
   # "Set Optimal Settings?" / "Run In Safe Mode?": answered No as they appear
   # (kit/tools/dialog-guard.c), so the settings are never replaced
   guard="$kit/payload/steam/dialog-guard.exe"
@@ -939,26 +1286,44 @@ if [ "$t" = steam ]; then
   # keyboard and mouse (kit/tools/pad-mapper.c); CONTROLLER_MAP=0 turns it off
   case "$s_pad" in
     map) if on CONTROLLER_MAP && [ -f "$kit/payload/steam/pad-mapper.exe" ]; then
-             # LT aims while held: numpad 0 bound to +speed_throw in the game's
-             # settings (the right mouse button keeps the player's binding)
-             # (a first start has no settings yet: LT clicks the right mouse
-             # button on press and on release, the games' toggle aiming)
+             # Call of Duty 4, Modern Warfare 2 and 3: every button holds a numpad
+             # key bound to its exact command in the game's settings
+             # (steam_pad_binds); the keyboard keeps the player's bindings
              pad_ads=
-             [ "$s_kind" = iw ] && pad_ads=ads-toggle
              if [ "$s_kind" = iw ]; then
-               while IFS= read -r c; do
-                 grep -q '^bind ' "$c" || continue
-                 grep -q '^bind KP_INS ' "$c" || printf 'bind KP_INS "+speed_throw"\r\n' >> "$c"
-                 pad_ads=ads-key
-               done < <(find "$dir/players" "$dir/players2" -maxdepth 3 -name '*.cfg' 2>/dev/null)
+               pad_ads=keys
+               while IFS= read -r c; do steam_pad_binds "$c"; done \
+                 < <(if [ -n "${c4_home:-}" ]; then find "$c4_home/players" -maxdepth 3 -name 'config*.cfg' 2>/dev/null   # CoD4X's profiles
+                     else find "$dir/players" "$dir/players2" -maxdepth 3 -name 'config*.cfg' 2>/dev/null; fi)
+             elif [ "$s_id" = cod1 ]; then
+               # Call of Duty: the same keys, its own commands (X also holds F11)
+               pad_ads="keys q3"
+               for c in "$dir/Main/config.cfg" "$dir/Main/config_mp.cfg"; do steam_pad_binds "$c"; done
+             elif [ "$s_id" = cod2 ]; then
+               # Call of Duty 2: as Call of Duty; its settings are in the
+               # profiles it makes on the first start (main/players)
+               pad_ads="keys q3"
+               while IFS= read -r c; do steam_pad_binds "$c"; done \
+                 < <(find "$dir/main/players" -maxdepth 3 -name 'config*.cfg' 2>/dev/null)
              fi
              "$wine" "$kit/payload/steam/pad-mapper.exe" 21600 $pad_ads > /dev/null 2>&1 &
            fi ;;
   esac
   if [ "$s_own" = 1 ]; then
-    (cd "$steamdir" && "$wine" Steam.exe -applaunch "$s_app" "${s_argv[@]}" >> "$log" 2>&1 &)
+    # this start is Steam's own: the in-game switch relay (tools/steam-relay.sh) lets it through
+    mkdir -p "$WINEPREFIX/drive_c/users/Public/Siliconium/relay" &&
+      : > "$WINEPREFIX/drive_c/users/Public/Siliconium/relay/bypass-$s_app"
+    (cd "$steamdir" && "$wine" Steam.exe -applaunch "$s_app" ${s_argv[@]+"${s_argv[@]}"} >> "$log" 2>&1 &)
   else
-    (cd "$dir" && SteamAppId=$s_app SteamGameId=$s_app "$wine" "./$s_exe" "${s_argv[@]}" >> "$log" 2>&1 &)
+    # Call of Duty and Call of Duty 2 load steam.dll by name ("Failed to find
+    # Steam." otherwise): Steam's folder on their search path, as when Steam
+    # starts them
+    steam_env=(SteamAppId="$s_app" SteamGameId="$s_app")
+    [ "$s_kind" = q3 ] && steam_env+=(WINEPATH='C:\Program Files (x86)\Steam')
+    game_wine=$wine
+    [ -n "${aw_engine:-}" ] && game_wine="$aw_engine/lib/wine/x86_64-unix/wine"
+    # (a fix's launcher, m_start, starts the game itself with these arguments)
+    (cd "$dir" && env "${steam_env[@]}" "$game_wine" "./${m_start:-$s_exe}" ${s_argv[@]+"${s_argv[@]}"} >> "$log" 2>&1 &)
   fi
   # The game is running when its executable works the CPU; Steam says right
   # away when it will not start it
@@ -976,12 +1341,54 @@ if [ "$t" = steam ]; then
     esac
     sleep 1
   done
-  if [ -z "$game_pid" ]; then
+  if [ -z "$game_pid" ] && [ -n "${s_client:-}" ]; then
+    die "$s_name did not start (see logs/${log##*/})"
+  elif [ -z "$game_pid" ]; then
     bash "$kit/steam.sh" open
     die "Steam did not start $s_name: look at Steam's window (license, an update, or a first-time setup step)"
   fi
   : > "$marker"
+  # Call of Duty 2 minimizes its fullscreen window when it loses focus, and
+  # Wine did not restore it when the player came back (black screen): Ghosts'
+  # helper restores the game's window when its Mac app is activated again
+  focus_pid=
+  # (Call of Duty through GLDirect draws with Direct3D 9 too: same black screen)
+  if { [ "$s_kind:$s_api" = q3:d3d9 ] || { [ "$s_id" = cod1 ] && [ "${COD1_GLDIRECT:-1}" = 1 ]; }; } &&
+     [ -x "$kit/payload/iw6/iw6-focus" ]; then
+    # The helper needs the game's own Mac process: the one found above can be
+    # Wine's start.exe (its command line names the game too), which is never
+    # the frontmost app, so the window was never restored (Call of Duty)
+    app_pid=$game_pid
+    # (Call of Duty 2's campaign had the same wrong pid: after Cmd+Tab its window
+    # stayed minimized, keys only beeped). Every part: the multiplayer
+    # executables start the same way
+    if [ "$s_kind" = q3 ]; then
+      for pid in $(pgrep -f "$exe_re"); do
+        case "$(ps -o comm= -p "$pid" 2>/dev/null)" in *"$s_exe") app_pid=$pid; break ;; esac
+      done
+    fi
+    "$kit/payload/iw6/iw6-focus" "$app_pid" "$wine" "$kit/payload/iw6/iw6-restore.exe" "$s_exe" >> "$log" 2>&1 &
+    focus_pid=$!
+  elif [ "$s_exe" = iw6sp64_ship.exe ] && [ -x "$kit/payload/iw6/iw6-focus" ]; then
+    # Ghosts' campaign: the helper exactly as Siliconium's own Ghosts runs it
+    # (no executable name: it also hides Ghosts' black fullscreen window while
+    # another app is in front)
+    "$kit/payload/iw6/iw6-focus" "$game_pid" "$wine" "$kit/payload/iw6/iw6-restore.exe" >> "$log" 2>&1 &
+    focus_pid=$!
+  elif [ "$s_exe" = iw6mp64_ship.exe ] && [ -x "$kit/payload/iw6/iw6-focus" ]; then
+    # Ghosts' multiplayer (same engine and window): the same helper, told its
+    # executable (a Ghosts name keeps the hiding)
+    "$kit/payload/iw6/iw6-focus" "$game_pid" "$wine" "$kit/payload/iw6/iw6-restore.exe" "$s_exe" >> "$log" 2>&1 &
+    focus_pid=$!
+  fi
   while pgrep -f "$exe_re" > /dev/null; do sleep 2; done
+  [ -n "${s_client:-}" ] || steam_mod_remove "$dir"   # the fix's files go with the game
+  [ -n "$focus_pid" ] && kill "$focus_pid" 2>/dev/null
+  # Advanced Warfare's clone goes a while later: a game handing over to its other
+  # part as it quits (Exo Zombies: steam.exe steam://run/…, started from this
+  # clone) lost that request when the clone was removed at once
+  [ -n "${aw_engine:-}" ] &&
+    (sleep 120; /usr/bin/python3 -I -c 'import shutil, sys; shutil.rmtree(sys.argv[1])' "$aw_engine") > /dev/null 2>&1 &
   exit 0
 fi
 
@@ -1144,10 +1551,12 @@ SH
   rm -f BlackOps3.start
   # The player name from the app's settings, in boiii's own profile, only
   # while boiii has none of its own: the name typed in boiii's launcher is kept
-  # Ezz (v3.0.0 and beta-73) crashes on the server thread when a match starts
-  # if the name is shorter than 16 bytes: it reads the name's characters as a
-  # pointer (C++ keeps short strings inline). Pad short names with "^7" (the
-  # white colour code, not drawn) to 16 bytes; the name looks the same in game.
+  # Siliconium 1.0.0 padded short names with "^7" to 16 bytes (Ezz v3.0.0
+  # crashed on its server thread with shorter names). Ezz v3.1.0 crashed with
+  # the padded "Player^7^7^7^7^7" as the lobby loaded, and played with an
+  # unpadded 11-character name: no padding any more, and 1.0.0's is removed.
+  # Without a name of the player's own (the app's generic "Player" included),
+  # boiii's name is "Siliconium".
   /usr/bin/python3 -I - "$dir/boiii_players/properties.json" "${3:-${PLAYER_NAME:-}}" <<'PY' 2>/dev/null || true
 import json, os, sys
 p, name = sys.argv[1], sys.argv[2]
@@ -1156,12 +1565,12 @@ if os.path.exists(p):
     try: d = json.load(open(p, encoding="utf-8-sig"))   # boiii writes a UTF-8 byte order mark
     except Exception: sys.exit(0)                        # unreadable: leave it alone
 current = d.get("playerName", "")
-if name and current in ("", "crossover", "Unknown Soldier"):
-    current = name
-if not current:
-    current = "Player"
-while len(current.encode("utf-8")) < 16:
-    current += "^7"
+while current.endswith("^7") and len(current) > 2:     # Siliconium 1.0.0's padding
+    current = current[:-2]
+if name == "Player":                                    # the app's generic default
+    name = ""
+if current in ("", "crossover", "Unknown Soldier", "Player"):
+    current = name or "Siliconium"
 if d.get("playerName") != current:
     d["playerName"] = current
     os.makedirs(os.path.dirname(p), exist_ok=True)

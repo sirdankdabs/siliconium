@@ -15,7 +15,25 @@
  *   Start          menu (Esc)              Back          scores / objectives (Tab)
  *   In menus the right stick moves the pointer and RT clicks.
  *
- *   pad-mapper.exe <seconds> [ads-key]   runs that long (the app ends it with the game)
+ *   pad-mapper.exe <seconds> [keys|ads-key]   runs that long (the app ends it with the game)
+ *
+ * keys (Call of Duty 4, Modern Warfare 2 and 3): every button holds a numpad
+ * key of its own, which launch.sh binds in the game's settings to the exact
+ * command (steam-games.sh, steam_pad_binds), so the result never depends on
+ * the player's keyboard bindings (Modern Warfare 2 binds melee to E and the
+ * weapon switch to 1, Call of Duty 4 to V and the mouse wheel):
+ *   A  KP_5 +gostand          B  KP_END togglecrouch, held: KP_DOWNARROW toggleprone
+ *   X  KP_PGDN +usereload     Y  KP_LEFTARROW weapnext
+ *   LB KP_RIGHTARROW +smoke   RB KP_HOME +frag      LT KP_INS +speed_throw
+ *   L3 KP_UPARROW +breath_sprint                    R3 KP_PGUP +melee
+ *   D-pad up/down/left/right KP_DEL/KP_MINUS/KP_PLUS/KP_STAR +actionslot 1/2/3/4
+ * Start, Back, the sticks and RT stay as below. Numpad scan codes without
+ * the extended flag: the games read the scan code (KP_INS, not INS).
+ *
+ * keys q3 (Call of Duty): the same keys, and X also holds F11: the game has
+ * no "+usereload", so launch.sh binds X's numpad key to
+ * "+reload" and F11 to "+activate" (the other commands differ too, see
+ * steam_pad_binds).
  *
  * ads-key: LT holds numpad 0 (KP_INS), which launch.sh binds to "+speed_throw"
  * (aim while held): the games bind the right mouse button to toggle aiming,
@@ -52,7 +70,9 @@ typedef DWORD (WINAPI *GETSTATE)(DWORD, PADSTATE *);
 /* scan codes (set 1): DirectInput reads these */
 enum { SC_ESC = 0x01, SC_1 = 0x02, SC_2 = 0x03, SC_3 = 0x04, SC_4 = 0x05, SC_5 = 0x06, SC_TAB = 0x0F,
        SC_W = 0x11, SC_R = 0x13, SC_A = 0x1E, SC_S = 0x1F, SC_D = 0x20, SC_F = 0x21, SC_G = 0x22,
-       SC_KP0 = 0x52, SC_CTRL = 0x1D, SC_SHIFT = 0x2A, SC_C = 0x2E, SC_V = 0x2F, SC_N = 0x31, SC_SPACE = 0x39 };
+       SC_KP0 = 0x52, SC_KP1 = 0x4F, SC_KP2 = 0x50, SC_KP3 = 0x51, SC_KP4 = 0x4B, SC_KP5 = 0x4C,
+       SC_KP6 = 0x4D, SC_KP7 = 0x47, SC_KP8 = 0x48, SC_KP9 = 0x49, SC_KPDEL = 0x53, SC_KPMINUS = 0x4A,
+       SC_KPPLUS = 0x4E, SC_KPSTAR = 0x37, SC_CTRL = 0x1D, SC_SHIFT = 0x2A, SC_C = 0x2E, SC_V = 0x2F, SC_N = 0x31, SC_SPACE = 0x39, SC_F11 = 0x57 };
 
 static void key(WORD scan, int down)
 {
@@ -86,6 +106,9 @@ static void release_again(WORD scan)
 static void hold(int *was, int now, WORD scan)
 {
     if (now == *was) return;
+    /* pressed again before its second release was sent: that release would
+       let go of a key held now (the player stopped with the stick pushed) */
+    if (now) for (int i = 0; i < MAXKEYS; i++) if (again[i].scan == scan) again[i].scan = 0;
     key(scan, now);
     *was = now;
     if (!now) release_again(scan);
@@ -118,14 +141,16 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     GETSTATE get = (GETSTATE)GetProcAddress(x, "XInputGetState");
     if (!get) return 1;
     int seconds = atoi(command_line);
-    int ads_key = strstr(command_line, "ads-key") != NULL;
+    int keys = strstr(command_line, "keys") != NULL;
+    int q3 = keys && strstr(command_line, "q3") != NULL;
+    int ads_key = keys || strstr(command_line, "ads-key") != NULL;
     int ads_toggle = !ads_key && strstr(command_line, "ads-toggle") != NULL;
     if (seconds <= 0) seconds = 21600;
     const DWORD end = GetTickCount() + (DWORD)seconds * 1000;
     timeBeginPeriod(1);
 
     int w = 0, a = 0, s = 0, d = 0, jump = 0, crouch = 0, prone = 0, reload = 0, sprint = 0, melee = 0;
-    int frag = 0, special = 0, esc = 0, tab = 0, up = 0, left = 0, right = 0, down = 0, fire = 0, ads = 0, next = 0;
+    int use = 0, frag = 0, special = 0, esc = 0, tab = 0, up = 0, left = 0, right = 0, down = 0, fire = 0, ads = 0, next = 0;
     DWORD b_down_at = 0, edge_since = 0, still_since = GetTickCount();
     int last_rx = 0, last_ry = 0, rest_x = 0, rest_y = 0;
     int connected = 0;
@@ -154,8 +179,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
 
         /* movement: the left stick as W A S D (a quarter of the way) */
         double lx = axis(p.lx, 0.24), ly = axis(p.ly, 0.24);
-        hold(&w, ly > 0.25, SC_W); hold(&s, ly < -0.25, SC_S);
-        hold(&a, lx < -0.25, SC_A); hold(&d, lx > 0.25, SC_D);
+        /* with a margin: a stick resting on the threshold would press and
+           release the key many times a second */
+        hold(&w, ly > (w ? 0.18 : 0.28), SC_W); hold(&s, ly < -(s ? 0.18 : 0.28), SC_S);
+        hold(&a, lx < -(a ? 0.18 : 0.28), SC_A); hold(&d, lx > (d ? 0.18 : 0.28), SC_D);
         releases_due(&w, &a, &s, &d);
 
         /* aim: the right stick as mouse movement, curved for precision */
@@ -200,32 +227,46 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
             ads = lt;
         }
 
-        hold(&jump, !!(bt & B_A), SC_SPACE);
         /* B: crouch on a tap, prone when held */
         int bnow = !!(bt & B_B);
+        WORD sc_crouch = keys ? SC_KP1 : SC_C, sc_prone = keys ? SC_KP2 : SC_CTRL;
         if (bnow && !b_down_at) b_down_at = GetTickCount();
-        if (bnow && b_down_at && !prone && GetTickCount() - b_down_at > 350) { key(SC_CTRL, 1); key(SC_CTRL, 0); prone = 1; }
+        if (bnow && b_down_at && !prone && GetTickCount() - b_down_at > 350) { key(sc_prone, 1); Sleep(15); key(sc_prone, 0); prone = 1; }
         if (!bnow && b_down_at) {
-            if (!prone) { key(SC_C, 1); Sleep(15); key(SC_C, 0); }
+            if (!prone) { key(sc_crouch, 1); Sleep(15); key(sc_crouch, 0); }
             b_down_at = 0; prone = 0;
         }
         (void)crouch;
-        int xnow = !!(bt & B_X);
-        if (xnow != reload) { key(SC_R, xnow); key(SC_F, xnow); reload = xnow; }
-        int ynow = !!(bt & B_Y);
-        if (ynow && !next) mouse(MOUSEEVENTF_WHEEL, 0, 0, (DWORD)-WHEEL_DELTA);
-        next = ynow;
-        hold(&sprint, !!(bt & B_L3), SC_SHIFT);
-        hold(&melee, !!(bt & B_R3), SC_V);
-        hold(&frag, !!(bt & B_RB), SC_G);
-        hold(&special, !!(bt & B_LB), SC_4);
+        int xnow = !!(bt & B_X), ynow = !!(bt & B_Y), unow = !!(bt & B_UP);
         hold(&esc, !!(bt & B_START), SC_ESC);
         hold(&tab, !!(bt & B_BACK), SC_TAB);
-        int unow = !!(bt & B_UP);
-        if (unow != up) { key(SC_N, unow); key(SC_1, unow); up = unow; }
-        hold(&left, !!(bt & B_LEFT), SC_3);
-        hold(&right, !!(bt & B_RIGHT), SC_5);
-        hold(&down, !!(bt & B_DOWN), SC_2);
+        if (keys) {
+            hold(&jump, !!(bt & B_A), SC_KP5);
+            hold(&reload, xnow, SC_KP3);
+            if (q3) hold(&use, xnow, SC_F11);
+            hold(&next, ynow, SC_KP4);
+            hold(&sprint, !!(bt & B_L3), SC_KP8);
+            hold(&melee, !!(bt & B_R3), SC_KP9);
+            hold(&frag, !!(bt & B_RB), SC_KP7);
+            hold(&special, !!(bt & B_LB), SC_KP6);
+            hold(&up, unow, SC_KPDEL);
+            hold(&down, !!(bt & B_DOWN), SC_KPMINUS);
+            hold(&left, !!(bt & B_LEFT), SC_KPPLUS);
+            hold(&right, !!(bt & B_RIGHT), SC_KPSTAR);
+        } else {
+            hold(&jump, !!(bt & B_A), SC_SPACE);
+            if (xnow != reload) { key(SC_R, xnow); key(SC_F, xnow); reload = xnow; }
+            if (ynow && !next) mouse(MOUSEEVENTF_WHEEL, 0, 0, (DWORD)-WHEEL_DELTA);
+            next = ynow;
+            hold(&sprint, !!(bt & B_L3), SC_SHIFT);
+            hold(&melee, !!(bt & B_R3), SC_V);
+            hold(&frag, !!(bt & B_RB), SC_G);
+            hold(&special, !!(bt & B_LB), SC_4);
+            if (unow != up) { key(SC_N, unow); key(SC_1, unow); up = unow; }
+            hold(&left, !!(bt & B_LEFT), SC_3);
+            hold(&right, !!(bt & B_RIGHT), SC_5);
+            hold(&down, !!(bt & B_DOWN), SC_2);
+        }
 
         if (pad != 4) {
             int busy = bt || p.lt > 40 || p.rt > 40 || lx || ly || rx || ry || st.packet != last_packet;
