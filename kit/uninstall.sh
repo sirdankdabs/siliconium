@@ -17,9 +17,9 @@
 #   uninstall.sh boiii  forget the Black Ops III (Windows) folder
 #   uninstall.sh bo2s   Black Ops II campaign through Steam: Steam's prefix
 #                       (Steam, its sign-in, the game it downloaded) to the Trash
-#   uninstall.sh bo2c   Black Ops II campaign: puts the original t6sp.exe
-#                       back and removes its Wine prefixes; the game itself
-#                       and the Redacted steam_api.dll stay
+#   uninstall.sh bo2c   the offline Black Ops II campaign of Siliconium 1.0-1.2.0:
+#                       puts the original t6sp.exe back and removes its Wine
+#                       prefixes; the game itself stays
 #   uninstall.sh all    the engine, the Wine prefix (Plutonium and its login),
 #                       caches, logs and settings: Black Ops and Black Ops II
 #                       both start from the beginning (Black Ops III untouched)

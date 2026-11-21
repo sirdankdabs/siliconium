@@ -1,6 +1,6 @@
 # Siliconium — architecture
 
-State: `main` = published 1.2.0 (1.0.0 plus the Steam Library section and CoD4X in 1.1.0; United Offensive, GLDirect rendering fixes and the Black Ops II XAudio2 fix in 1.1.1; Infinite Warfare, IW7-Mod (CBServers), the AlterWare explanation tab, CoD4X with Steam, the bash 3.2 start fix and the disk-usage fixes in 1.2.0).
+State: `main` = published 1.2.1 (1.0.0 plus the Steam Library section and CoD4X in 1.1.0; United Offensive, GLDirect rendering fixes and the Black Ops II XAudio2 fix in 1.1.1; Infinite Warfare, IW7-Mod (CBServers), the AlterWare explanation tab, CoD4X with Steam, the bash 3.2 start fix and the disk-usage fixes in 1.2.0; the offline Black Ops II campaign and its DRM removal tool taken out in 1.2.1).
 
 ## 1. Pieces
 
@@ -12,7 +12,7 @@ State: `main` = published 1.2.0 (1.0.0 plus the Steam Library section and CoD4X 
 | Build | `build-app.sh` → `dist/Siliconium.app` | Installing to `/Applications` is a separate copy (`rm -rf` + `ditto`). |
 
 Data folder `~/Library/Application Support/Siliconium` (`SIL_HOME` overrides): `engine/`, `prefix/`
-(Plutonium, IW4X, boiii), `prefix-iw6/` (Ghosts), `prefix-bo2c/` (BO2 campaign offline),
+(Plutonium, IW4X, boiii), `prefix-iw6/` (Ghosts), `prefix-bo2c/` (BO2 campaign offline, removed in 1.2.1: only cleaned up by uninstall.sh),
 `prefix-steam/` (Steam for Windows: BO2 campaign tile and the Steam Library), `cache/` (DXVK state
 caches, MoltenVK caches per game, `steam-<id>/` per Steam game), `logs/` (the logs every start
 appends to are capped by `log_cap` in launch.sh: newest 1 MB once over 2 MB), `cod4x/` and `iw7mod/`
@@ -42,11 +42,11 @@ best-refresh mode held by `tools/displaymode` for D3D9/GL games) → environment
 and written in one `regedit` pass (`reg_flush`) → per-game cvars → start.
 
 Modes: `waw|bo1|bo2|iw5 …` (Plutonium), `iw4` (IW4X), `iw6` (Ghosts), `boiii` (Ezz BO3),
-`bo2c` (BO2 campaign offline), `bo2s` (BO2 campaign via Steam), `steam:<id>-<sp|mp|zm>` (Steam Library).
+`bo2c` (BO2 campaign offline: removed in 1.2.1, stops with a message), `bo2s` (BO2 campaign via Steam), `steam:<id>-<sp|mp|zm>` (Steam Library).
 
 ## 4. Steam Library
 
-Goal: every Steam CoD plays from Steam's **original files** (no Steamless, no file changes) with
+Goal: every Steam CoD plays from Steam's **original files** (no DRM removal, no file changes) with
 the same Siliconium setup as its Plutonium/IW4X counterpart, fullscreen at the display's size and
 best refresh, controller support, achievements/playtime through Steam.
 
@@ -63,7 +63,7 @@ best refresh, controller support, achievements/playtime through Steam.
 
 - **Never touch Plutonium/IW4X/BOIII paths** when changing the Steam Library: gate on `t=steam` or the Steam exe. Shared engine files (e.g. `i386-windows/d3d9.dll`) stay as they are; Steam-only variants go per exe (syswow64 + AppDefaults). `WINEDLLPATH` cannot be used for that: Wine searches its own dll dir first.
 - **Port the Plutonium/IW4X setup per game line by line** (warming, pipelines, dvars, audio, mouse), then add Steam-only things (controller, mouselook 2, direct launch, resolution).
-- **Original game files only**: no Steamless, no edits inside the game folder except the game's own config files.
+- **Original game files only**: no DRM removal, no edits inside the game folder except the game's own config files.
 - **Direct launch (`s_own=0`)** for every part: games come to the front from the first start.
 - **Config files are written before every start**: Steam does not pass Play's arguments to every game, and Q3/IW games exec their profile config after the command line.
 - Patched Mach-O engine modules must be re-signed (`codesign -fs -`); the accepted-sha list lets existing engines update.

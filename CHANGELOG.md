@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1
+
+**Removed**
+- The Offline Black Ops II campaign section.
+
 ## 1.2.0 — Infinite Warfare
 
 **New**

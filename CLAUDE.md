@@ -7,7 +7,7 @@ KNOWN_ISSUES.md, TESTING.md, CHANGELOG.md (newest section).
 
 ## Branches
 
-- `main`: published 1.2.0 (1.1.0 Steam Library + CoD4X; 1.1.1 United Offensive, GLDirect rendering fixes, Black Ops II XAudio2 fix; 1.2.0 Infinite Warfare, IW7-Mod (CBServers), AlterWare explanation tab, CoD4X with Steam, the 1.1.x start fix, disk-usage fixes). Do not commit or push anything without the owner asking.
+- `main`: published 1.2.1 (1.1.0 Steam Library + CoD4X; 1.1.1 United Offensive, GLDirect rendering fixes, Black Ops II XAudio2 fix; 1.2.0 Infinite Warfare, IW7-Mod (CBServers), AlterWare explanation tab, CoD4X with Steam, the 1.1.x start fix, disk-usage fixes; 1.2.1 removes the offline Black Ops II campaign and Steamless). Do not commit or push anything without the owner asking.
 - `steam-library`: where new versions are developed (merged into `main` for each release).
 
 ## Hard rules

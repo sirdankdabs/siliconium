@@ -90,8 +90,8 @@ if [ -f "$home/settings.conf" ]; then
 fi
 engine="$home/engine"
 export WINEPREFIX="$home/prefix" CX_ROOT="$engine" WINESERVER="$engine/bin/wineserver"
-# Black Ops II's campaign has its own prefix; its game folder was made
-# Steam-free by bo2-campaign.sh (no Steam runs in it)
+# Black Ops II's offline campaign had its own prefix (removed in 1.2.1;
+# `bo2c` only stops with a message now)
 if [ "${1:-}" = bo2c ] || [ "${1:-}" = bo2s ] || [ "${1:-}" = steam ] || [ "${1:-}" = cod4x ] || [ "${1:-}" = iw7mod ]; then
   # bo2s and the Steam Library (steam): Steam for Windows in its own prefix
   # (steam.sh), which starts the game. CoD4X (cod4x): the same prefix and
@@ -165,7 +165,9 @@ case "$game:$mode" in
   iw6:play) dir=${IW6_DIR:-} t=iw6 ;;
   boiii:play) dir=${BOIII_DIR:-} t=t7 GAME_ARGS=${GAME_ARGS---launch} ;;
   boiii:launcher) dir=${BOIII_DIR:-} t=t7 ;;
-  bo2c:play) dir=${BO2C_DIR:-} t=t6c ;;
+  # (the offline Black Ops II campaign was removed in 1.2.1: its setup took
+  # Steam's DRM off t6sp.exe; Steam's campaign plays from the Steam Library)
+  bo2c:play) die "the offline Black Ops II campaign was removed in Siliconium 1.2.1: play its campaign from the Steam Library" ;;
   bo2s:play) dir=$(bash "$kit/bo2-steam.sh" gamedir) t=t6s
     [ -f "$dir/t6sp.exe" ] || die "Black Ops II is not downloaded in Steam yet: press Download (or install it in Steam), then Play Campaign" ;;
   steam:*)   # the Steam Library: Steam's own files, started by Steam
@@ -1032,44 +1034,6 @@ if [ -d "$wdesk" ] && [ ! -L "$wdesk" ]; then
   [ -d "${BOIII_DIR:-}" ] && ln -sfn "$BOIII_DIR" "$wdesk/Black Ops III" || rm -f "$wdesk/Black Ops III"
 fi
 [ -e "$WINEPREFIX/dosdevices/h:" ] || ln -s "$HOME" "$WINEPREFIX/dosdevices/h:"
-
-# --- Black Ops II's campaign (t6sp.exe, no Steam) ----------------------------------
-# Same Direct3D 11 -> Metal setup as Black Ops II through Plutonium (DXMT,
-# background pipelines, frame pacing, set above). The game folder was made
-# Steam-free by bo2-campaign.sh (Steamless + the Redacted Steam API), so
-# t6sp.exe starts directly: no Steam, no sign-in.
-if [ "$t" = t6c ]; then
-  if on CAPTURE_DISPLAY; then reg add 'HKCU\Software\Wine\AppDefaults\t6sp.exe\Mac Driver' /v CaptureDisplaysForFullscreen /d y /f
-  else reg add 'HKCU\Software\Wine\AppDefaults\t6sp.exe\Mac Driver' /v CaptureDisplaysForFullscreen /d n /f; fi
-  camp="$kit/bo2-campaign.sh"
-  bash "$camp" check "$dir" || exit 1
-  # a hardware profile made on an Apple GPU (fullscreen 1920x1080), once, as for BO2
-  if on BO2_HW_PROFILE && [ ! -f "$dir/players/.sil-defaults-hardware" ]; then
-    mkdir -p "$dir/players"
-    cp "$kit/payload/bo2/hardware.chp" "$dir/players/hardware.chp" && : > "$dir/players/.sil-defaults-hardware"
-  fi
-  reg_flush
-  start_game() { (cd "$dir" && "$wine" t6sp.exe >> "$home/logs/bo2c-play.log" 2>&1 &); }
-  # The game is running when t6sp.exe works the CPU (a start that only shows
-  # an error dialog and quits does not).
-  game_running() {  # game_running <seconds>
-    local pid cpu
-    for _ in $(seq 1 "$1"); do
-      for pid in $(pgrep -f 't6sp\.exe'); do
-        cpu=$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' '); cpu=${cpu%%.*}
-        [ "${cpu:-0}" -gt 20 ] && { echo "$pid"; return 0; }
-      done
-      sleep 1
-    done
-    return 1
-  }
-  : > "$home/logs/bo2c-play.log"
-  start_game
-  game_pid=$(game_running 120) || die "the campaign did not start (see logs/bo2c-play.log)"
-  : "$game_pid"   # the 1x display mode is held from before Wine started (hold_1x_size)
-  while pgrep -f 't6sp\.exe' >/dev/null; do sleep 2; done
-  exit 0
-fi
 
 # --- The Steam Library (prefix-steam) -------------------------------------------
 # Steam (restarted above, so it and the game it starts get this environment

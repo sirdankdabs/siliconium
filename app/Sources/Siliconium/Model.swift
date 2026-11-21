@@ -39,7 +39,8 @@ enum GameTab: String, CaseIterable, Identifiable {
         case .alterware: [.alterware]
         // Black Ops II Campaign (Steam), .bo2s, left the sidebar (2026-11-20, owner): the
         // Steam Library plays Steam's Black Ops II campaign; its code path stays
-        case .others: [.iw6, .bo2c]
+        // (the offline Black Ops II campaign, .bo2c, was removed in 1.2.1)
+        case .others: [.iw6]
         case .steam: [.steam]
         }
     }
@@ -1216,27 +1217,12 @@ final class AppState: ObservableObject {
         refreshToken += 1
         goTo = game
     }
-    func refreshCampaign() {
-        Task.detached {
-            var d: [String: String] = [:]
-            for line in Self.capture("bo2-campaign.sh", ["status"]).split(separator: "\n") {
-                let p = line.split(separator: "=", maxSplits: 1)
-                if p.count == 2 { d[String(p[0])] = String(p[1]) }
-            }
-            let result = d
-            await MainActor.run { self.campaign = result }
-        }
-    }
-    /// Removes SteamStub from t6sp.exe (a backup is kept) and sets the game
-    /// folder up to run without Steam. Only the game folder is touched.
+    /// The offline Black Ops II campaign (.bo2c) was removed in 1.2.1: its setup
+    /// took Steam's DRM off t6sp.exe. Steam's campaign plays from the Steam
+    /// Library; the tab is gone from the sidebar and these stay inert.
+    func refreshCampaign() { campaign = [:] }
     func prepareCampaign() {
-        guard let folder = settings["BO2C_DIR"] else {
-            error = "Choose the Black Ops II game folder first."
-            return
-        }
-        runScript("bo2-campaign.sh", ["patch", folder], title: "Preparing the campaign (no Steam)") { [weak self] in
-            self?.refreshCampaign()
-        }
+        error = "The offline Black Ops II campaign was removed in Siliconium 1.2.1: play its campaign from the Steam Library."
     }
     func createEmptyPrefix() { runScript("setup-prefix.sh", ["init"], title: "Creating the Wine prefix") }
     func createIW6Prefix() {

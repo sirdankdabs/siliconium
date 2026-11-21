@@ -40,7 +40,7 @@ Download your games in the **Steam Library**, or choose a game folder for Pluton
 
 ## Games
 
-There are two ways to play. The **Steam Library** plays Steam's own files with Siliconium's setup. The **community clients** (Plutonium, IW4X, CoD4X, BOIII, IW7-Mod) and the **Offline** campaigns play your game folder, and IW4X, CoD4X, BOIII and IW7-Mod can also use your Steam download. The **AlterWare** section explains why AlterWare's Ghosts and Advanced Warfare clients cannot be played on Apple silicon.
+There are two ways to play. The **Steam Library** plays Steam's own files with Siliconium's setup. The **community clients** (Plutonium, IW4X, CoD4X, BOIII, IW7-Mod) and the **Offline** campaign (Ghosts) play your game folder, and IW4X, CoD4X, BOIII and IW7-Mod can also use your Steam download. The **AlterWare** section explains why AlterWare's Ghosts and Advanced Warfare clients cannot be played on Apple silicon.
 
 FPS numbers come from a MacBook Pro M1 Pro (macOS 15.8.3) at 2560×1440, in game, with the display at 160 Hz. A range is the lowest and highest the FPS counter showed during play; "avg" is the average over a play session. Your numbers depend on your Mac and settings. Test conditions and what is verified for each game: [COMPATIBILITY.md](COMPATIBILITY.md).
 
@@ -77,7 +77,6 @@ Call of Duty's official timedemo runs at 138–139 FPS. Black Ops III has one **
 | **T7** | Black Ops III | Ezz (BOIII) | Zombies, Campaign, Multiplayer | Works | 120+ at High with lighter shadows and effects; 40–50 with everything at maximum (GPU-bound) |
 | **IW7** | Infinite Warfare | IW7-Mod (CBServers) | Zombies, Campaign, Multiplayer, custom maps | Zombies works (player) | Zombies 55–70 at High settings |
 | **IW6** | Ghosts | Offline | Campaign | Works | not measured yet (Steam Library copy: 150–154) |
-| **T6** | Black Ops II | Offline | Campaign | Not tested yet | not measured yet (Steam Library copy: 156–158) |
 
 **New in 1.2.0**
 - **Call of Duty: Infinite Warfare** in the Steam Library, and the **IW7-Mod (CBServers)** section: CBServers' community client with its servers and custom maps, from your Steam download (Steam's files are never changed) or your own folder.
@@ -182,14 +181,13 @@ bo3/      BO3 Mac Client and BO3MacFix sources (optional Black Ops III for Mac)
 - **DXVK** (Philip Rebohle and contributors), **Sporif** (dxvk-async), **3Shain**: [DXMT](https://github.com/3Shain/dxmt). **Khronos**: MoltenVK.
 - **SciTech Software** (GLDirect, original author Keith Harrison), **MrRendroc** ([GLDirect 5](https://github.com/MrRendroc/gldirect)) and **Brian Paul** (Mesa 6.0): Call of Duty's OpenGL on Direct3D 9 (MIT; notices in `kit/payload/steam/cod1-gl/LICENSE.txt`).
 - **BO3MacFix** by Emma / InvoxiPlayGames and Anthony / serious, with **T7Patch** work by its authors.
-- **atom0s**: [Steamless](https://github.com/atom0s/Steamless) (CC BY-NC-ND 4.0).
 - **Logo-2K**: [Zombies Declassified](https://github.com/Logo-2K/zombies-declassified).
 - **GStreamer** contributors.
 - **kopyl** and **cothromachd**, for testing and reports.
 
 ## Legal
 
-Siliconium does not include game files, Steam or any Steam API replacement; you need your own copies of the games. Removing DRM may be restricted by law where you live (for example the DMCA or the EU InfoSoc Directive), so use the offline campaign tools only where that is allowed.
+Siliconium does not include game files, Steam or any Steam API replacement; you need your own copies of the games.
 
 Not affiliated with Activision, Treyarch, Infinity Ward, Sledgehammer Games, Gray Matter Interactive, Aspyr, Valve, CodeWeavers, Plutonium, IW4X, CoD4X or Ezz. Call of Duty, Black Ops and Modern Warfare are trademarks of Activision Publishing, Inc.
 
