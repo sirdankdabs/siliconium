@@ -1,6 +1,6 @@
 # Siliconium — architecture
 
-State: `main` = published 1.1.0 (1.0.0 plus the Steam Library section and CoD4X).
+State: `main` = published 1.1.1 (1.0.0 plus the Steam Library section and CoD4X in 1.1.0; United Offensive, GLDirect rendering fixes and the Black Ops II XAudio2 fix in 1.1.1).
 
 ## 1. Pieces
 
@@ -51,7 +51,7 @@ best refresh, controller support, achievements/playtime through Steam.
 - `launch.sh steam:*`: everything gated on `t=steam` (Plutonium paths untouched). Steam is killed and restarted so it inherits the environment; then the game exe is started **directly** with `SteamAppId`/`SteamGameId` (`s_own=0`, all parts): Steam-started games (`-applaunch`) open behind other apps (Windows foreground rule) and MW2 ignored `-applaunch` arguments. `STEAM_APPLAUNCH=1` in settings.conf forces `-applaunch` for tests. CoD1/CoD2 get `WINEPATH=C:\Program Files (x86)\Steam` (they load `steam.dll` by name).
 - Per game: DXVK cache/config in `cache/steam-<id>/`, `WINE_LARGE_ADDRESS_AWARE=1` for 32-bit, x87 sidecar, display capture setting per exe, `WINE_MAC_MOUSELOOK=2` (all but Ghosts/AW: 0), dialog guard (`payload/steam/dialog-guard.exe` answers No to "Set Optimal Settings?"/"Safe Mode"), pad mapper (`payload/steam/pad-mapper.exe`: XInput → numpad keys bound to exact commands, for games without PC pad support), per-exe native DLLs from `prefix-steam/drive_c/windows/syswow64` with `AppDefaults\<exe>\DllOverrides` (BO1 MP: Plutonium's `mp-d3d9.dll` with the builtin mark replaced; CoD2: `payload/steam/cod2-d3d9.dll`; XAudio2 for BO1/WaW from the game's own redist cab). Every other 32-bit D3D9 exe gets an explicit `d3d9=builtin`.
 - Ghosts: borderless (no display capture). AW: exclusive fullscreen at the desktop's size, held at the 1x mode (`d3d11x64:s1`), display capture per `CAPTURE_DISPLAY`, its profile written by `steam_config aw`.
-- Ghosts: `kit/payload/iw6/iw6-focus` + `iw6-restore.exe` restore the minimized window when the game's Mac app is activated (hide-on-deactivate only for Ghosts, both parts: no executable name or an `iw6…` one; CoD1 with GLDirect and CoD2, both parts, get restore only).
+- Ghosts: `kit/payload/iw6/iw6-focus` + `iw6-restore.exe` restore the minimized window when the game's Mac app is activated (hide-on-deactivate only for Ghosts, both parts: no executable name or an `iw6…` one; CoD1 and United Offensive with GLDirect and CoD2, all parts, get restore only).
 
 ## 5. Decisions and why (keep them)
 

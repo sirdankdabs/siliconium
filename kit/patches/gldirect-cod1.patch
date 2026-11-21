@@ -13,6 +13,12 @@ which DXVK then runs on Vulkan/Metal.
   on the device), effect table bound (a full table crashed).
 - Direct glDrawElements path, lit-without-lights HLSL fix, intro movies visible
   on non-4:3 displays.
+- GL alpha test and GL fog done in the generated pixel shader (clip / lerp)
+  instead of by Direct3D's alpha test and fog stage (through DXVK and MoltenVK
+  those drew United Offensive's pines without branches, its treeline cards
+  opaque and distant scenery without fog); directional lights in eye
+  coordinates as GL defines them (models were lit from the wrong side).
+  GLD_SHADER_ALPHATEST=0 / GLD_SHADER_FOG=0 / GLD_LIGHT_EYEDIR=0: as before.
 - src/gld_prof.c: optional sampling profiler (off unless GLD_PROFILE is set).
 
 Build: see TESTING.md ("GLDirect"). Apply with `git apply` on 69ed709.
@@ -31,7 +37,7 @@ index dc1ec89..f94c952 100644
  #pragma warning (disable:4273)
  #pragma warning( disable : 4244 ) /* '=' : conversion from 'const double ' to 'float ', possible loss of data */
 diff --git a/src/dx9/gld5_driver.c b/src/dx9/gld5_driver.c
-index a6eb8e8..c664c15 100644
+index a6eb8e8..371cdd7 100644
 --- a/src/dx9/gld5_driver.c
 +++ b/src/dx9/gld5_driver.c
 @@ -342,6 +342,9 @@ void gld_Clear_DX9(
@@ -44,7 +50,31 @@ index a6eb8e8..c664c15 100644
      // dwFlags will be zero if there's nothing to clear
      if (dwFlags) {
          _GLD_DX9_DEV(Clear(
-@@ -760,6 +763,14 @@ void gld_NEW_SCISSOR(
+@@ -450,7 +453,10 @@ void gld_NEW_COLOR(
+     // Alpha func
+     _GLD_DX9_DEV(SetRenderState(gld->pDev, D3DRS_ALPHAFUNC, _gldConvertCompareFunc(ctx->Color.AlphaFunc)));
+     _GLD_DX9_DEV(SetRenderState(gld->pDev, D3DRS_ALPHAREF, dwAlphaRef));
+-    _GLD_DX9_DEV(SetRenderState(gld->pDev, D3DRS_ALPHATESTENABLE, ctx->Color.AlphaEnabled));
++    // Siliconium: with the alpha test in the pixel shader (default) the
++    // device's alpha test is switched per effect by gldUpdateShaders
++    if (!gldShaderAlphaTest())
++        _GLD_DX9_DEV(SetRenderState(gld->pDev, D3DRS_ALPHATESTENABLE, ctx->Color.AlphaEnabled));
+ 
+     // Blend func
+     _GLD_DX9_DEV(SetRenderState(gld->pDev, D3DRS_ALPHABLENDENABLE, ctx->Color.BlendEnabled));
+@@ -574,7 +580,10 @@ void gld_NEW_FOG(
+ 	// Only need to enable/disable fog and set fog colour (if enabled).
+ 	// Actual Fog values for each vertex is calculated in the vertex shader.
+ 
+-    _GLD_DX9_DEV(SetRenderState(gld->pDev, D3DRS_FOGENABLE, bFog));
++    // Siliconium: with the fog in the pixel shader (default) the device's fog
++    // is switched per effect by gldUpdateShaders
++    if (!gldShaderFog())
++        _GLD_DX9_DEV(SetRenderState(gld->pDev, D3DRS_FOGENABLE, bFog));
+ 
+ 	if (bFog) {
+ 		d3dFogColour = gldClampedColour(ctx->Fog.Color);
+@@ -760,6 +769,14 @@ void gld_NEW_SCISSOR(
          rcRect.right    = ctx->Scissor.X + ctx->Scissor.Width; // + 1;
          rcRect.top      = gldCtx->dwHeight - (ctx->Scissor.Y + ctx->Scissor.Height);
          rcRect.bottom   = rcRect.top + ctx->Scissor.Height;
@@ -59,7 +89,7 @@ index a6eb8e8..c664c15 100644
          IDirect3DDevice9_SetScissorRect(gld->pDev, &rcRect);
      }
  
-@@ -909,9 +920,14 @@ void gld_Viewport_DX9(
+@@ -909,9 +926,14 @@ void gld_Viewport_DX9(
      if (!gld || !gld->pDev)
          return;
  
@@ -77,7 +107,7 @@ index a6eb8e8..c664c15 100644
  
  	if (glb.bFAKK2) {
  		gld->fViewportY = (y < 0) ? y : 0.0f;
-@@ -1105,6 +1121,8 @@ void gldSetupDriverPointers_DX9(
+@@ -1105,6 +1127,8 @@ void gldSetupDriverPointers_DX9(
      ctx->Driver.TexSubImage1D           = gld_TexSubImage1D_DX9;
      ctx->Driver.TexSubImage2D           = gld_TexSubImage2D_DX9;
      ctx->Driver.TexSubImage3D           = _mesa_store_texsubimage3d;
@@ -429,7 +459,7 @@ index 7bf125d..db7ea1a 100644
  {
  	GLD_context				*gldCtx	= GLD_GET_CONTEXT(ctx);
 diff --git a/src/dx9/gld_shaders.c b/src/dx9/gld_shaders.c
-index 9f10c90..786c695 100644
+index 9f10c90..0baa35e 100644
 --- a/src/dx9/gld_shaders.c
 +++ b/src/dx9/gld_shaders.c
 @@ -42,6 +42,8 @@
@@ -441,7 +471,27 @@ index 9f10c90..786c695 100644
  
  #include "glheader.h"
  #include "context.h"
-@@ -329,14 +331,9 @@ static const char *g_pszGLD_HLSL_light =
+@@ -303,6 +305,19 @@ static const char *g_pszVertexShaderOutputFog =
+ "    float  Fog  : FOG;\n"
+ "};\n";
+ 
++// Siliconium: the fog factor also goes to the pixel shader (gldShaderFog)
++static const char *g_pszVertexShaderOutputFogPS =
++"\n"
++"struct VS_OUTPUT\n"
++"{\n"
++"    float4 Pos  : POSITION;\n"
++"    float4 Diff : COLOR0;\n"
++"    float4 Tex0 : TEXCOORD0;\n"
++"    float4 Tex1 : TEXCOORD1;\n"
++"    float  Fog  : FOG;\n"
++"    float4 FogF : TEXCOORD2;\n"
++"};\n";
++
+ //---------------------------------------------------------------------------
+ 
+ static const char *g_pszGLD_HLSL_light =
+@@ -329,14 +344,9 @@ static const char *g_pszGLD_HLSL_light =
  
  static const char *g_pszSamplerTemplate =
  "\n"
@@ -457,7 +507,25 @@ index 9f10c90..786c695 100644
  "};\n";
  
  //---------------------------------------------------------------------------
-@@ -1195,7 +1192,8 @@ static char *_gldBuildShaderText(
+@@ -1045,7 +1055,7 @@ static char *_gldBuildShaderText(
+ 
+ 	// Default structs
+ 	strcat(pszHLSL, g_pszVertexShaderInput);
+-	strcat(pszHLSL, (pState->Fog.Enabled) ? g_pszVertexShaderOutputFog : g_pszVertexShaderOutput);
++	strcat(pszHLSL, (pState->Fog.Enabled) ? (gldShaderFog() ? g_pszVertexShaderOutputFogPS : g_pszVertexShaderOutputFog) : g_pszVertexShaderOutput);
+ 	if (pState->Light.Enabled) {
+ 		strcat(pszHLSL, g_pszGLD_HLSL_light);
+ 	}
+@@ -1129,6 +1139,8 @@ static char *_gldBuildShaderText(
+ 	// Fog
+ 	if (pState->Fog.Enabled) {
+ 		strcat(pszHLSL, "\nfloat4 g_Fog;\n");
++		if (gldShaderFog())
++			strcat(pszHLSL, "float4 g_FogColor; // Siliconium: GL fog colour, blended in the pixel shader\n");
+ 	}
+ 
+ 	// Always need full transform to output vertex
+@@ -1195,7 +1207,8 @@ static char *_gldBuildShaderText(
  				pszMagFilter = _gldMagFilter(pTexState->Unit[i].MagFilter);
  				pszWrapS = _gldWrap(pTexState->Unit[i].WrapS);
  				pszWrapT = _gldWrap(pTexState->Unit[i].WrapT);
@@ -467,7 +535,7 @@ index 9f10c90..786c695 100644
  				strcat(pszHLSL, szLine);
  			}
  		}
-@@ -1289,7 +1287,15 @@ static char *_gldBuildShaderText(
+@@ -1289,7 +1302,15 @@ static char *_gldBuildShaderText(
  
  	// Lighting
  	if (pState->Light.Enabled) {
@@ -484,7 +552,39 @@ index 9f10c90..786c695 100644
  		if (pState->Light.TwoSide) {
  			strcat(pszHLSL, "    if (normal.z < 0) {\n");
  			// Back material
-@@ -1496,6 +1502,313 @@ static char *_gldBuildShaderText(
+@@ -1387,6 +1408,8 @@ static char *_gldBuildShaderText(
+ 			strcat(pszHLSL, g_pszFogExponentialSquared);
+ 			break;
+ 		}
++		if (gldShaderFog())
++			strcat(pszHLSL, "    Out.FogF = Out.Fog;\n");
+ 	}
+ 
+ 	// Footer
+@@ -1398,6 +1421,8 @@ static char *_gldBuildShaderText(
+ 	//
+ 	
+ 	// Header
++	if (pGLDEffect->dwAlphaTest)
++		strcat(pszHLSL, "\nfloat4 g_AlphaTest; // Siliconium: GL alpha test, clip(a * x + y)\n");
+ 	strcat(pszHLSL, "\nfloat4 PS(VS_OUTPUT In) : COLOR\n");
+ 	strcat(pszHLSL, "{\n");
+ 	strcat(pszHLSL, "    float4 Color = In.Diff;\n");
+@@ -1422,7 +1447,13 @@ static char *_gldBuildShaderText(
+ 		}
+ 	}
+ 
++	// Siliconium: GL fog (after the texture environment, before the alpha test)
++	if (pState->Fog.Enabled && gldShaderFog())
++		strcat(pszHLSL, "    Color.rgb = lerp(g_FogColor.rgb, Color.rgb, In.FogF.x); // GL fog\n");
++
+ 	// Footer
++	if (pGLDEffect->dwAlphaTest)
++		strcat(pszHLSL, "    clip(Color.a * g_AlphaTest.x + g_AlphaTest.y); // GL alpha test\n");
+ 	strcat(pszHLSL, "    return Color;\n}\n");
+ 
+ 	//
+@@ -1496,9 +1527,389 @@ static char *_gldBuildShaderText(
  
  //---------------------------------------------------------------------------
  
@@ -509,7 +609,72 @@ index 9f10c90..786c695 100644
 +}
 +
 +// Siliconium: the cache file of an effect state (see GLD_SHADER_GEN_ID)
-+static int _gldEffectCachePath(GLD_driver_dx9 *gld, const GLD_effect_state *pState, DWORD dwFlags,
++//---------------------------------------------------------------------------
++// Siliconium: the GL alpha test (glAlphaFunc NEVER/LESS/LEQUAL/GREATER/GEQUAL)
++// is done in the pixel shader (clip) instead of by the Direct3D alpha test
++// render state. Through DXVK and MoltenVK the device alpha test of these
++// effects kept LESS 0.5 from ever passing and GEQUAL 0.5 from ever failing
++// (Call of Duty: United Offensive, Bastogne: pine branches missing, treeline
++// cards opaque); with clip() they draw as with Apple's OpenGL.
++// Effects without alpha test are unchanged (same text, same cache file).
++// GLD_SHADER_ALPHATEST=0: the device alpha test as before.
++//---------------------------------------------------------------------------
++BOOL gldShaderAlphaTest(void)
++{
++	static int on = -1;
++	if (on < 0) {
++		const char *v = getenv("GLD_SHADER_ALPHATEST");
++		on = !(v && *v == '0');
++		gldLogPrintf(GLDLOG_INFO, "Alpha test: %s", on ? "pixel shader" : "device (GLD_SHADER_ALPHATEST=0)");
++	}
++	return on;
++}
++
++//---------------------------------------------------------------------------
++// Siliconium: GL fog blended in the pixel shader (the factor is computed per
++// vertex as before) instead of by Direct3D's fog stage: through DXVK and
++// MoltenVK distant geometry got much less fog than with Apple's OpenGL
++// (United Offensive, Bastogne: far trees dark instead of fading to the fog
++// colour). GLD_SHADER_FOG=0: the device fog as before.
++//---------------------------------------------------------------------------
++BOOL gldShaderFog(void)
++{
++	static int on = -1;
++	if (on < 0) {
++		const char *v = getenv("GLD_SHADER_FOG");
++		on = !(v && *v == '0');
++		gldLogPrintf(GLDLOG_INFO, "Fog: %s", on ? "pixel shader" : "device (GLD_SHADER_FOG=0)");
++	}
++	return on;
++}
++
++// 1 when the current GL alpha test goes into the effect
++static DWORD _gldAlphaTestKey(const GLcontext *ctx)
++{
++	if (!ctx->Color.AlphaEnabled || !gldShaderAlphaTest())
++		return 0;
++	switch (ctx->Color.AlphaFunc) {
++	case GL_NEVER: case GL_LESS: case GL_LEQUAL: case GL_GREATER: case GL_GEQUAL:
++		return 1;
++	}
++	return 0; // ALWAYS: nothing to test; EQUAL/NOTEQUAL: device alpha test
++}
++
++// clip(Color.a * x + y) keeps the fragment when the GL alpha test passes
++static void _gldAlphaTestVector(const GLcontext *ctx, D3DXVECTOR4 *v)
++{
++	const float r = ctx->Color.AlphaRef, e = 1.0f / 1024.0f;	// e: strict comparisons
++	v->x = 0.0f; v->y = 1.0f; v->z = 0.0f; v->w = 0.0f;
++	switch (ctx->Color.AlphaFunc) {
++	case GL_NEVER:		v->x = 0.0f;	v->y = -1.0f;	break;
++	case GL_LESS:		v->x = -1.0f;	v->y = r - e;	break;	// a <  r
++	case GL_LEQUAL:		v->x = -1.0f;	v->y = r;		break;	// a <= r
++	case GL_GREATER:	v->x = 1.0f;	v->y = -r - e;	break;	// a >  r
++	case GL_GEQUAL:		v->x = 1.0f;	v->y = -r;		break;	// a >= r
++	}
++}
++
++static int _gldEffectCachePath(GLD_driver_dx9 *gld, const GLD_effect_state *pState, DWORD dwAlphaTest, DWORD dwFlags,
 +	const char *pszDir, char *szPath)
 +{
 +	unsigned long long h;
@@ -523,6 +688,12 @@ index 9f10c90..786c695 100644
 +	h = _gldFnv(h, &gld->d3dCaps9.VertexShaderVersion, sizeof(DWORD));
 +	h = _gldFnv(h, &gld->d3dCaps9.PixelShaderVersion, sizeof(DWORD));
 +	h = _gldFnv(h, &dwFlags, sizeof(dwFlags));
++	// Siliconium: effects with the alpha test in the pixel shader have their
++	// own files (the others keep the names they had)
++	if (dwAlphaTest)
++		h = _gldFnv(h, "siliconium-s19-alphatest-clip-1", sizeof("siliconium-s19-alphatest-clip-1"));
++	if (pState->Fog.Enabled && gldShaderFog())
++		h = _gldFnv(h, "siliconium-s19-psfog-1", sizeof("siliconium-s19-psfog-1"));
 +	_snprintf(szPath, MAX_PATH, "%s\\%016llx.fxo", pszDir, h);
 +	szPath[MAX_PATH - 1] = 0;
 +	return 1;
@@ -531,6 +702,7 @@ index 9f10c90..786c695 100644
 +static HRESULT _gldCreateEffectCached(
 +	GLD_driver_dx9 *gld,
 +	const GLD_effect_state *pState,
++	DWORD dwAlphaTest,
 +	const char *pszEffect,
 +	DWORD dwFlags,
 +	ID3DXEffect **ppEffect,
@@ -547,7 +719,7 @@ index 9f10c90..786c695 100644
 +	{ static int once; if (!once) { once = 1; gldLogPrintf(GLDLOG_INFO, "Effect cache: %s", pszDir ? pszDir : "(off)"); } }
 +	if (!pszDir || !*pszDir)
 +		goto from_text;
-+	if (!_gldEffectCachePath(gld, pState, dwFlags, pszDir, szPath))
++	if (!_gldEffectCachePath(gld, pState, dwAlphaTest, dwFlags, pszDir, szPath))
 +		goto from_text;
 +
 +	// Cached binary?
@@ -797,8 +969,13 @@ index 9f10c90..786c695 100644
 +static LARGE_INTEGER gldT0; static LONGLONG gldFreq;
  static int _gldFindEffect(
  	GLD_driver_dx9 *gld,
- 	const GLD_effect_state *pEffectState)
-@@ -1507,6 +1820,7 @@ static int _gldFindEffect(
+-	const GLD_effect_state *pEffectState)
++	const GLD_effect_state *pEffectState,
++	DWORD dwAlphaTest)
+ {
+ 	int				i;
+ 	HRESULT			hr;
+@@ -1507,23 +1918,31 @@ static int _gldFindEffect(
  	ID3DXEffect		*pEffect;
  	char			*pszEffect;
  	GLD_handles		*pHandles;
@@ -806,7 +983,13 @@ index 9f10c90..786c695 100644
  
  	// See if effect has already been cached.
  	pGLDEffect = gld->Effects;
-@@ -1518,6 +1832,11 @@ static int _gldFindEffect(
+ 	for (i=0; i<gld->nEffects; i++, pGLDEffect++) {
+-		if (memcmp(&pGLDEffect->State, pEffectState, sizeof(GLD_effect_state)) == 0)
++		if (memcmp(&pGLDEffect->State, pEffectState, sizeof(GLD_effect_state)) == 0 &&
++			pGLDEffect->dwAlphaTest == dwAlphaTest)
+ 			return i; // Found a matching effect. Return its index.
+ 	}
+ 
  	//
  	// Effect not found. Create it.
  	//
@@ -818,7 +1001,14 @@ index 9f10c90..786c695 100644
  
  	// Reset all vars in effect
  	ZeroMemory(pGLDEffect, sizeof(GLD_effect));
-@@ -1553,18 +1872,64 @@ static int _gldFindEffect(
+ 
+ 	// Copy effect details
+ 	pGLDEffect->State = *pEffectState;
++	pGLDEffect->dwAlphaTest = dwAlphaTest;
+ #if 1
+ 	// ENABLE THIS TO FIX MISSING FOG IN MOHAA
+ 	// SM 3.x is not working with DX 9.0b SDK; remove this when 9.0c SDK build works
+@@ -1553,18 +1972,64 @@ static int _gldFindEffect(
  
  	// dwFlags |= D3DXSHADER_USE_LEGACY_D3DX9_31_DLL;
  
@@ -838,7 +1028,7 @@ index 9f10c90..786c695 100644
 +	// Siliconium: not in the cache yet -> compiled by the worker thread
 +	if (_gldAsyncEnabled()) {
 +		char szPath[MAX_PATH];
-+		if (_gldEffectCachePath(gld, pEffectState, dwFlags, getenv("GLD_SHADER_CACHE"), szPath) &&
++		if (_gldEffectCachePath(gld, pEffectState, dwAlphaTest, dwFlags, getenv("GLD_SHADER_CACHE"), szPath) &&
 +			GetFileAttributesA(szPath) == INVALID_FILE_ATTRIBUTES) {
 +			GLD_effect_job *job = (GLD_effect_job *)calloc(1, sizeof(GLD_effect_job));
 +			if (job) {
@@ -859,7 +1049,7 @@ index 9f10c90..786c695 100644
 +	}
 +
 +	{ LARGE_INTEGER f; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&gldT0); gldFreq = f.QuadPart; }
-+	hr = _gldCreateEffectCached(gld, pEffectState, pszEffect, dwFlags, &pGLDEffect->pEffect, &pErrors);
++	hr = _gldCreateEffectCached(gld, pEffectState, dwAlphaTest, pszEffect, dwFlags, &pGLDEffect->pEffect, &pErrors);
 +	{ LARGE_INTEGER t1; QueryPerformanceCounter(&t1);
 +	  gldLogPrintf(GLDLOG_INFO, "CreateEffect %d: %.1f ms", gld->nEffects, (t1.QuadPart - gldT0.QuadPart) * 1000.0 / gldFreq); }
 +	if (FAILED(hr)) {
@@ -894,7 +1084,7 @@ index 9f10c90..786c695 100644
  	if (FAILED(hr)) {
  #if 0
  		return -1;
-@@ -1579,9 +1944,12 @@ static int _gldFindEffect(
+@@ -1579,9 +2044,12 @@ static int _gldFindEffect(
  				dwFlags,				// Flags
  				gld->pEffectPool,		// pool
  				&pGLDEffect->pEffect,	// pointer to DX9 effect
@@ -908,7 +1098,18 @@ index 9f10c90..786c695 100644
  			return -1;
  		}
  #endif
-@@ -1644,13 +2012,49 @@ static int _gldFindEffect(
+@@ -1619,6 +2087,10 @@ static int _gldFindEffect(
+ 	// Scene global ambient light
+ 	pHandles->Ambient				= ID3DXEffect_GetParameterByName(pEffect, NULL, "g_Ambient");
+ 
++	// Siliconium: alpha test function and reference (NULL in effects without it)
++	pHandles->AlphaTest				= ID3DXEffect_GetParameterByName(pEffect, NULL, "g_AlphaTest");
++	pHandles->FogColor				= ID3DXEffect_GetParameterByName(pEffect, NULL, "g_FogColor");
++
+ 	// Lights
+ 	for (i=0; i<GLD_MAX_LIGHTS_DX9; i++) {
+ 		pHandles->Lights[i] = _gldGetIndexedEffectVariable(pEffect, "g_Light", i);
+@@ -1644,15 +2116,64 @@ static int _gldFindEffect(
  	// Obtain Techniques
  	pGLDEffect->hTechnique = ID3DXEffect_GetTechniqueByName(pGLDEffect->pEffect, "tecGLDirect");
  
@@ -958,8 +1159,23 @@ index 9f10c90..786c695 100644
 +
  //---------------------------------------------------------------------------
  
++// Siliconium: directional lights in eye coordinates (GLD_LIGHT_EYEDIR=0: the
++// untransformed glLightfv values, as GLDirect did)
++static BOOL _gldLightEyeDir(void)
++{
++	static int on = -1;
++	if (on < 0) {
++		const char *v = getenv("GLD_LIGHT_EYEDIR");
++		on = !(v && *v == '0');
++		gldLogPrintf(GLDLOG_INFO, "Directional lights: %s", on ? "eye coordinates" : "untransformed (GLD_LIGHT_EYEDIR=0)");
++	}
++	return on;
++}
++
  void gldUpdateShaders(
-@@ -1666,6 +2070,7 @@ void gldUpdateShaders(
+ 	GLcontext *ctx)
+ {
+@@ -1666,6 +2187,7 @@ void gldUpdateShaders(
  	const struct gl_light			*glLit;
  	UINT							uiBytes;
  	BOOL							bEffectChanged = FALSE;
@@ -967,7 +1183,7 @@ index 9f10c90..786c695 100644
  
  	//
  	// Fill in  a GLD_effect structure containing the current GL state.
-@@ -1686,7 +2091,9 @@ void gldUpdateShaders(
+@@ -1686,7 +2208,9 @@ void gldUpdateShaders(
  		gldES.Texture._TexMatEnabled	= ctx->Texture._TexMatEnabled;
  		for (i=0; i<GLD_MAX_TEXTURE_UNITS_DX9; i++) {
  			GLuint UnitMask = (GLuint)1 << i;
@@ -978,7 +1194,7 @@ index 9f10c90..786c695 100644
  				// Obtain pointers
  				const struct gl_texture_unit *glUnit	= &ctx->Texture.Unit[i];
  				GLD_effect_texunit *gldUnit				= &gldES.Texture.Unit[i];
-@@ -1699,16 +2106,27 @@ void gldUpdateShaders(
+@@ -1699,16 +2223,27 @@ void gldUpdateShaders(
  					gldUnit->_GenBitQ		= glUnit->_GenBitQ;
  				}
  				gldUnit->TexGenEnabled	= glUnit->TexGenEnabled;
@@ -1010,7 +1226,7 @@ index 9f10c90..786c695 100644
  	//
  	// Fog
  	//
-@@ -1726,7 +2144,11 @@ void gldUpdateShaders(
+@@ -1726,13 +2261,17 @@ void gldUpdateShaders(
  		gldES.Light.TwoSide					= ctx->Light.Model.TwoSide;
  		for (i=0; i<GLD_MAX_LIGHTS_DX9; i++) {
  			gldES.Light.Light[i].Enabled	= ctx->Light.Light[i].Enabled;
@@ -1023,7 +1239,14 @@ index 9f10c90..786c695 100644
  		}
  	}
  
-@@ -1742,6 +2164,8 @@ void gldUpdateShaders(
+ 	// Find a matching effect (or create a new one)
+ 	gld->iCurEffect = -1;
+-	i = _gldFindEffect(gld, &gldES);
++	i = _gldFindEffect(gld, &gldES, _gldAlphaTestKey(ctx));
+ 	if (i < 0) {
+ 		gldLogMessage(GLDLOG_ERROR, "FindEffect failed\n");
+ 		return;
+@@ -1742,6 +2281,8 @@ void gldUpdateShaders(
  	gld->iCurEffect = i;
  
  	pGLDEffect = &gld->Effects[i];
@@ -1032,7 +1255,52 @@ index 9f10c90..786c695 100644
  	pEffect = pGLDEffect->pEffect;
  
  	// Sanity Check
-@@ -1904,6 +2328,7 @@ void gldReleaseShaders(
+@@ -1772,6 +2313,30 @@ void gldUpdateShaders(
+ 
+ 	pHandles = &pGLDEffect->Handles;
+ 
++	// Siliconium: the alpha test in the pixel shader, or the device's (other
++	// functions, alpha test off, or an effect without it: the default effect)
++	if (gldShaderAlphaTest()) {
++		BOOL bShader = pGLDEffect->dwAlphaTest && pHandles->AlphaTest;
++		if (bShader) {
++			D3DXVECTOR4 v;
++			_gldAlphaTestVector(ctx, &v);
++			ID3DXEffect_SetVector(pEffect, pHandles->AlphaTest, &v);
++		}
++		_GLD_DX9_DEV(SetRenderState(gld->pDev, D3DRS_ALPHATESTENABLE, ctx->Color.AlphaEnabled && !bShader));
++	}
++	// Siliconium: the fog in the pixel shader, or the device's (an effect
++	// without it: the default effect)
++	if (gldShaderFog()) {
++		BOOL bShader = ctx->Fog.Enabled && pHandles->FogColor;
++		if (bShader) {
++			D3DXVECTOR4 c;
++			c.x = CLAMP(ctx->Fog.Color[0], 0.0f, 1.0f); c.y = CLAMP(ctx->Fog.Color[1], 0.0f, 1.0f);
++			c.z = CLAMP(ctx->Fog.Color[2], 0.0f, 1.0f); c.w = 1.0f;
++			ID3DXEffect_SetVector(pEffect, pHandles->FogColor, &c);
++		}
++		_GLD_DX9_DEV(SetRenderState(gld->pDev, D3DRS_FOGENABLE, ctx->Fog.Enabled && !bShader));
++	}
++
+ 	// matWorldViewProject must be set in all vertex shaders, otherwise the input vertex cannot be transformed!
+ 	ASSERT(pHandles->matWorldViewProject); // Sanity test in DEBUG builds
+ 	if (pHandles->matWorldViewProject)
+@@ -1828,6 +2393,13 @@ void gldUpdateShaders(
+ 					gl4fToVec4(&Light.Direction, glLit->EyeDirection);
+ 				} else if (glLit->_Flags & LIGHT_POSITIONAL) {
+ 					gl4fToVec4(&Light.Position, glLit->_Position);
++				} else if (_gldLightEyeDir()) {
++					// Siliconium: GL keeps a directional light's direction in eye
++					// coordinates (transformed by the modelview matrix when
++					// glLightfv(GL_POSITION) is called), as the shader's normals;
++					// the untransformed values lit Call of Duty's models from the
++					// wrong side (United Offensive's pines black)
++					gl4fToVec4(&Light.Direction, glLit->EyePosition);
+ 				} else {
+ 					Light.Direction = gld->LightDir[i];
+ 				}
+@@ -1904,6 +2476,7 @@ void gldReleaseShaders(
  {
  	int i;
  
@@ -1040,7 +1308,7 @@ index 9f10c90..786c695 100644
  	SAFE_RELEASE(gld->pEffectPool);
  
  	for (i=0; i<gld->nEffects; i++) {
-@@ -1944,6 +2369,7 @@ void gldBeginEffect(
+@@ -1944,6 +2517,7 @@ void gldBeginEffect(
  	ID3DXEffect_Begin(pGLDEffect->pEffect, &uPasses, dwFlags);
  	ASSERT(uPasses == 1);
  	ID3DXEffect_BeginPass(pGLDEffect->pEffect, 0);
@@ -1345,7 +1613,7 @@ index 8c6511a..00689bd 100644
  	_mesa_install_exec_vtxfmt(ctx, vf);
  
 diff --git a/src/dx9/gldirect5.h b/src/dx9/gldirect5.h
-index 39c51cd..c9762a2 100644
+index 39c51cd..94ee2f2 100644
 --- a/src/dx9/gldirect5.h
 +++ b/src/dx9/gldirect5.h
 @@ -269,6 +269,9 @@ typedef struct {
@@ -1358,16 +1626,29 @@ index 39c51cd..c9762a2 100644
  // The unique set of state handled by the effect
  typedef struct {
  	GLD_effect_texture		Texture;
-@@ -328,6 +331,8 @@ typedef struct {
+@@ -319,6 +322,11 @@ typedef struct {
+ 	D3DXHANDLE	TexPlaneT[GLD_MAX_TEXTURE_UNITS_DX9];
+ 	D3DXHANDLE	TexPlaneR[GLD_MAX_TEXTURE_UNITS_DX9];
+ 	D3DXHANDLE	TexPlaneQ[GLD_MAX_TEXTURE_UNITS_DX9];
++
++	// Siliconium: GL alpha test done in the pixel shader (see gldShaderAlphaTest)
++	D3DXHANDLE	AlphaTest;
++	// Siliconium: GL fog blended in the pixel shader (see gldShaderFog)
++	D3DXHANDLE	FogColor;
+ } GLD_handles;
+ 
+ //---------------------------------------------------------------------------
+@@ -328,6 +336,9 @@ typedef struct {
  	ID3DXEffect			*pEffect;				// The compiled Effect, ready for Direct3D to use
  	D3DXHANDLE			hTechnique;				// Technique handle
  	GLD_handles			Handles;			
 +	void				*pJob;					// Siliconium: async compile still running (GLD_ASYNC_EFFECTS)
 +	DWORD				dwFlags;				// compile flags (for the job's result)
++	DWORD				dwAlphaTest;			// Siliconium: 1 = the pixel shader does the alpha test
  } GLD_effect;
  
  //---------------------------------------------------------------------------
-@@ -439,7 +444,11 @@ typedef struct {
+@@ -439,7 +450,11 @@ typedef struct {
  	int							iLastEffect;	// Index of previous effect (or -1)
  	int							iCurEffect;		// Index of current effect (or -1)
  	int							nEffects;		// Count of current effects
@@ -1380,7 +1661,7 @@ index 39c51cd..c9762a2 100644
  
  	// Keep track of direction of directional lights.
  	D3DXVECTOR4					LightDir[GLD_MAX_LIGHTS_DX9];
-@@ -486,6 +495,8 @@ void							gld_Bitmap_DX9(GLcontext *ctx, GLint x, GLint y, GLsizei width, GLsiz
+@@ -486,6 +501,8 @@ void							gld_Bitmap_DX9(GLcontext *ctx, GLint x, GLint y, GLsizei width, GLsiz
  const struct gl_texture_format*	gld_ChooseTextureFormat_DX9(GLcontext *ctx, GLint internalFormat, GLenum srcFormat, GLenum srcType);
  void							gld_TexImage2D_DX9(GLcontext *ctx, GLenum target, GLint level, GLint internalFormat, GLint width, GLint height, GLint border, GLenum format, GLenum type, const GLvoid *pixels, const struct gl_pixelstore_attrib *packing, struct gl_texture_object *tObj, struct gl_texture_image *texImage);
  void							gld_TexImage1D_DX9(GLcontext *ctx, GLenum target, GLint level, GLint internalFormat, GLint width, GLint border, GLenum format, GLenum type, const GLvoid *pixels, const struct gl_pixelstore_attrib *packing, struct gl_texture_object *texObj, struct gl_texture_image *texImage );
@@ -1389,11 +1670,13 @@ index 39c51cd..c9762a2 100644
  void							gld_TexSubImage2D_DX9( GLcontext *ctx, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const GLvoid *pixels, const struct gl_pixelstore_attrib *packing, struct gl_texture_object *texObj, struct gl_texture_image *texImage );
  void							gld_TexSubImage1D_DX9(GLcontext *ctx, GLenum target, GLint level, GLint xoffset, GLsizei width, GLenum format, GLenum type, const GLvoid *pixels, const struct gl_pixelstore_attrib *packing, struct gl_texture_object *texObj, struct gl_texture_image *texImage);
  void							gld_DeleteTexture_DX9(GLcontext *ctx, struct gl_texture_object *tObj);
-@@ -502,6 +513,9 @@ void							gldUpdateShaders(GLcontext *ctx);
+@@ -502,6 +519,11 @@ void							gldUpdateShaders(GLcontext *ctx);
  void							gldReleaseShaders(GLD_driver_dx9 *gld);
  void							gldBeginEffect(GLD_driver_dx9 *gld, int iEffect);
  void							gldEndEffect(GLD_driver_dx9 *gld, int iEffect);
 +void							gldApplySamplers(GLD_driver_dx9 *gld);
++BOOL							gldShaderAlphaTest(void);
++BOOL							gldShaderFog(void);
 +// Siliconium diagnostics switch (GLD_TRACE_VP), read once
 +static int gldTraceVpOn(void) { static int v = -1; if (v < 0) v = getenv("GLD_TRACE_VP") != NULL; return v; }
  

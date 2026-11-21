@@ -47,6 +47,7 @@ die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 catalog() {
   cat <<'EOF'
 cod1 2620:Game
+uo 2640:Game
 cod2 2630:Game
 cod4 7940:Game
 waw 10090:Game

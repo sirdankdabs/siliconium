@@ -31,6 +31,10 @@ steam_title() {
   case "$1:$2" in
     cod1:sp)  s_exe=CoDSP.exe         s_app=2620   s_api=gl       s_own=0 s_kind=q3 s_name="Call of Duty" ;;
     cod1:mp)  s_exe=CoDMP.exe         s_app=2620   s_api=gl       s_own=0 s_kind=q3 s_name="Call of Duty Multiplayer" ;;
+    # United Offensive (the expansion: its own Steam app, installed into Call of
+    # Duty's folder, its files in uo/): the same engine, setup as Call of Duty
+    uo:sp)    s_exe=CoDUOSP.exe       s_app=2640   s_api=gl       s_own=0 s_kind=q3 s_name="United Offensive" ;;
+    uo:mp)    s_exe=CoDUOMP.exe       s_app=2640   s_api=gl       s_own=0 s_kind=q3 s_name="United Offensive Multiplayer" ;;
     cod2:sp)  s_exe=CoD2SP_s.exe      s_app=2630   s_api=d3d9     s_own=0 s_kind=q3 s_name="Call of Duty 2" ;;
     cod2:mp)  s_exe=CoD2MP_s.exe      s_app=2630   s_api=d3d9     s_own=0 s_kind=q3 s_name="Call of Duty 2 Multiplayer" ;;
     cod4:sp)  s_exe=iw3sp.exe         s_app=7940   s_api=d3d9     s_own=0 s_name="Call of Duty 4" ;;
@@ -59,8 +63,19 @@ steam_title() {
   esac
 }
 
+# Call of Duty and United Offensive (OpenGL) draw through our GLDirect
+# (OpenGL on Direct3D 9, launch.sh); COD1_GLDIRECT / UO_GLDIRECT=0: Apple's
+# OpenGL instead
+steam_gldirect() {
+  case "${s_id:-}" in
+    cod1) [ "${COD1_GLDIRECT:-1}" = 1 ] ;;
+    uo)   [ "${UO_GLDIRECT:-1}" = 1 ] ;;
+    *)    return 1 ;;
+  esac
+}
+
 # Every 32-bit executable of the section: x87 maths goes to the accelerator
-steam_x87_programs=CoDSP.exe:CoDMP.exe:CoD2SP_s.exe:CoD2MP_s.exe:iw3sp.exe:iw3mp.exe:CoDWaW.exe:CoDWaWmp.exe:BlackOps.exe:BlackOpsMP.exe:t6mp.exe:t6zm.exe
+steam_x87_programs=CoDSP.exe:CoDMP.exe:CoDUOSP.exe:CoDUOMP.exe:CoD2SP_s.exe:CoD2MP_s.exe:iw3sp.exe:iw3mp.exe:CoDWaW.exe:CoDWaWmp.exe:BlackOps.exe:BlackOpsMP.exe:t6mp.exe:t6zm.exe
 
 # Modern Warfare 2 and 3 on Steam are 64-bit Direct3D 9 games. The engine's
 # DXVK is 32-bit, and Wine's own Direct3D 9 (OpenGL) is slow. Our 64-bit
@@ -169,6 +184,7 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
     mw2|bo1) mkdir -p "$dir/players";  files=("$dir/players/config.cfg" "$dir/players/config_mp.cfg") ;;
     mw3)     mkdir -p "$dir/players2"; files=("$dir/players2/config.cfg" "$dir/players2/config_mp.cfg") ;;
     cod1)    mkdir -p "$dir/Main"; files=("$dir/Main/config.cfg" "$dir/Main/config_mp.cfg") ;;
+    uo)      mkdir -p "$dir/uo";   files=("$dir/uo/uoconfig.cfg" "$dir/uo/uoconfig_mp.cfg") ;;
     cod2)
       # Call of Duty 2: the active profile's files (main/players/<profile>,
       # made by the game on its first start); its settings load after the
@@ -355,7 +371,7 @@ steam_q3_config() {   # <cfg> <width> <height> <hz> <marker dir>
     steam_cfg_set "$f" r_fullscreen 1
     if [ -n "$w" ] && [ -n "$h" ]; then
       steam_cfg_set "$f" r_mode -1; steam_cfg_set "$f" r_customwidth "$w"; steam_cfg_set "$f" r_customheight "$h"
-      if [ "$(basename "$f")" = config.cfg ]; then
+      if [ "$(basename "$f")" = config.cfg ] || [ "$(basename "$f")" = uoconfig.cfg ]; then
         fov=$(awk -v w="$w" -v h="$h" 'BEGIN { pi = atan2(0, -1); t = sin(40 * pi / 180) / cos(40 * pi / 180) * (w / h) * 0.75
                                                printf "%d", 2 * atan2(t, 1) * 180 / pi + 0.5 }')
         [ "${fov:-0}" -gt 80 ] 2>/dev/null && steam_cfg_set "$f" cg_fov "$fov"
@@ -428,6 +444,17 @@ steam_pad_binds() {   # <cfg>
   # breath, R3 melee, d-pad up binoculars / down scores / sides lean
   [ "$s_id" = cod2 ] && table="KP_INS|+speed;KP_5|+gostand;KP_END|togglecrouch;KP_DOWNARROW|toggleprone;KP_PGDN|+reload;F11|+activate;KP_LEFTARROW|weapnext;KP_RIGHTARROW|+smoke;KP_HOME|+frag;KP_UPARROW|+holdbreath;KP_PGUP|+melee;KP_DEL|+binoculars;KP_MINUS|+scores;KP_PLUS|+leanleft;KP_STAR|+leanright"
   [ "$s_id" = cod1 ] && table="KP_INS|+speed;KP_5|+gostand;KP_END|togglecrouch;KP_DOWNARROW|toggleprone;KP_PGDN|+reload;F11|+activate;KP_LEFTARROW|weapnext;KP_RIGHTARROW|weaponslot pistol;KP_HOME|weaponslot grenade;KP_UPARROW|weapalt;KP_PGUP|+melee;KP_DEL|weaponslot primary;KP_MINUS|weaponslot primaryb;KP_PLUS|+leanleft;KP_STAR|+leanright"
+  # United Offensive (its options menus, uo/localized_english_pakuo00.pk3):
+  # Call of Duty's commands plus sprint (+sprint, L3 as in the later games);
+  # its multiplayer also has binoculars (artillery) and smoke grenades: d-pad
+  # up / down there (the campaign keeps its two primary weapons on them)
+  if [ "$s_id" = uo ]; then
+    table="KP_INS|+speed;KP_5|+gostand;KP_END|togglecrouch;KP_DOWNARROW|toggleprone;KP_PGDN|+reload;F11|+activate;KP_LEFTARROW|weapnext;KP_RIGHTARROW|weaponslot pistol;KP_HOME|weaponslot grenade;KP_UPARROW|+sprint;KP_PGUP|+melee;KP_PLUS|+leanleft;KP_STAR|+leanright"
+    case "$f" in
+      *_mp.cfg) table="$table;KP_DEL|weaponslot binocular;KP_MINUS|weaponslot smokegrenade" ;;
+      *)        table="$table;KP_DEL|weaponslot primary;KP_MINUS|weaponslot primaryb" ;;
+    esac
+  fi
   tmp=$(mktemp "$f.XXXXXX") || return 0
   awk -v table="$table" '
     BEGIN {

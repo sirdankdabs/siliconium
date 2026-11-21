@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.1 — United Offensive
+
+**New**
+- Steam Library: **Call of Duty: United Offensive** (campaign and multiplayer), listed after Call of Duty, with Call of Duty's setup: GLDirect (OpenGL on Direct3D 9, sharing Call of Duty's compiled effects), fullscreen at your display's size and refresh rate, brightness kept after Cmd+Tab, controller mapping and the x87 accelerator. It installs into Call of Duty's folder, as on Windows; Steam needs Call of Duty in the same account.
+
+**Fixed**
+- Call of Duty and United Offensive (GLDirect): foliage now draws as with OpenGL — tree branches and leaves were missing and distant treelines showed as grey walls; lit models such as pine trees were drawn almost black; distant scenery had too little fog. Call of Duty's official timedemo: 138-139 FPS at 2560x1440 on an M1 Pro (141-142 before, with the trees missing). The first start after updating rebuilds some of GLDirect's compiled effects once.
+- Black Ops II Zombies and Multiplayer (Plutonium and Steam): on some Macs gunfire and most weapon sounds were silent with Wine's XAudio2. Siliconium now uses Microsoft's XAudio2 2.7 from the game's own DirectX redistributable (for Plutonium, if the game folder has none: from Black Ops' folder or Black Ops / Black Ops II in Siliconium's Steam Library), as it already did for Black Ops. It can be turned off with "Gunfire sound fix" in Black Ops II's settings (Plutonium tab; Steam's Zombies and Multiplayer follow it). Steam's Black Ops II Zombies and Multiplayer are not tested in game with it yet. Thanks to [xsoapy69](https://github.com/xsoapy69) for the report and fix (issue #2).
+
+**Not tested yet**
+- United Offensive multiplayer (the campaign is verified: about 122 FPS on average in Bastogne's snow forest), and Steam's Black Ops II Zombies and Multiplayer with the new sound fix. See COMPATIBILITY.md.
+
+**Details**
+
+See COMPATIBILITY.md for what is verified per game.
+
 ## 1.1.0 — Steam Library
 
 **New**

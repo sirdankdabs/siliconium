@@ -242,6 +242,10 @@ struct SteamTitle: Identifiable {
         .init(id: "cod1", title: "Call of Duty", year: "2003", badge: "CoD",
               colors: [Color(red: 0.55, green: 0.47, blue: 0.33), Color(red: 0.14, green: 0.11, blue: 0.07)],
               modes: [.init(id: "sp", title: "Campaign", exe: "CoDSP.exe"), .init(id: "mp", title: "Multiplayer", exe: "CoDMP.exe")]),
+        // Call of Duty's expansion: its own Steam app, installed into Call of Duty's folder
+        .init(id: "uo", title: "Call of Duty: United Offensive", year: "2004", badge: "UO",
+              colors: [Color(red: 0.58, green: 0.36, blue: 0.24), Color(red: 0.15, green: 0.08, blue: 0.05)],
+              modes: [.init(id: "sp", title: "Campaign", exe: "CoDUOSP.exe"), .init(id: "mp", title: "Multiplayer", exe: "CoDUOMP.exe")]),
         .init(id: "cod2", title: "Call of Duty 2", year: "2005", badge: "CoD2",
               colors: [Color(red: 0.50, green: 0.52, blue: 0.48), Color(red: 0.12, green: 0.13, blue: 0.12)],
               modes: [.init(id: "sp", title: "Campaign", exe: "CoD2SP_s.exe"), .init(id: "mp", title: "Multiplayer", exe: "CoD2MP_s.exe")]),
@@ -320,7 +324,7 @@ struct GameWindowTarget {
     var startsOutsideScript = false
     var isBOIII = false
     var acceptsFullscreenWindows = false
-    /// Call of Duty / Call of Duty 2 (Steam, campaign and multiplayer): their
+    /// Call of Duty / United Offensive / Call of Duty 2 (Steam, campaign and multiplayer): their
     /// fullscreen window sits at a raised level (21; CoD2 captured: shielding
     /// level), so it was never seen and Siliconium stayed in front (menu bar
     /// shown, CoD1's intro played behind it). Such a game is also handed the
@@ -518,6 +522,9 @@ extension Patch {
         Patch(key: "BO2_HW_PROFILE", title: "Safe hardware profile",
               info: "Starts Black Ops II with a blank hardware profile so it detects settings Apple GPUs support (otherwise it can pick 8x MSAA, which they do not have).",
               games: [.bo2, .bo2c, .bo2s]),
+        Patch(key: "BO2_XAUDIO", title: "Gunfire sound fix",
+              info: "Uses the XAudio2 from the game's own DirectX redistributable: with Wine's, Black Ops II Zombies and Multiplayer play no gunfire and most weapon sounds on some Macs. Also used by Steam's Black Ops II Zombies and Multiplayer.",
+              games: [.bo2]),
         // Ghosts uses the same DXMT features with its own settings.
         Patch(key: "IW6_ASYNC", title: "Background shader compilation",
               info: "DXMT compiles new Metal pipelines on separate threads instead of stopping the frame that needs them.",
@@ -1061,7 +1068,7 @@ final class AppState: ObservableObject {
         running = .steam
         runScript("launch.sh", ["steam", "\(title.id)-\(mode.id)"], title: "Loading…",
                   gameWindow: .init(executable: mode.exe, acceptsFullscreenWindows: title.id == "ghosts" || title.id == "aw",
-                                    acceptsRaisedWindows: title.id == "cod1" || title.id == "cod2")) { [weak self] in
+                                    acceptsRaisedWindows: title.id == "cod1" || title.id == "uo" || title.id == "cod2")) { [weak self] in
             self?.running = nil
         }
     }

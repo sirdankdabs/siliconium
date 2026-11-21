@@ -7,8 +7,8 @@ KNOWN_ISSUES.md, TESTING.md, CHANGELOG.md (newest section).
 
 ## Branches
 
-- `main`: published 1.1.0 (Steam Library, CoD4X). Do not commit or push anything without the owner asking.
-- `steam-library`: where 1.1.0 was developed (merged into `main` for the release).
+- `main`: published 1.1.1 (1.1.0 Steam Library + CoD4X; 1.1.1 United Offensive, GLDirect rendering fixes, Black Ops II XAudio2 fix). Do not commit or push anything without the owner asking.
+- `steam-library`: where 1.1.x is developed (merged into `main` for each release).
 
 ## Hard rules
 

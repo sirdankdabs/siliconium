@@ -49,6 +49,8 @@
 #   BO2_FRAME_PACING=0 no DXMT frame pacing at the frame-rate cap
 #   BO2_MOUSE_LAG_FIX=0 disable Plutonium's high-polling-rate mouse fix in BO2
 #   BO2_HW_PROFILE=0   BO2 keeps its own hardware profile
+#   BO2_XAUDIO=0       Wine's XAudio2 for BO2 Zombies/MP, Plutonium and Steam (on
+#                      some Macs its gunfire and most weapon sounds are silent)
 #   BO2_MODS="..."     extra arguments for BO2 offline, e.g. "+set fs_game mods/dlc5"
 #   IW5_GRAPHICS=0     Modern Warfare 3 keeps its own first-start video defaults
 #   IW5_ASYNC=0        MW3 shaders compile while drawing
@@ -680,8 +682,8 @@ esac
 #   Call of Duty sets its ramp once (its overbright lighting doubles the picture
 #   through it), so after Cmd+Tab or minimize it came back at half brightness.
 #   winemac applies the game's last ramp again when it is active (as Windows
-#   keeps it).
-if [ "$t" = steam ] && [ "${s_id:-}" = cod1 ] && [ "$cursor_fix" = 1 ]; then
+#   keeps it). United Offensive: the same engine.
+if [ "$t" = steam ] && { [ "${s_id:-}" = cod1 ] || [ "${s_id:-}" = uo ]; } && [ "$cursor_fix" = 1 ]; then
   export SIL_REAPPLY_GAMMA=1
   set_env __CX_UNIX_SIL_REAPPLY_GAMMA 1
 else
@@ -1119,12 +1121,15 @@ if [ "$t" = steam ]; then
       "$home/cache/steam-waw/${s_exe%.exe}.dxvk-cache" "$kit/payload/waw/pipelines.dxvk-cache" \
       "$home/cache/plutonium-bootstrapper-win32.dxvk-cache" 2>/dev/null || true ;;
   esac
-  # Black Ops and World at War: their own XAudio2 from the game's redist, as
-  # with Plutonium (Wine's left Black Ops' gunfire silent and World at War's
-  # music broken); Black Ops also reads its video memory through DirectDraw
-  # (no3d reports 128 MB and caps the textures to it). Per executable.
+  # Black Ops, Black Ops II Zombies/Multiplayer and World at War: their own
+  # XAudio2 from the game's redist, as with Plutonium (Wine's left Black Ops'
+  # gunfire silent, BO2's on some Macs, and World at War's music broken);
+  # Black Ops also reads its video memory through DirectDraw (no3d reports
+  # 128 MB and caps the textures to it). Per executable. BO2's campaign
+  # (t6sp.exe, shared with the Black Ops II Campaign tile) keeps Wine's.
   xa_dll= xa_cab= xa_on=
   case "$s_exe" in
+    t6zm.exe|t6mp.exe) xa_dll=XAudio2_7 xa_cab=Jun2010_XAudio_x86.cab xa_on=BO2_XAUDIO ;;
     BlackOps.exe|BlackOpsMP.exe)
       xa_dll=XAudio2_7 xa_cab=Jun2010_XAudio_x86.cab xa_on=BO1_XAUDIO
       reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\Direct3D" /v renderer /d no3d /f
@@ -1174,8 +1179,10 @@ if [ "$t" = steam ]; then
   # Timedemo1, 45 → 138 fps); no3d keeps Wine's DirectDraw (the game asks it
   # for video memory) from starting its own OpenGL through it. Off: the two
   # files go (only if ours).
-  if [ "$s_id" = cod1 ]; then
-    if [ "${COD1_GLDIRECT:-1}" = 1 ] && [ -f "$kit/payload/steam/cod1-gl/opengl32.dll" ]; then
+  # United Offensive (UO_GLDIRECT): the same engine in the same folder, its own
+  # two executables (CoDUOSP.exe / CoDUOMP.exe) get the same override
+  if [ "$s_id" = cod1 ] || [ "$s_id" = uo ]; then
+    if steam_gldirect && [ -f "$kit/payload/steam/cod1-gl/opengl32.dll" ]; then
       for f in opengl32.dll gldirect.ini; do
         cmp -s "$kit/payload/steam/cod1-gl/$f" "$dir/$f" || cp "$kit/payload/steam/cod1-gl/$f" "$dir/$f"
       done
@@ -1184,7 +1191,10 @@ if [ "$t" = steam ]; then
       # GLDirect builds a Direct3D effect (HLSL) per OpenGL state it meets;
       # compiled once, each is kept in the game's cache (fx_2_0 binaries,
       # named by the state + this build) so later starts draw without the
-      # ~100 ms compile hitches
+      # ~100 ms compile hitches. United Offensive shares Call of Duty's cache:
+      # a file is named by the whole effect state (+ this build), so the same
+      # state is the same effect in either game, and the expansion starts with
+      # Call of Duty's effects already compiled
       mkdir -p "$home/cache/steam-cod1/gld"
       gld_cache="$home/cache/steam-cod1/gld"
       export GLD_SHADER_CACHE="Z:${gld_cache//\//\\}"
@@ -1299,6 +1309,10 @@ if [ "$t" = steam ]; then
                # Call of Duty: the same keys, its own commands (X also holds F11)
                pad_ads="keys q3"
                for c in "$dir/Main/config.cfg" "$dir/Main/config_mp.cfg"; do steam_pad_binds "$c"; done
+             elif [ "$s_id" = uo ]; then
+               # United Offensive: as Call of Duty, its settings in uo/
+               pad_ads="keys q3"
+               for c in "$dir/uo/uoconfig.cfg" "$dir/uo/uoconfig_mp.cfg"; do steam_pad_binds "$c"; done
              elif [ "$s_id" = cod2 ]; then
                # Call of Duty 2: as Call of Duty; its settings are in the
                # profiles it makes on the first start (main/players)
@@ -1352,8 +1366,9 @@ if [ "$t" = steam ]; then
   # Wine did not restore it when the player came back (black screen): Ghosts'
   # helper restores the game's window when its Mac app is activated again
   focus_pid=
-  # (Call of Duty through GLDirect draws with Direct3D 9 too: same black screen)
-  if { [ "$s_kind:$s_api" = q3:d3d9 ] || { [ "$s_id" = cod1 ] && [ "${COD1_GLDIRECT:-1}" = 1 ]; }; } &&
+  # (Call of Duty and United Offensive through GLDirect draw with Direct3D 9
+  # too: same black screen)
+  if { [ "$s_kind:$s_api" = q3:d3d9 ] || steam_gldirect; } &&
      [ -x "$kit/payload/iw6/iw6-focus" ]; then
     # The helper needs the game's own Mac process: the one found above can be
     # Wine's start.exe (its command line names the game too), which is never
@@ -1953,6 +1968,27 @@ else
     set_cvar "$players/$c" com_maxfps 0
   done
   gamecfg="$players/plutonium_zm.cfg"; [ "$mode" = mp ] && gamecfg="$players/plutonium_mp.cfg"
+  # Black Ops II creates XAudio2 2.7 like Black Ops (the same COM class), and
+  # Wine's builtin left its gunfire and most weapon sounds silent on some Macs
+  # (GitHub issue #2; not on every Mac). BO2's redist carries the same Microsoft XAudio2_7 as Black Ops'
+  # (see the t5 block): use it for T6 only, the bootstrapper key is shared.
+  # A BO2 folder copied without its redist: the same cab from Black Ops' folder
+  # or from Black Ops / Black Ops II in Siliconium's Steam Library.
+  xa="$WINEPREFIX/xaudio2_7.native.dll"
+  steam_common="$home/prefix-steam/drive_c/Program Files (x86)/Steam/steamapps/common"
+  xa_cabs=("$dir" ${BO1_DIR:+"$BO1_DIR"} "$steam_common/Call of Duty Black Ops II" "$steam_common/Call of Duty Black Ops")
+  for cab in "${xa_cabs[@]/%//redist/DirectX/Jun2010_XAudio_x86.cab}"; do
+    on BO2_XAUDIO && [ ! -f "$xa" ] && [ -f "$cab" ] || continue
+    tmp=$(mktemp -d)
+    bsdtar -xf "$cab" -C "$tmp" XAudio2_7.dll 2>/dev/null && cp "$tmp/XAudio2_7.dll" "$xa"
+    rm -rf "$tmp"
+  done
+  if on BO2_XAUDIO && [ -f "$xa" ]; then
+    cmp -s "$xa" "$WINEPREFIX/drive_c/windows/syswow64/xaudio2_7.dll" || cp "$xa" "$WINEPREFIX/drive_c/windows/syswow64/xaudio2_7.dll"
+    reg add "$bootstrapper\\DllOverrides" /v xaudio2_7 /d native /f
+  else
+    reg delete "$bootstrapper\\DllOverrides" /v xaudio2_7 /f
+  fi
 fi
 
 if [ "$t:$mode" = iw5:mp ]; then
