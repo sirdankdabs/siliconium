@@ -7,7 +7,7 @@ KNOWN_ISSUES.md, TESTING.md, CHANGELOG.md (newest section).
 
 ## Branches
 
-- `main`: published 1.2.1 (1.1.0 Steam Library + CoD4X; 1.1.1 United Offensive, GLDirect rendering fixes, Black Ops II XAudio2 fix; 1.2.0 Infinite Warfare, IW7-Mod (CBServers), AlterWare explanation tab, CoD4X with Steam, the 1.1.x start fix, disk-usage fixes; 1.2.1 removes the offline Black Ops II campaign and Steamless). Do not commit or push anything without the owner asking.
+- `main`: published 1.3.0 (1.1.0 Steam Library + CoD4X; 1.1.1 United Offensive, GLDirect rendering fixes, Black Ops II XAudio2 fix; 1.2.0 Infinite Warfare, IW7-Mod (CBServers), AlterWare explanation tab, CoD4X with Steam, the 1.1.x start fix, disk-usage fixes; 1.2.1 removes the offline Black Ops II campaign and Steamless; 1.3.0 Battle.net section with Black Ops 4, Steam WWII, Black Ops III Mod Tools, macOS Game Mode for every game, game in front at start, fast Cmd-Tab return). Do not commit or push anything without the owner asking.
 - `steam-library`: where new versions are developed (merged into `main` for each release).
 
 ## Hard rules
@@ -20,6 +20,7 @@ KNOWN_ISSUES.md, TESTING.md, CHANGELOG.md (newest section).
 6. Back up a game's config before experiments (Q3/IW games save changed cvars at once).
 7. Don't mark anything done that was not verified (log numbers or the owner's confirmation).
 8. Patched Mach-O modules: re-sign (`codesign -fs -`) and add the old payload sha to the accepted list in launch.sh.
+9. Nothing personal in anything public: commits (author, committer, tagger, message), files, release notes, release files. Commit only with the repo's own anonymous identity (never an author-only override: the committer falls back to the Mac's name). `build-app.sh` strips Python caches and stops if the app contains the build machine's home folder; check the final zip/dmg too before uploading.
 
 ## Where to continue (priority order agreed with the owner)
 

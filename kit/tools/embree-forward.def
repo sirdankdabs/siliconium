@@ -1,0 +1,59 @@
+; Siliconium: embree64r.dll for Black Ops III Mod Tools (kit/bo3-modtools.sh).
+; Every export of Steam's embree64r.dll (Embree 2.3.3, kept in the workspace as
+; embree64r_steam.dll) forwarded to it, same ordinals (embree-forward.c).
+; Generated from the export table of that DLL.
+LIBRARY embree64r.dll
+EXPORTS
+ISPCAlloc=embree64r_steam.ISPCAlloc @1
+ISPCLaunch=embree64r_steam.ISPCLaunch @2
+ISPCSync=embree64r_steam.ISPCSync @3
+rtcCommit=embree64r_steam.rtcCommit @4
+rtcCommitThread=embree64r_steam.rtcCommitThread @5
+rtcDebug=embree64r_steam.rtcDebug @6
+rtcDeleteGeometry=embree64r_steam.rtcDeleteGeometry @7
+rtcDeleteScene=embree64r_steam.rtcDeleteScene @8
+rtcDisable=embree64r_steam.rtcDisable @9
+rtcEnable=embree64r_steam.rtcEnable @10
+rtcExit=embree64r_steam.rtcExit @11
+rtcGetError=embree64r_steam.rtcGetError @12
+rtcInit=embree64r_steam.rtcInit @13
+rtcIntersect=embree64r_steam.rtcIntersect @14
+rtcIntersect16=embree64r_steam.rtcIntersect16 @15
+rtcIntersect4=embree64r_steam.rtcIntersect4 @16
+rtcIntersect8=embree64r_steam.rtcIntersect8 @17
+rtcMapBuffer=embree64r_steam.rtcMapBuffer @18
+rtcNewHairGeometry=embree64r_steam.rtcNewHairGeometry @19
+rtcNewInstance=embree64r_steam.rtcNewInstance @20
+rtcNewScene=embree64r_steam.rtcNewScene @21
+rtcNewSubdivisionMesh=embree64r_steam.rtcNewSubdivisionMesh @22
+rtcNewTriangleMesh=embree64r_steam.rtcNewTriangleMesh @23
+rtcNewUserGeometry=embree64r_steam.rtcNewUserGeometry @24
+rtcOccluded=embree64r_steam.rtcOccluded @25
+rtcOccluded16=embree64r_steam.rtcOccluded16 @26
+rtcOccluded4=embree64r_steam.rtcOccluded4 @27
+rtcOccluded8=embree64r_steam.rtcOccluded8 @28
+rtcSetBoundsFunction=embree64r_steam.rtcSetBoundsFunction @29
+rtcSetBuffer=embree64r_steam.rtcSetBuffer @30
+rtcSetErrorFunction=embree64r_steam.rtcSetErrorFunction @31
+rtcSetIntersectFunction=embree64r_steam.rtcSetIntersectFunction @32
+rtcSetIntersectFunction16=embree64r_steam.rtcSetIntersectFunction16 @33
+rtcSetIntersectFunction4=embree64r_steam.rtcSetIntersectFunction4 @34
+rtcSetIntersectFunction8=embree64r_steam.rtcSetIntersectFunction8 @35
+rtcSetIntersectionFilterFunction=embree64r_steam.rtcSetIntersectionFilterFunction @36
+rtcSetIntersectionFilterFunction16=embree64r_steam.rtcSetIntersectionFilterFunction16 @37
+rtcSetIntersectionFilterFunction4=embree64r_steam.rtcSetIntersectionFilterFunction4 @38
+rtcSetIntersectionFilterFunction8=embree64r_steam.rtcSetIntersectionFilterFunction8 @39
+rtcSetMask=embree64r_steam.rtcSetMask @40
+rtcSetOccludedFunction=embree64r_steam.rtcSetOccludedFunction @41
+rtcSetOccludedFunction16=embree64r_steam.rtcSetOccludedFunction16 @42
+rtcSetOccludedFunction4=embree64r_steam.rtcSetOccludedFunction4 @43
+rtcSetOccludedFunction8=embree64r_steam.rtcSetOccludedFunction8 @44
+rtcSetOcclusionFilterFunction=embree64r_steam.rtcSetOcclusionFilterFunction @45
+rtcSetOcclusionFilterFunction16=embree64r_steam.rtcSetOcclusionFilterFunction16 @46
+rtcSetOcclusionFilterFunction4=embree64r_steam.rtcSetOcclusionFilterFunction4 @47
+rtcSetOcclusionFilterFunction8=embree64r_steam.rtcSetOcclusionFilterFunction8 @48
+rtcSetTransform=embree64r_steam.rtcSetTransform @49
+rtcSetUserData=embree64r_steam.rtcSetUserData @50
+rtcUnmapBuffer=embree64r_steam.rtcUnmapBuffer @51
+rtcUpdate=embree64r_steam.rtcUpdate @52
+setSubdivisionLevel=embree64r_steam.setSubdivisionLevel @53

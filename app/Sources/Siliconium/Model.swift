@@ -11,8 +11,9 @@ import UniformTypeIdentifiers
 /// The sidebar's tabs and the games in each, in order.
 enum GameTab: String, CaseIterable, Identifiable {
     // (the sidebar's order, owner 2026-11-20: Steam, Plutonium, CoD4X, IW4X, BOIII/EZZ, Offline;
-    // 2026-11-21: IW7-Mod under BOIII/EZZ, AlterWare above Offline)
-    case steam, plutonium, cod4x, iw4x, bo3, iw7mod, alterware, others
+    // 2026-11-21: IW7-Mod under BOIII/EZZ, AlterWare above Offline; 2026-11-22:
+    // Battle.net right below Steam)
+    case steam, battlenet, plutonium, cod4x, iw4x, bo3, iw7mod, alterware, others
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -25,6 +26,7 @@ enum GameTab: String, CaseIterable, Identifiable {
         case .alterware: "AlterWare"
         case .others: "Offline"
         case .steam: "Steam"
+        case .battlenet: "Battle.net"
         }
     }
     var games: [Game] {
@@ -42,13 +44,14 @@ enum GameTab: String, CaseIterable, Identifiable {
         // (the offline Black Ops II campaign, .bo2c, was removed in 1.2.1)
         case .others: [.iw6]
         case .steam: [.steam]
+        case .battlenet: [.battlenet]
         }
     }
     static func of(_ game: Game) -> GameTab { allCases.first { $0.games.contains(game) } ?? .plutonium }
 }
 
 enum Game: String, CaseIterable, Identifiable {
-    case waw, bo1, bo2, iw5, iw4, iw6, bo2s, bo2c, bo3, boiii, steam, cod4x, iw7mod, alterware
+    case waw, bo1, bo2, iw5, iw4, iw6, bo2s, bo2c, bo3, boiii, steam, battlenet, cod4x, iw7mod, alterware
     var id: String { rawValue }
 
     var title: String {
@@ -64,6 +67,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .bo3: "Black Ops III for Mac"
         case .boiii: "Black Ops III"
         case .steam: "Steam Library"
+        case .battlenet: "Battle.net"
         case .cod4x: "Call of Duty 4"
         case .iw7mod: "Infinite Warfare"
         case .alterware: "Ghosts, Advanced Warfare"
@@ -88,6 +92,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .alterware: "–"
         case .bo3, .boiii: "2015"
         case .steam: "10"
+        case .battlenet: "1"
         case .cod4x: "2007"
         case .iw7mod: "2016"
         }
@@ -102,6 +107,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .bo3: "Steam"
         case .boiii: "Ezz"
         case .steam: "Steam"
+        case .battlenet: "Battle.net"
         case .cod4x: "CoD4X"
         case .iw7mod: "IW7-Mod (CBServers)"
         case .alterware: "AlterWare"
@@ -123,6 +129,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .boiii: "BOIII · Ezz community servers"
         case .waw: "Plutonium · Zombies, Campaign, Multiplayer"
         case .steam: "Steam for Windows · download your Call of Duty games"
+        case .battlenet: "Battle.net for Windows · Black Ops 4"
         case .cod4x: "CoD4X · Multiplayer"
         case .iw7mod: "IW7-Mod (CBServers) · Campaign, Multiplayer, Zombies, custom maps"
         case .alterware: "AlterWare · not available on Apple silicon"
@@ -141,6 +148,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .boiii: "3.square.fill"
         case .waw: "4.circle.fill"
         case .steam: "cart.fill"
+        case .battlenet: "bolt.horizontal.fill"
         case .cod4x: "scope"
         case .iw7mod: "sparkles"
         case .alterware: "info.circle"
@@ -158,6 +166,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .alterware: "AW"
         case .bo3, .boiii: "T7"
         case .steam: "St"
+        case .battlenet: "Bn"
         case .cod4x: "IW3"
         case .iw7mod: "IW7"
         }
@@ -174,6 +183,7 @@ enum Game: String, CaseIterable, Identifiable {
         case .boiii: [Color(red: 0.98, green: 0.52, blue: 0.10), Color(red: 0.35, green: 0.12, blue: 0.03)]
         case .waw: [Color(red: 0.62, green: 0.58, blue: 0.36), Color(red: 0.16, green: 0.15, blue: 0.08)]
         case .steam: [Color(red: 0.16, green: 0.47, blue: 0.80), Color(red: 0.05, green: 0.10, blue: 0.20)]
+        case .battlenet: [Color(red: 0.00, green: 0.56, blue: 0.94), Color(red: 0.02, green: 0.09, blue: 0.22)]
         case .cod4x: [Color(red: 0.36, green: 0.50, blue: 0.30), Color(red: 0.08, green: 0.13, blue: 0.07)]
         // (the Steam Library's Infinite Warfare row)
         case .iw7mod: [Color(red: 0.32, green: 0.46, blue: 0.62), Color(red: 0.06, green: 0.09, blue: 0.15)]
@@ -196,7 +206,7 @@ enum Game: String, CaseIterable, Identifiable {
         default: nil
         }
     }
-    var usesEngine: Bool { self == .waw || self == .bo1 || self == .bo2 || self == .iw5 || self == .iw4 || self == .iw6 || self == .bo2c || self == .bo2s || self == .boiii || self == .steam || self == .cod4x || self == .iw7mod }
+    var usesEngine: Bool { self == .waw || self == .bo1 || self == .bo2 || self == .iw5 || self == .iw4 || self == .iw6 || self == .bo2c || self == .bo2s || self == .boiii || self == .steam || self == .battlenet || self == .cod4x || self == .iw7mod }
     var plutoniumID: String? {
         switch self {
         case .waw: "t4"
@@ -225,6 +235,9 @@ struct SteamTitle: Identifiable {
     var linkedButton: String? = nil
     /// The game has a Steam Workshop (mods and maps)
     var workshop = false
+    /// The game's Steam tools for making maps and mods (steam.sh tools: their
+    /// name there, e.g. ModTools), downloaded only from their own button
+    var tools: String? = nil
     /// Game options that break the game on a Mac (Siliconium turns them off at every start)
     var avoid: String? = nil
     /// A known problem on a Mac that Siliconium cannot fix yet (shown under Play)
@@ -327,15 +340,19 @@ struct SteamTitle: Identifiable {
               modes: [.init(id: "sp", title: "Campaign", exe: "iw6sp64_ship.exe"), .init(id: "mp", title: "Multiplayer", exe: "iw6mp64_ship.exe")]),
         .init(id: "aw", title: "Advanced Warfare", year: "2014", badge: "S1",
               colors: [Color(red: 0.85, green: 0.70, blue: 0.25), Color(red: 0.22, green: 0.16, blue: 0.04)],
+              note: "Multiplayer and Exo Zombies do not work: they stay at \"Connecting to online services\", and AlterWare's s1-mod, the community client that played them, was discontinued and does not accept Steam's current version of the game.",
               // measured 2026-11-20: ~100 s loading screen after the intro video with warm
               // caches (the game's own shader preload, one CPU thread); minutes more the first time
+              // Multiplayer / Exo Zombies: stuck at "Connecting to online services" (owner,
+              // 2026-11-20, not investigated further); AlterWare's s1-mod, the community
+              // client for them, is archived and refuses Steam's 2026 build (session 23)
               known: "Entering a mission takes a while: after its intro video the game preloads its shaders (about 1-2 minutes). The first time is longer while Siliconium builds its shader cache; later loads are faster.",
               modes: [.init(id: "sp", title: "Campaign", exe: "s1_sp64_ship.exe"), .init(id: "mp", title: "Multiplayer", exe: "s1_mp64_ship.exe")]),
         // Black Ops III: one executable for the campaign, Zombies and
         // Multiplayer (chosen in its own menu); its own setup (launch.sh t7
         // Steam path: BOIII's settings, display mode and video decoders)
         .init(id: "bo3", title: "Black Ops III", year: "2015", badge: "T7",
-              colors: Game.boiii.colors, linked: .boiii, linkedButton: "Play with BOIII", workshop: true,
+              colors: Game.boiii.colors, linked: .boiii, linkedButton: "Play with BOIII", workshop: true, tools: "ModTools",
               modes: [.init(id: "sp", title: "Play", exe: "BlackOps3.exe")],
               // T7Patch was tried and taken out (session 10): under Wine the game
               // crashed (+devmap) or hung loading a map with it
@@ -353,6 +370,37 @@ struct SteamTitle: Identifiable {
               known: "The first start prepares the game's shaders once (\"Preloading Shaders\", a few minutes). Later starts reach the menu in seconds.",
               modes: [.init(id: "sp", title: "Play", exe: "iw7_ship.exe")],
               mods: [iw7mod]),
+        // WWII: the campaign and the multiplayer executable (Multiplayer, and
+        // Nazi Zombies with +zombiesMode 1); its own setup (launch.sh s_kind s2:
+        // 1x display mode, resolution on the command line, window restore).
+        // measured 2026-11-22: ~2.5 min loading a campaign mission, warm caches too
+        .init(id: "wwii", title: "WWII", year: "2017", badge: "S2",
+              colors: [Color(red: 0.62, green: 0.55, blue: 0.36), Color(red: 0.16, green: 0.14, blue: 0.08)],
+              known: "Loading a campaign mission takes about 2-3 minutes. The first time Multiplayer or Nazi Zombies opens, Activision's license appears in the game.",
+              modes: [.init(id: "sp", title: "Campaign", exe: "s2_sp64_ship.exe"), .init(id: "mp", title: "Multiplayer", exe: "s2_mp64_ship.exe"), .init(id: "zm", title: "Nazi Zombies", exe: "s2_mp64_ship.exe")]),
+    ]
+}
+
+/// A game of the Battle.net section (kit/tools/battlenet-games.sh's catalog, same ids).
+struct BattleNetTitle: Identifiable {
+    let id: String
+    let title: String
+    let year: String
+    let badge: String
+    let colors: [Color]
+    /// Its executable (the window Siliconium waits for)
+    let exe: String
+    /// What Play starts, as the player sees it
+    let modes: String
+    /// A known problem on a Mac that Siliconium cannot fix yet (shown under Play)
+    var known: String? = nil
+
+    static let catalog: [BattleNetTitle] = [
+        // Black Ops 4: one executable for Zombies, Multiplayer and Blackout
+        // (chosen in its own menu), Direct3D 11 on DXMT; sold only on Battle.net
+        .init(id: "bo4", title: "Black Ops 4", year: "2018", badge: "T8",
+              colors: [Color(red: 0.95, green: 0.42, blue: 0.12), Color(red: 0.26, green: 0.08, blue: 0.03)],
+              exe: "BlackOps4.exe", modes: "Zombies, Multiplayer, Blackout"),
     ]
 }
 
@@ -368,7 +416,7 @@ struct GameWindowTarget {
     var startsOutsideScript = false
     var isBOIII = false
     var acceptsFullscreenWindows = false
-    /// Call of Duty / United Offensive / Call of Duty 2 (Steam, campaign and multiplayer): their
+    /// Call of Duty / United Offensive / Call of Duty 2 / WWII (Steam, campaign and multiplayer): their
     /// fullscreen window sits at a raised level (21; CoD2 captured: shielding
     /// level), so it was never seen and Siliconium stayed in front (menu bar
     /// shown, CoD1's intro played behind it). Such a game is also handed the
@@ -387,6 +435,7 @@ struct GameWindowTarget {
         case .boiii: .init(executable: "boiii.exe", isBOIII: true)
         case .bo3: .init(executable: "codblkops3_exe", startsOutsideScript: true)
         case .steam: .init(executable: "steam.exe", startsOutsideScript: true)
+        case .battlenet: .init(executable: "Battle.net.exe", startsOutsideScript: true)
         case .cod4x: .init(executable: "iw3mp.exe")
         // IW7-Mod maps the game into its own process (iw7-mod.exe), which
         // opens the game's exclusive-fullscreen window (as Steam's iw7_ship.exe)
@@ -397,10 +446,34 @@ struct GameWindowTarget {
 
     static func visibleConsoleWindows() -> Set<CGWindowID> {
         let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+        let consoles = consolePIDs(windows)
         return Set(windows.compactMap { window in
-            guard window[kCGWindowOwnerName as String] as? String == "conhost.exe" else { return nil }
+            guard let pid = window[kCGWindowOwnerPID as String] as? Int32, consoles.contains(pid) else { return nil }
             return window[kCGWindowNumber as String] as? CGWindowID
         })
+    }
+
+    /// Owners of Wine console (conhost.exe) windows. Wine's processes started
+    /// from Siliconium's Game Mode bundle (kit/tools/game-bundle.sh) all show
+    /// the owner name "Siliconium Game", so a window's owner is told by its
+    /// process's command name, as before by the owner name "conhost.exe".
+    static func consolePIDs(_ windows: [[String: Any]]) -> Set<Int32> {
+        var consoles = Set<Int32>(), others = Set<Int32>()
+        for window in windows {
+            guard let pid = window[kCGWindowOwnerPID as String] as? Int32 else { continue }
+            switch window[kCGWindowOwnerName as String] as? String {
+            case "conhost.exe": consoles.insert(pid)
+            case "Siliconium Game": others.insert(pid)
+            default: break
+            }
+        }
+        others.subtract(consoles)
+        guard !others.isEmpty else { return consoles }
+        for line in ps(["-ww", "-p", others.map(String.init).joined(separator: ","), "-o", "pid=,comm="]).split(separator: "\n") {
+            let parts = line.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+            if parts.count == 2, let pid = Int32(parts[0]), parts[1].lowercased().hasSuffix("conhost.exe") { consoles.insert(pid) }
+        }
+        return consoles
     }
 
     func visiblePID(excludingConsoles existingConsoles: Set<CGWindowID>) async -> Int32? {
@@ -415,8 +488,9 @@ struct GameWindowTarget {
         }
         // The URI can open Plutonium's console before the game renderer.
         if let plutoniumMode {
+            let consoles = Self.consolePIDs(visibleWindows)
             for window in visibleWindows {
-                guard window[kCGWindowOwnerName as String] as? String == "conhost.exe",
+                guard let owner = window[kCGWindowOwnerPID as String] as? Int32, consoles.contains(owner),
                       let id = window[kCGWindowNumber as String] as? CGWindowID,
                       !existingConsoles.contains(id), let pid = window[kCGWindowOwnerPID as String] as? Int32 else { continue }
                 if (window[kCGWindowName as String] as? String)?.hasPrefix("Plutonium ") == true { return pid }
@@ -923,7 +997,7 @@ final class AppState: ObservableObject {
             guard has("iw3mp.exe"), has("main"), has("zone") else {
                 return "That is not a Windows Call of Duty 4 folder: choose the one with iw3mp.exe, main/ and zone/."
             }
-        case .iw7mod, .bo2s, .bo3, .steam, .alterware:   // (.iw7mod: checked above)
+        case .iw7mod, .bo2s, .bo3, .steam, .battlenet, .alterware:   // (.iw7mod: checked above)
             return nil
         }
         return nil
@@ -1112,20 +1186,25 @@ final class AppState: ObservableObject {
         var folder = ""
         var parts: [(name: String, state: String)] = []   // Campaign, Multiplayer, Zombies…
         var dlc = 0                    // DLC (map packs…) Steam installed with it
+        var tools: [String: String] = [:]   // the game's Steam tools (ModTools) → their state
     }
     @Published var steamLibrary: [String: SteamEntry] = [:]
     func refreshSteamLibrary() {
         refreshSteamCampaign()
         Task.detached {
             var d: [String: SteamEntry] = [:]
-            for line in Self.capture("steam.sh", ["library"]).split(separator: "\n") {
-                let p = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-                guard p.count >= 5 else { continue }
-                let parts = p[3].split(separator: ",").compactMap { part -> (name: String, state: String)? in
+            func pairs(_ field: String) -> [(name: String, state: String)] {
+                field.split(separator: ",").compactMap { part -> (name: String, state: String)? in
                     let kv = part.split(separator: ":", maxSplits: 1).map(String.init)
                     return kv.count == 2 ? (kv[0], kv[1]) : nil
                 }
-                d[p[0]] = SteamEntry(state: p[1], folder: p[2], parts: parts, dlc: Int(p[4]) ?? 0)
+            }
+            for line in Self.capture("steam.sh", ["library"]).split(separator: "\n") {
+                let p = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                guard p.count >= 5 else { continue }
+                var tools: [String: String] = [:]
+                if p.count >= 6 { for t in pairs(p[5]) { tools[t.name] = t.state } }
+                d[p[0]] = SteamEntry(state: p[1], folder: p[2], parts: pairs(p[3]), dlc: Int(p[4]) ?? 0, tools: tools)
             }
             let result = d
             await MainActor.run { self.steamLibrary = result }
@@ -1153,7 +1232,7 @@ final class AppState: ObservableObject {
         let exe = title.id == "iw" && steamMod(title)?.id == "iw7mod" ? "iw7-mod.exe" : mode.exe
         runScript("launch.sh", ["steam", "\(title.id)-\(mode.id)"], title: "Loading…",
                   gameWindow: .init(executable: exe, acceptsFullscreenWindows: title.id == "ghosts" || title.id == "aw" || title.id == "iw",
-                                    acceptsRaisedWindows: title.id == "cod1" || title.id == "uo" || title.id == "cod2")) { [weak self] in
+                                    acceptsRaisedWindows: title.id == "cod1" || title.id == "uo" || title.id == "cod2" || title.id == "wwii")) { [weak self] in
             self?.running = nil
         }
     }
@@ -1163,6 +1242,28 @@ final class AppState: ObservableObject {
         }
     }
     func openSteamStore(_ id: String) { runScript("steam.sh", ["store", id], title: nil) }
+    /// A game's Steam tools (Black Ops III: Mod Tools): Steam's install dialog,
+    /// only from their own button (never with Download all)
+    func downloadSteamTool(_ id: String) {
+        runScript("steam.sh", ["download-tool", id], title: nil) { [weak self] in self?.refreshSteamLibrary() }
+    }
+    /// Black Ops III's Mod Tools (kit/bo3-modtools.sh): their launcher, from the
+    /// workspace that puts the game and the tools together. Runs like a game
+    /// (Siliconium steps aside when the launcher's window opens and comes back
+    /// when every tool is closed; Stop ends them; nothing else can start in
+    /// Steam's prefix meanwhile, which would close them).
+    func openBO3ModTools() {
+        guard progress == nil, running == nil else { return }
+        running = .steam
+        runScript("bo3-modtools.sh", ["start"], title: "Opening Mod Tools…",
+                  gameWindow: .init(executable: "modlauncher.exe")) { [weak self] in
+            self?.running = nil
+        }
+    }
+    /// The Mac folder with the player's Mod Tools work (maps, mods), in Finder
+    func showBO3ModToolsWork() {
+        runScript("bo3-modtools.sh", ["work", "--reveal"], title: nil)
+    }
     func openSteamWorkshop(_ id: String) { runScript("steam.sh", ["workshop", id], title: nil) }
     /// The linked game's tab, with Steam's download as its folder when it has
     /// no usable folder of its own (a folder the player chose is kept: BOIII
@@ -1217,6 +1318,55 @@ final class AppState: ObservableObject {
         refreshToken += 1
         goTo = game
     }
+    // MARK: Battle.net (battlenet.sh)
+
+    /// battlenet.sh status: battlenet=installed|missing, signedin, running
+    @Published var battlenet: [String: String] = [:]
+    /// battlenet.sh library: a catalog game in Battle.net → (state, folder)
+    @Published var battlenetLibrary: [String: (state: String, folder: String)] = [:]
+    func refreshBattleNet() {
+        Task.detached {
+            var status: [String: String] = [:]
+            for line in Self.capture("battlenet.sh", ["status"]).split(separator: "\n") {
+                let p = line.split(separator: "=", maxSplits: 1)
+                if p.count == 2 { status[String(p[0])] = String(p[1]) }
+            }
+            var library: [String: (state: String, folder: String)] = [:]
+            for line in Self.capture("battlenet.sh", ["library"]).split(separator: "\n") {
+                let p = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                if p.count >= 3 { library[p[0]] = (p[1], p[2]) }
+            }
+            let s = status, l = library
+            await MainActor.run { self.battlenet = s; self.battlenetLibrary = l }
+        }
+    }
+    /// Installs Battle.net for Windows in its own prefix and opens it to sign in.
+    func setupBattleNet() {
+        runScript("battlenet.sh", ["setup"], title: "Installing Battle.net") { [weak self] in self?.refreshBattleNet() }
+    }
+    func openBattleNet() { runScript("battlenet.sh", ["open"], title: nil) { [weak self] in self?.refreshBattleNet() } }
+    /// The game's page in Battle.net, where its Install button is.
+    func downloadBattleNetGame(_ id: String) {
+        runScript("battlenet.sh", ["download", id], title: nil) { [weak self] in self?.refreshBattleNet() }
+    }
+    /// Plays a Battle.net game: Battle.net's own files, started by Battle.net
+    /// with Siliconium's settings (launch.sh battlenet <id>).
+    func playBattleNet(_ title: BattleNetTitle) {
+        guard progress == nil, running == nil else { return }
+        // as in play(): the microphone question shows over this window, not behind the game
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+            AVCaptureDevice.requestAccess(for: .audio) { _ in
+                Task { @MainActor in self.playBattleNet(title) }
+            }
+            return
+        }
+        running = .battlenet
+        runScript("launch.sh", ["battlenet", title.id], title: "Loading…",
+                  gameWindow: .init(executable: title.exe, acceptsFullscreenWindows: true)) { [weak self] in
+            self?.running = nil
+        }
+    }
+
     /// The offline Black Ops II campaign (.bo2c) was removed in 1.2.1: its setup
     /// took Steam's DRM off t6sp.exe. Steam's campaign plays from the Steam
     /// Library; the tab is gone from the sidebar and these stay inert.
@@ -1250,6 +1400,7 @@ final class AppState: ObservableObject {
         case .bo2s: engineInstalled && steamCampaign["steam"] == "installed" && steamCampaign["game"] == "installed"
         case .bo3: bo3Installed
         case .steam: engineInstalled && steamCampaign["steam"] == "installed"
+        case .battlenet: engineInstalled && battlenet["battlenet"] == "installed"
         }
     }
 
@@ -1466,7 +1617,7 @@ final class AppState: ObservableObject {
     nonisolated static var engineRunning: Bool {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        p.arguments = ["-if", #"t4mp\.exe|t4sp\.exe|t5mp\.exe|t5sp\.exe|t6mp\.exe|t6zm\.exe|t6sp\.exe|iw5mp\.exe|iw5sp\.exe|boiii(-[[:alnum:]._-]+)?\.exe|blackops3\.exe|iw4x(-launcher)?\.exe|iw6sp64_ship\.exe([[:space:]]|$)"#]
+        p.arguments = ["-if", #"t4mp\.exe|t4sp\.exe|t5mp\.exe|t5sp\.exe|t6mp\.exe|t6zm\.exe|t6sp\.exe|iw5mp\.exe|iw5sp\.exe|boiii(-[[:alnum:]._-]+)?\.exe|blackops3\.exe|blackops4\.exe|iw4x(-launcher)?\.exe|iw6sp64_ship\.exe([[:space:]]|$)"#]
         p.standardOutput = Pipe()
         try? p.run()
         p.waitUntilExit()

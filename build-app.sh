@@ -30,6 +30,10 @@ ditto "$root/kit" "$app/Contents/Resources/kit"
 # Finder metadata must not end up in the app (or its release zip)
 find "$app" -name '.DS_Store' -delete
 find "$app" -name '._*' -delete
+# Python byte-code caches record the absolute path of the checkout they were
+# made in (the build machine's home folder): they must not end up there either
+find "$app" -name '__pycache__' -type d -prune -exec rm -rf {} +
+find "$app" -name '*.pyc' -delete
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -86,6 +90,15 @@ if bad:
     print("Metal libraries newer than macOS 15 supports:", *sorted(set(bad)), sep="\n", file=sys.stderr)
     sys.exit(1)
 PY
+# The release is public: no file in the app may carry the build machine's home
+# folder (Python caches, logs, debug paths, a scratch folder named after it).
+echo "==> Checking the app for build-machine paths"
+leaks=$(grep -rlaF -e "$HOME/" -e "$(printf %s "$HOME" | tr / -)-" "$app" 2>/dev/null || true)
+if [ -n "$leaks" ]; then
+  echo "files that contain this machine's home folder:" >&2
+  printf '%s\n' "$leaks" | while IFS= read -r f; do echo "  ${f#"$app/"}" >&2; done
+  exit 1
+fi
 xattr -cr "$app"   # Finder info and other extended attributes stop codesign
 # Ad-hoc by default. macOS ties the folder permissions the user grants (TCC) to
 # the app's signature, so every ad-hoc rebuild asks again; set SIL_SIGN_IDENTITY

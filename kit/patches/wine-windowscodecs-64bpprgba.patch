@@ -1,0 +1,123 @@
+windowscodecs: convert 16bppGray (full precision) and every format Wine converts
+to 32bppBGRA (24bppBGR, 32bppBGRA, 8bppGray, indexed...) to 64bppRGBA. Black Ops
+III Mod Tools' Radiant, Asset Editor, cod2map64 and umbraconvert convert their TIFF
+textures to 64bppRGBA through WIC; Wine had only 48bppRGB -> 64bppRGBA
+("Unimplemented conversion path 8/13/18"), so no texture loaded and Radiant
+crashed loading a map. Shipped for those tools only:
+kit/payload/bo3-modtools/windowscodecs.dll (bytes 64-79 = DOS-stub text so Wine
+loads it as native) in Steam's prefix system32, used through per-exe DllOverrides
+(kit/bo3-modtools.sh); every other program keeps the engine's own.
+
+--- a/dlls/windowscodecs/converter.c
++++ b/dlls/windowscodecs/converter.c
+@@ -1882,6 +1882,51 @@
+                     *dstpixel++ = *srcpixel++;
+                     *dstpixel++ = *srcpixel++;
+                     *dstpixel++ = *srcpixel++;
++                    *dstpixel++ = 65535;
++                }
++                srcrow += srcstride;
++                dstrow += cbStride;
++            }
++        }
++        free(srcdata);
++        return hr;
++    }
++    case format_16bppGray:
++    {
++        /* Siliconium: 16-bit gray at full precision (Black Ops III Mod Tools'
++         * Radiant converts its 16-bit gray TIFF textures to 64bppRGBA) */
++        UINT srcstride, srcdatasize;
++        const USHORT *srcpixel;
++        const BYTE *srcrow;
++        USHORT *dstpixel;
++        BYTE *srcdata;
++        BYTE *dstrow;
++        INT x, y;
++
++        if (!prc)
++            return S_OK;
++
++        srcstride = 2 * prc->Width;
++        srcdatasize = srcstride * prc->Height;
++
++        srcdata = malloc(srcdatasize);
++        if (!srcdata) return E_OUTOFMEMORY;
++
++        hr = IWICBitmapSource_CopyPixels(This->source, prc, srcstride, srcdatasize, srcdata);
++        if (SUCCEEDED(hr))
++        {
++            srcrow = srcdata;
++            dstrow = pbBuffer;
++            for (y = 0; y < prc->Height; y++)
++            {
++                srcpixel = (const USHORT *)srcrow;
++                dstpixel = (USHORT *)dstrow;
++                for (x = 0; x < prc->Width; x++)
++                {
++                    USHORT gray = *srcpixel++;
++                    *dstpixel++ = gray;
++                    *dstpixel++ = gray;
++                    *dstpixel++ = gray;
+                     *dstpixel++ = 65535;
+                 }
+                 srcrow += srcstride;
+@@ -1892,8 +1937,56 @@
+         return hr;
+     }
+     default:
+-        FIXME("Unimplemented conversion path %d.\n", source_format);
+-        return WINCODEC_ERR_UNSUPPORTEDOPERATION;
++    {
++        /* Siliconium: every other format Wine converts to 32bppBGRA (24bppBGR,
++         * 32bppBGRA, 8bppGray, indexed...), each 8-bit channel widened to 16
++         * bits (x * 257: 0 -> 0, 255 -> 65535), in RGBA order */
++        UINT srcstride, srcdatasize;
++        const BYTE *srcpixel;
++        const BYTE *srcrow;
++        USHORT *dstpixel;
++        BYTE *srcdata;
++        BYTE *dstrow;
++        INT x, y;
++
++        if (!prc)
++        {
++            hr = copypixels_to_32bppBGRA(This, NULL, 0, 0, NULL, source_format);
++            if (FAILED(hr)) FIXME("Unimplemented conversion path %d.\n", source_format);
++            return hr;
++        }
++
++        srcstride = 4 * prc->Width;
++        srcdatasize = srcstride * prc->Height;
++
++        srcdata = malloc(srcdatasize);
++        if (!srcdata) return E_OUTOFMEMORY;
++
++        hr = copypixels_to_32bppBGRA(This, prc, srcstride, srcdatasize, srcdata, source_format);
++        if (SUCCEEDED(hr))
++        {
++            srcrow = srcdata;
++            dstrow = pbBuffer;
++            for (y = 0; y < prc->Height; y++)
++            {
++                srcpixel = srcrow;
++                dstpixel = (USHORT *)dstrow;
++                for (x = 0; x < prc->Width; x++)
++                {
++                    *dstpixel++ = srcpixel[2] * 257;
++                    *dstpixel++ = srcpixel[1] * 257;
++                    *dstpixel++ = srcpixel[0] * 257;
++                    *dstpixel++ = srcpixel[3] * 257;
++                    srcpixel += 4;
++                }
++                srcrow += srcstride;
++                dstrow += cbStride;
++            }
++        }
++        else FIXME("Unimplemented conversion path %d.\n", source_format);
++        free(srcdata);
++        return hr;
++    }
+     }
+ }
+ 

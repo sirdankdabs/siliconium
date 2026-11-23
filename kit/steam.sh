@@ -7,7 +7,7 @@
 #
 #   steam.sh status            steam=installed|missing  signedin=yes|no  running=yes|no
 #   steam.sh library           one line per game in the catalog:
-#                              <id>|<state>|<folder>|<part>:<state>,...|<DLC installed>
+#                              <id>|<state>|<folder>|<part>:<state>,...|<DLC installed>|<tool>:<state>,...
 #                              state: installed|downloading|missing (each part,
 #                              like Multiplayer or Zombies, is its own Steam app)
 #   steam.sh setup             creates prefix-steam, installs Steam for Windows
@@ -16,6 +16,8 @@
 #   steam.sh download <id>     opens Steam's install dialog for a catalog game
 #                              (each of its Steam apps: campaign, multiplayer…)
 #   steam.sh download-all      the same for every catalog game not downloaded yet
+#   steam.sh download-tool <id>  the same for a game's tools (Black Ops III:
+#                              Mod Tools), never part of download / download-all
 #   steam.sh store <id>        opens the game's store page in Steam
 #   steam.sh start             starts Steam in the background if it isn't open
 #   steam.sh wait              waits (up to 3 minutes) until Steam is signed in
@@ -59,10 +61,21 @@ ghosts 209160:Campaign 209170:Multiplayer
 aw 209650:Campaign 209660:Multiplayer
 bo3 311210:Game
 iw 292730:Game
+wwii 476600:Campaign 476620:Multiplayer
 EOF
 }
 # a game's Steam apps (numbers only), the main one first
 apps_of() { catalog | awk -v id="$1" '$1 == id { for (i = 2; i <= NF; i++) { split($i, a, ":"); printf "%s ", a[1] } }'; }
+# A game's Steam tools: apps made for creating content, not for playing (Black
+# Ops III's Mod Tools: Radiant, the map compiler and linker, installed into
+# the game's own folder). Never part of Download / Download all / Download the
+# rest: each is downloaded only from its own button (download-tool).
+tools() {
+  cat <<'EOF'
+bo3 455130:ModTools
+EOF
+}
+tool_of() { tools | awk -v id="$1" '$1 == id { split($2, a, ":"); print a[1] }'; }
 
 # signed in now: Steam's latest connection state is "Logged On"
 signed_in() {
@@ -181,9 +194,11 @@ status)
   ;;
 library)
   catalog | while read -r id parts; do
-    main=${parts%%:*} list=
+    main=${parts%%:*} list= tl=
     for p in $parts; do list+="${p#*:}:$(app_state "${p%%:*}"),"; done
-    printf '%s|%s|%s|%s|%s\n' "$id" "$(game_state "$id")" "$(gamedir "$main")" "${list%,}" "$(dlc_count "$id")"
+    # (6th field: the game's tools, as <name>:<state>)
+    for p in $(tools | awk -v id="$id" '$1 == id { $1 = ""; print }'); do tl+="${p#*:}:$(app_state "${p%%:*}"),"; done
+    printf '%s|%s|%s|%s|%s|%s\n' "$id" "$(game_state "$id")" "$(gamedir "$main")" "${list%,}" "$(dlc_count "$id")" "${tl%,}"
   done
   ;;
 setup)
@@ -238,6 +253,14 @@ download-all)
   done
   step "Confirm each download in Steam's window"
   ;;
+# A game's tools (Black Ops III: Mod Tools), only when asked for: Steam's
+# install dialog for that app (Steam checks the account may have it)
+download-tool)
+  need_steam
+  a=$(tool_of "${2:-}"); [ -n "$a" ] || die "no tools for: ${2:-}"
+  ensure_running
+  if [ "$(app_state "$a")" = missing ]; then steam_cmd "steam://install/$a"; fi
+  ;;
 store)
   need_steam
   read -r main _ <<< "$(apps_of "${2:-}")"; [ -n "${main:-}" ] || die "unknown game: ${2:-}"
@@ -264,6 +287,6 @@ gamedir) gamedir "${2:?appid}" ;;
 state) app_state "${2:?appid}" ;;
 launch) steam_cmd -applaunch "${2:?appid}" ;;
 *)
-  die "usage: steam.sh status | library | setup | open | download <id> | download-all | store <id> | workshop <id> | start | wait | gamedir <appid> | state <appid> | launch <appid>"
+  die "usage: steam.sh status | library | setup | open | download <id> | download-all | download-tool <id> | store <id> | workshop <id> | start | wait | gamedir <appid> | state <appid> | launch <appid>"
   ;;
 esac

@@ -1,0 +1,142 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -70,6 +70,8 @@
+ # include <mach/mach_error.h>
+ # include <mach-o/getsect.h>
+ # include <crt_externs.h>
++# include <copyfile.h>
++# include <sys/clonefile.h>
+ # ifndef _POSIX_SPAWN_DISABLE_ASLR
+ #  define _POSIX_SPAWN_DISABLE_ASLR 0x0100
+ # endif
+@@ -648,6 +650,121 @@
+         free(app_name);
+     }
+ }
++
++/* Siliconium: macOS Game Mode for a game that another Windows program starts
++ * (Battle.net starts Black Ops 4). gamepolicyd turns Game Mode on only while
++ * the frontmost process is the executable of an app bundle of the games
++ * category; the links above are bare files, so such a game never got it.
++ * SIL_GAME_EXES names those programs (file names separated by ':', any case):
++ * they run from a copy of the loader that is the executable of
++ * <tempdir>/<name>.app, named <name> as the link would be (so the process's
++ * command name stays the program's). A copy (an APFS clone), not a link: a
++ * file of its own, so macOS cannot name the process after another link of
++ * the same loader. Info.plist as the kit's "Siliconium Game.app"
++ * (tools/game-bundle.sh). */
++static BOOL sil_game_listed( const char *name )
++{
++    const char *list = getenv( "SIL_GAME_EXES" ), *p, *end;
++    size_t len = strlen( name );
++
++    if (!list) return FALSE;
++    for (p = list; *p; p = *end ? end + 1 : end)
++    {
++        if (!(end = strchr( p, ':' ))) end = p + strlen( p );
++        if ((size_t)(end - p) == len && !strncasecmp( p, name, len )) return TRUE;
++    }
++    return FALSE;
++}
++
++static const char sil_game_plist[] =
++    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
++    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
++    "<plist version=\"1.0\">\n<dict>\n"
++    "\t<key>CFBundleExecutable</key><string>%s</string>\n"
++    "\t<key>CFBundleIdentifier</key><string>io.github.siliconium.game</string>\n"
++    "\t<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n"
++    "\t<key>CFBundleName</key><string>Siliconium Game</string>\n"
++    "\t<key>CFBundlePackageType</key><string>APPL</string>\n"
++    "\t<key>CFBundleShortVersionString</key><string>1.0</string>\n"
++    "\t<key>CFBundleVersion</key><string>1</string>\n"
++    "\t<key>LSApplicationCategoryType</key><string>public.app-category.games</string>\n"
++    "\t<key>LSUIElement</key><string>1</string>\n"
++    "\t<key>NSPrincipalClass</key><string>WineApplication</string>\n"
++    "\t<key>NSMicrophoneUsageDescription</key><string>In-game voice chat.</string>\n"
++    "\t<key>NSLocalNetworkUsageDescription</key><string>Local play and LAN matches find and join games on your network.</string>\n"
++    "</dict>\n</plist>\n";
++
++/* makes <tempdir>/<name>.app for the loader (built beside it, then renamed:
++ * another process may build it at the same time); returns its executable */
++static char *sil_make_game_bundle( const char *wineloader_path, const char *name )
++{
++    char *dir, *app = NULL, *tmp = NULL, *contents = NULL, *macos = NULL, *exe = NULL,
++         *link = NULL, *plist = NULL, *ntdll = NULL, *real = NULL, *ret = NULL, *p;
++    struct stat st;
++    FILE *f;
++
++    if (!(dir = create_tempdir( wineloader_path ))) return NULL;
++    if (asprintf( &ret, "%s%s.app/Contents/MacOS/%s", dir, name, name ) < 0) { ret = NULL; goto done; }
++    if (!stat( ret, &st )) goto done;   /* made before */
++
++    if (!(real = realpath( wineloader_path, NULL ))) goto fail;
++    if (asprintf( &app, "%s%s.app", dir, name ) < 0) { app = NULL; goto fail; }
++    if (asprintf( &tmp, "%s.%s.app.%d", dir, name, (int)getpid() ) < 0) { tmp = NULL; goto fail; }
++    if (asprintf( &contents, "%s/Contents", tmp ) < 0) { contents = NULL; goto fail; }
++    if (asprintf( &macos, "%s/MacOS", contents ) < 0) { macos = NULL; goto fail; }
++    if (asprintf( &exe, "%s/%s", macos, name ) < 0) { exe = NULL; goto fail; }
++    if (asprintf( &link, "%s/ntdll.so", macos ) < 0) { link = NULL; goto fail; }
++    if (asprintf( &plist, "%s/Info.plist", contents ) < 0) { plist = NULL; goto fail; }
++    /* the loader finds ntdll.so beside itself (as in the tempdir) */
++    if (!(ntdll = malloc( strlen( wineloader_path ) + sizeof("/ntdll.so") ))) goto fail;
++    strcpy( ntdll, wineloader_path );
++    if ((p = strrchr( ntdll, '/' ))) *p = 0;
++    strcat( ntdll, "/ntdll.so" );
++
++    if (mkdir( tmp, 0700 ) || mkdir( contents, 0700 ) || mkdir( macos, 0700 )) goto fail;
++    if (clonefile( real, exe, 0 ) && copyfile( real, exe, NULL, COPYFILE_ALL )) goto fail;
++    if (symlink( ntdll, link )) goto fail;
++    if (!(f = fopen( plist, "w" ))) goto fail;
++    fprintf( f, sil_game_plist, name );
++    if (fclose( f )) goto fail;
++    if (!rename( tmp, app ) || !stat( ret, &st )) goto cleanup;   /* ours, or one made meanwhile */
++
++fail:
++    free( ret );
++    ret = NULL;
++cleanup:
++    if (tmp)
++    {
++        if (plist) unlink( plist );
++        if (link) unlink( link );
++        if (exe) unlink( exe );
++        if (macos) rmdir( macos );
++        if (contents) rmdir( contents );
++        rmdir( tmp );
++    }
++done:
++    free( dir ); free( app ); free( tmp ); free( contents ); free( macos ); free( exe );
++    free( link ); free( plist ); free( ntdll ); free( real );
++    return ret;
++}
++
++/* SIL_GAME_EXES: run this program from its bundle; FALSE: not listed (or no bundle) */
++static BOOL sil_game_bundle_path( char **wineloader_path, const char *image_path )
++{
++    char *name = extract_exe_name( image_path ), *exe;
++
++    if (!name) return FALSE;
++    if (!sil_game_listed( name ) || !(exe = sil_make_game_bundle( *wineloader_path, name )))
++    {
++        free( name );
++        return FALSE;
++    }
++    free( *wineloader_path );
++    *wineloader_path = exe;
++    setenv( "WINEPRELOADERAPPNAME", name, 1 );
++    free( name );
++    return TRUE;
++}
+ #endif
+ 
+ 
+@@ -679,7 +796,7 @@
+      * When the preloader is not being used, WINEDLLPATH needs to be set correctly for
+      * the loader to find ntdll.so, so don't even attempt this unless WINEDLLPATH is set.
+      */
+-    if (getenv("WINEDLLPATH"))
++    if (getenv("WINEDLLPATH") && !sil_game_bundle_path( &(argv[1]), image_path ))
+         replace_wineloader_path_with_link( &(argv[1]), image_path );
+ #endif
+ 

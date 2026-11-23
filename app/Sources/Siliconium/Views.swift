@@ -145,6 +145,8 @@ struct ContentView: View {
                 // the restored row gets the same refresh as when it is clicked
                 if selection == .bo2c { state.refreshCampaign() }
                 if selection == .bo2s { state.refreshSteamCampaign() }
+                // the sidebar's Battle.net row says Ready / Set up from the start
+                state.refreshBattleNet()
             }
             .onChange(of: state.goTo) {
                 guard let g = state.goTo else { return }
@@ -180,6 +182,7 @@ struct ContentView: View {
             if selection == .bo2c { state.refreshCampaign() }
             if selection == .bo2s { state.refreshSteamCampaign() }
             if selection == .steam { state.refreshSteamLibrary() }
+            if selection == .battlenet { state.refreshBattleNet() }
         }
         .alert("Something went wrong", isPresented: Binding(get: { state.error != nil }, set: { if !$0 { state.error = nil } })) {
             Button("OK") { state.error = nil }
@@ -358,11 +361,12 @@ struct GameDetail: View {
                 case .alterware: AlterWareInfoView()
                 case .bo3: BO3View()
                 case .steam: SteamLibraryView()
+                case .battlenet: BattleNetView()
                 }
-                // the Steam Library scrolls: its list runs to the window's edge
-                // (with the page margin and this spacer it stopped ~60 pt short,
-                // rows cut off above an empty band)
-                if game != .steam { Spacer() }
+                // the Steam Library and Battle.net scroll: their lists run to the
+                // window's edge (with the page margin and this spacer it stopped
+                // ~60 pt short, rows cut off above an empty band)
+                if game != .steam && game != .battlenet { Spacer() }
                 if let p = state.progress {
                     HStack(spacing: 10) {
                         ProgressView().controlSize(.small).tint(.white)
@@ -373,7 +377,7 @@ struct GameDetail: View {
                 }
             }
             .padding([.top, .horizontal], 32)
-            .padding(.bottom, game == .steam ? 0 : 32)
+            .padding(.bottom, game == .steam || game == .battlenet ? 0 : 32)
         }
     }
 }
@@ -1022,6 +1026,7 @@ struct SteamTitleRow: View {
                     Button { state.openSteamWorkshop(title.id) } label: { Label("Workshop", systemImage: "puzzlepiece.extension") }
                         .help("The game's Steam Workshop: mods and maps. Steam downloads what you subscribe to; the game lists it in its Mods menu.")
                 }
+                if title.tools != nil { toolsButton }
                 if let label = title.linkedButton, let game = title.linked, let folder = entry?.folder, !folder.isEmpty {
                     Button { state.openInLinkedGame(game, folder) } label: { Label(label, systemImage: game.symbol) }
                         .help("Opens the \(game.title) tab (\(game.client)'s client). With no game folder of its own it uses this Steam download.")
@@ -1034,6 +1039,9 @@ struct SteamTitleRow: View {
                     if let game = title.linked, let folder = entry?.folder, !folder.isEmpty {
                         Button("Use this download in \(game.client) (\(game.title) tab)") { state.useSteamFolder(game, folder) }
                     }
+                    if toolsState == "installed" {
+                        Button("Show my Mod Tools work (maps and mods)") { state.showBO3ModToolsWork() }
+                    }
                     Button("Store page") { state.openSteamStore(title.id) }
                 } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
@@ -1045,6 +1053,25 @@ struct SteamTitleRow: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!steamReady)
             }
+    }
+
+    /// The game's Steam tools (Black Ops III: Mod Tools): Download (Steam's
+    /// install dialog), then the download's progress in Steam, then Open
+    private var toolsState: String { title.tools.flatMap { entry?.tools[$0] } ?? "missing" }
+    @ViewBuilder private var toolsButton: some View {
+        switch toolsState {
+        case "installed":
+            Button { state.openBO3ModTools() } label: { Label("Mod Tools", systemImage: "hammer.fill") }
+                .help("Opens the Black Ops III Mod Tools launcher (Radiant, the Asset Editor, compile, light, link and run your map). Your maps and mods stay in Siliconium's Mod Tools workspace, never in Steam's folders, and show in Documents › Black Ops III Mod Tools on your Mac (⋯ › Show my Mod Tools work).")
+                .disabled(state.running != nil || state.progress != nil)
+        case "downloading":
+            Button { state.openSteamLibrary() } label: { Label("Mod Tools…", systemImage: "arrow.down.circle") }
+                .help("Steam is downloading the Black Ops III Mod Tools: this opens Steam to see its progress.")
+        default:
+            Button { state.downloadSteamTool(title.id) } label: { Label("Mod Tools", systemImage: "hammer") }
+                .help("Downloads Call of Duty: Black Ops III - Mod Tools (Steam app 455130, free with the game) to make your own maps and mods: about 25 GB (28 GB on disk). Steam asks to confirm. Their optional \"Additional Assets\" (about 100 GB) are not downloaded.")
+                .disabled(!steamReady || state.progress != nil)
+        }
     }
 
     /// The community fix used when this game starts (None: the game as it is),

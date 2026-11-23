@@ -1,0 +1,17 @@
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -2594,6 +2594,14 @@
+         if (emulate_xgetbv( ucontext, &context.c )) return;
+ #endif
+         rec.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
++#ifdef __APPLE__
++        /* bo: Rosetta raises #UD for privileged instructions (mov to or from a
++         * debug or control register, clts, invd, wbinvd, in/out) where an x86
++         * CPU raises #GP, which Windows reports as a privileged instruction.
++         * Anti-debugging code reads dr0 this way and handles only that code. */
++        if (is_privileged_instr( &context.c ) == EXCEPTION_PRIV_INSTRUCTION)
++            rec.ExceptionCode = EXCEPTION_PRIV_INSTRUCTION;
++#endif
+         break;
+     case TRAP_x86_STKFLT:  /* Stack fault */
+         rec.ExceptionCode = EXCEPTION_STACK_OVERFLOW;

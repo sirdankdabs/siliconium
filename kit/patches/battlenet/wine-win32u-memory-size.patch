@@ -1,0 +1,13 @@
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -1622,7 +1622,9 @@
+     if (!memory_size) memory_size = 1073741824;
+ 
+     set_reg_value( hkey, qw_memory_sizeW, REG_QWORD, &memory_size, sizeof(memory_size) );
+-    value = (ULONG)min( memory_size, (ULONGLONG)ULONG_MAX );
++    /* bo: ULONG_MAX is the host's (64-bit) one here: a GPU memory size that is
++     * a multiple of 4 GiB was written as 0. Windows clamps it to 32 bits. */
++    value = (ULONG)min( memory_size, (ULONGLONG)MAXDWORD );
+     set_reg_value( hkey, memory_sizeW, REG_DWORD, &value, sizeof(value) );
+ 
+     set_reg_ascii_value( hkey, "DriverVersion", driver_vendor_to_version( pci->vendor ) );

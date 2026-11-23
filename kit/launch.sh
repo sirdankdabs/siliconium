@@ -60,6 +60,13 @@
 #   IW4_SCREEN=0       MW2 keeps the resolution set in the game
 #   IW4_PRELOAD=1      MW2 preloads a map's shaders while it loads: the first
 #                      visit takes longer to load and nothing appears late
+#   WW2_PRELOAD=1      WWII's campaign preloads a mission's shaders while it loads
+#                      (~45 s longer; under DXMT nothing appears sooner in play)
+#   WW2_NETSTATE=0     WWII multiplayer / Zombies ask Wine's network state on
+#                      every frame online (~10 ms each) instead of a cached answer
+#   AW_PRELOAD=1       Advanced Warfare's campaign preloads a mission's shaders (as WWII's)
+#   AW_MP_MAXFPS=0     AW multiplayer keeps the frame cap saved in its profile
+#   AW_NETSTATE=0      AW multiplayer / Exo Zombies get Wine's own network-state answer
 #   IW6_TUNE=0         Ghosts keeps its own tessellation/motion blur and may
 #                      load NVIDIA's HBAO+/TXAA/APEX libraries
 #   CURSOR_FIX=0       on macOS 26+, keep the transparent-cursor fix (a fast
@@ -104,6 +111,12 @@ if [ "${1:-}" = bo2c ] || [ "${1:-}" = bo2s ] || [ "${1:-}" = steam ] || [ "${1:
   export WINESERVER="$home/campaign/wineserver"
 elif [ "${1:-}" = iw6 ]; then
   export WINEPREFIX="$home/prefix-iw6"
+elif [ "${1:-}" = battlenet ]; then
+  # the Battle.net section (battlenet.sh): Battle.net in its own prefix, which
+  # starts the game; its Wine server through the same link as Steam's
+  export WINEPREFIX="$home/prefix-battlenet"
+  mkdir -p "$home/campaign"; ln -sfn "$engine/bin/wineserver" "$home/campaign/wineserver"
+  export WINESERVER="$home/campaign/wineserver"
 fi
 export WINEDLLPATH="$engine/lib/wine/x86_64-windows:$engine/lib/wine/x86_64-unix"
 export WINEMSYNC=1 WINEDEBUG=${WINEDEBUG:--all} WINEDLLOVERRIDES="mscoree,mshtml="
@@ -133,12 +146,32 @@ copy_release() {
   ( /bin/bash "$kit/tools/steam-copy.sh" release "$s_client" "$sil_copy_dir" "$sil_copy_gen" 60 > /dev/null 2>&1 & )
 }
 . "$kit/tools/winpath.sh"
+. "$kit/tools/game-bundle.sh"
+use_wine "$wine"   # macOS Game Mode for every game (tools/game-bundle.sh)
+# focus_helper <program> [pid]: payload/iw6/iw6-focus (tools/iw6-focus.swift)
+# for the game's Mac process (that pid, or 0: found by its program name once
+# its window is up, when a launcher or another Windows program starts it):
+# the game is made the active app when its window appears, if Siliconium,
+# Steam, Battle.net or the game's launcher is still in front (macOS does not
+# bring forward a program a background process starts: the menu bar stayed
+# over the game until a click, and Game Mode stayed off), and its window is
+# restored at once after Cmd-Tab (a restore helper kept running in Wine). It
+# ends with the game; never over another app the player switched to.
+sil_focus_from="io.github.siliconium:Steam.exe:Battle.net.exe:plutonium-launcher-win32.exe:iw4x-launcher.exe"
+focus_pid=
+focus_helper() {
+  [ -x "$kit/payload/iw6/iw6-focus" ] && [ -f "$kit/payload/iw6/iw6-restore.exe" ] || return 1
+  SIL_FOCUS_FROM="$sil_focus_from" "$kit/payload/iw6/iw6-focus" "${2:-0}" "$wine" "$kit/payload/iw6/iw6-restore.exe" "$1" \
+    >> "${log:-/dev/null}" 2>&1 &
+  focus_pid=$!
+}
 stop_all() { "$WINESERVER" -k 2>/dev/null; "$WINESERVER" -w 2>/dev/null; }
 
 game=${1:-}; mode=${2:-}
 [ "$game:$mode" = stop:iw6 ] && { WINEPREFIX="$home/prefix-iw6" stop_all; exit 0; }
 [ "$game" = stop ] && { stop_all; WINEPREFIX="$home/prefix-bo2c" "$WINESERVER" -k 2>/dev/null
-  WINEPREFIX="$home/prefix-steam" "$WINESERVER" -k 2>/dev/null; exit 0; }
+  WINEPREFIX="$home/prefix-steam" "$WINESERVER" -k 2>/dev/null
+  WINEPREFIX="$home/prefix-battlenet" "$WINESERVER" -k 2>/dev/null; exit 0; }
 [ -x "$wine" ] || die "the engine is not installed"
 # CoD4X or IW7-Mod without the Steam Library set up yet: Steam's prefix, without
 # Steam (as steam.sh setup makes it; Steam for Windows can be added to it later)
@@ -212,7 +245,14 @@ case "$game:$mode" in
     . "$kit/tools/iw7mod.sh"
     sil_iw7mod_use "${IW7MOD_DIR:-}" || die "$i7_error"
     dir=$i7_dir t=steam ;;
-  *) die "usage: launch.sh waw|bo1|bo2|iw5 online|zombies|campaign|mp [name], launch.sh iw4 play|launcher, launch.sh iw6 play, launch.sh boiii play|launcher, launch.sh steam <game>-<sp|mp|zm>, launch.sh cod4x play, launch.sh iw7mod play, or launch.sh stop" ;;
+  # The Battle.net section (battlenet.sh, tools/battlenet-games.sh): Battle.net's
+  # own files, started by Battle.net (bnet_play, below)
+  battlenet:*)
+    . "$kit/tools/battlenet-games.sh"
+    bnet_title "$mode" || die "unknown Battle.net game: $mode"
+    dir=$(bnet_gamedir "$b_id") t=bnet
+    [ -n "$dir" ] || die "$b_name is not installed in Battle.net yet: press Install in the Battle.net section, then Play" ;;
+  *) die "usage: launch.sh waw|bo1|bo2|iw5 online|zombies|campaign|mp [name], launch.sh iw4 play|launcher, launch.sh iw6 play, launch.sh boiii play|launcher, launch.sh steam <game>-<sp|mp|zm>, launch.sh cod4x play, launch.sh iw7mod play, launch.sh battlenet <game>, or launch.sh stop" ;;
 esac
 # (a client's copy was made above: Steam's files leave it after this start)
 [ -n "${sil_copy_dir:-}" ] && trap copy_release EXIT
@@ -230,8 +270,8 @@ if [ "$t" = t7 ]; then
     BOIII_DIR="$dir" bash "$kit/boiii.sh" download ||
       die "Could not download boiii.exe: check your internet connection and press Play again."
   fi
-elif [ "$t" = t6 ] || [ "$t" = t6c ] || [ "$t" = t6s ] || [ "$t" = steam ]; then
-  :   # BO2 keeps the desktop's mode (see the t6:mp note above); Steam's games were checked above
+elif [ "$t" = t6 ] || [ "$t" = t6c ] || [ "$t" = t6s ] || [ "$t" = steam ] || [ "$t" = bnet ]; then
+  :   # BO2 keeps the desktop's mode (see the t6:mp note above); Steam's and Battle.net's games were checked above
 elif [ "$t" = iw5 ]; then
   [ -n "$dir" ] && [ -d "$dir/main" ] && [ -d "$dir/zone" ] ||
     die "the Modern Warfare 3 game folder is not set (or has no main/ and zone/ folders)"
@@ -345,6 +385,8 @@ cursor_fix=0
 case "$t" in
   t6|t6c|t6s) cursor_fix=1 ;;
   iw6) cursor_fix=1 ;;   # Ghosts turns it on itself; it needs the module too
+  # the Battle.net section's games: as the Steam Library's (CURSOR_FIX=0: off)
+  bnet) [ "${CURSOR_FIX:-1}" != 0 ] && cursor_fix=1 ;;
   steam)
     # every game of the Steam Library: they draw their own pointer, and Wine's
     # re-centred Mac cursor showed in the middle of the screen whenever the
@@ -448,7 +490,7 @@ read -r dw dh hz < <("$kit/tools/displaymode" current 2>/dev/null || true)
 # panel scaled from 5120x2880 stops at 154 Hz, its 1x mode runs at 160 Hz.
 # The frame-rate cap and the games' refresh settings follow it.
 case "$t" in
-  t4|t5|iw4|iw5|t7|steam)
+  t4|t5|iw4|iw5|t7|steam|bnet)
     # Steam's Ghosts runs borderless on the desktop as Siliconium's own Ghosts
     # (t=iw6, not in this list): the desktop's rate, not the 1x mode's
     desktop_rate=0
@@ -484,9 +526,14 @@ case "$t:$mode" in
   # Black Ops II too, as Plutonium's BO2 is (hold_1x of its profile, further
   # down): on the scaled desktop (a 4K panel mode at 153 Hz) Steam's BO2 Zombies
   # missed 13-33 % of the refreshes; Plutonium's, held at 1x 160 Hz, none.
+  # The Battle.net section's games (Black Ops 4: exclusive fullscreen, as
+  # Black Ops III): held at the 1x mode of the desktop's size too
+  # WWII (s2) too: exclusive fullscreen; left alone it switched the display
+  # to the 1280x720 60 Hz mode of its first profile (2026-11-22)
+  bnet:*) [ -n "${dw:-}" ] && [ -n "${dh:-}" ] && hold_1x_size "$dw $dh" ;;
   steam:*)
     case "$s_api:$s_kind" in
-      gl:*|d3d9:*|d3d9x64:*|d3d11:t6|d3d11x64:s1|d3d11x64:t7|d3d11x64:iw7) [ -n "${dw:-}" ] && [ -n "${dh:-}" ] && hold_1x_size "$dw $dh" ;;
+      gl:*|d3d9:*|d3d9x64:*|d3d11:t6|d3d11x64:s1|d3d11x64:t7|d3d11x64:iw7|d3d11x64:s2) [ -n "${dw:-}" ] && [ -n "${dh:-}" ] && hold_1x_size "$dw $dh" ;;
     esac ;;
   t5:mp) hold_1x "$plutonium/storage/t5/players/config_mp.cfg" ;;
   t5:*) hold_1x "$plutonium/storage/t5/players/config.cfg" ;;
@@ -701,7 +748,7 @@ if [ "$t" = iw6 ]; then
   on IW6_TUNE && iw6_args="+set r_subdiv 0 +set r_adaptiveSubdiv 0"
   WINE_MAC_MOUSELOOK=0 "$wine" ./iw6sp64_ship.exe $iw6_args ${GAME_ARGS:-} >> "$log" 2>&1 &
   game_pid=$!
-  "$kit/payload/iw6/iw6-focus" "$game_pid" "$wine" "$kit/payload/iw6/iw6-restore.exe" >> "$log" 2>&1 &
+  SIL_FOCUS_FROM="$sil_focus_from" "$kit/payload/iw6/iw6-focus" "$game_pid" "$wine" "$kit/payload/iw6/iw6-restore.exe" >> "$log" 2>&1 &
   focus_pid=$!
   trap 'kill "$focus_pid" 2>/dev/null || true' EXIT
   wait "$game_pid" || die "Ghosts exited with an error (see logs/iw6-play.log)"
@@ -754,7 +801,17 @@ else
 fi
 
 if [ "${X87:-1}" = 1 ] && [ -x "$engine/bin/x87sidecar" ]; then
-  set_env X87_SIDECAR_PATH "$engine/bin/x87sidecar"
+  # Through payload/x87/x87-bundle (tools/x87-bundle.c) when the Game Mode
+  # bundle is in use: Wine starts these programs under the sidecar from a bare
+  # link of its loader, so they had no Game Mode and macOS would not make them
+  # the active app (the menu bar stayed over the game until a click); the
+  # shim hands the sidecar the bundle's copy of the loader instead
+  if [ -x "$kit/payload/x87/x87-bundle" ] && [ -n "${WINELOADER:-}" ]; then
+    set_env X87_SIDECAR_PATH "$kit/payload/x87/x87-bundle"
+    set_env SIL_X87_SIDECAR "$engine/bin/x87sidecar"
+  else
+    set_env X87_SIDECAR_PATH "$engine/bin/x87sidecar"
+  fi
   # Plutonium's games, the campaign's t6sp.exe (it crashed under an older
   # sidecar; with x87sidecar 1.9 it runs, and is CPU-bound without it),
   # Modern Warfare 3's iw5mp.exe and Modern Warfare 2's iw4x.exe
@@ -762,7 +819,7 @@ if [ "${X87:-1}" = 1 ] && [ -x "$engine/bin/x87sidecar" ]; then
   else set_env X87_SIDECAR_PROGRAMS plutonium-bootstrapper-win32.exe:t6sp.exe:iw5mp.exe:iw4x.exe:iw4x-sp.exe; fi
 else
   # X87=0: Rosetta's own x87 emulation (exact, if slower)
-  clear_env X87_SIDECAR_PATH; clear_env X87_SIDECAR_PROGRAMS
+  clear_env X87_SIDECAR_PATH; clear_env X87_SIDECAR_PROGRAMS; clear_env SIL_X87_SIDECAR
 fi
 if on EXEC_ON_DEMAND; then clear_env BO_EXEC_ON_DEMAND; else set_env BO_EXEC_ON_DEMAND 0; fi
 xi="$engine/lib/wine/i386-windows"
@@ -891,6 +948,12 @@ fi
 # Infinite Warfare: the same defaults under its own switches (IW7_ASYNC /
 # IW7_FRAME_PACING=0), no GPU id change (it reads the Apple GPU as is)
 [ "$t" = steam ] && [ "${s_kind:-}" = iw7 ] && set_env DXMT_CONFIG "$(dxmt_config IW7 "$maxfps")"
+# WWII: the same defaults under its own switches (WW2_ASYNC /
+# WW2_FRAME_PACING=0), no GPU id change
+[ "$t" = steam ] && [ "${s_kind:-}" = s2 ] && set_env DXMT_CONFIG "$(dxmt_config WW2 "$maxfps")"
+# The Battle.net section's games: DXMT's defaults under their own switches
+# (Black Ops 4: BO4_ASYNC / BO4_FRAME_PACING=0 turn them off)
+[ "$t" = bnet ] && set_env DXMT_CONFIG "$(dxmt_config "$b_dxmt" "$maxfps")"
 # IW7-Mod's Metal folder = Steam's Infinite Warfare's (DXMT keeps Metal's
 # compiled shaders in dxmt/<executable>/com.apple.metal and has no setting for
 # it): a link, made once; translations IW7-Mod had made on its own are merged
@@ -1035,6 +1098,15 @@ if [ -d "$wdesk" ] && [ ! -L "$wdesk" ]; then
 fi
 [ -e "$WINEPREFIX/dosdevices/h:" ] || ln -s "$HOME" "$WINEPREFIX/dosdevices/h:"
 
+# --- The Battle.net section (prefix-battlenet) ----------------------------------
+# Battle.net (stopped above with its prefix, started again by bnet_play with
+# this environment and the 1x display mode) signs in and starts the game from
+# its launch code; this script waits until the game has quit
+if [ "$t" = bnet ]; then
+  bnet_play
+  exit $?
+fi
+
 # --- The Steam Library (prefix-steam) -------------------------------------------
 # Steam (restarted above, so it and the game it starts get this environment
 # and the 1x display mode) signs in by itself and starts the game: as its own
@@ -1146,6 +1218,31 @@ if [ "$t" = steam ]; then
       reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d11 /d native /f
     else
       reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d11 /d builtin /f
+    fi
+  fi
+  # WWII's multiplayer executable (Multiplayer and Zombies) asks
+  # InternetGetConnectedState on every frame while online. Wine answers it by
+  # listing every network adapter through its nsiproxy driver: ~10 ms a call
+  # on the test Mac (27 adapters), and an online match held ~27 ms a frame
+  # (38.6 FPS; 63.6 with this, 2026-11-23). payload/steam/wwii-wininet.dll
+  # (tools/wininet-netstate.c) answers from a result its own thread refreshes
+  # every second and forwards everything else to the engine's own wininet.dll,
+  # copied beside it as wininet_wine.dll; that executable alone loads it
+  # (other programs keep Wine's wininet.dll). WW2_NETSTATE=0: Wine's own.
+  # Advanced Warfare's multiplayer executable (Multiplayer and Exo Zombies,
+  # Sledgehammer's previous engine) gets the same: inferred from WWII, not
+  # measured (AW was not installed, 2026-11-23); when it does not ask, the DLL
+  # changes nothing. AW_NETSTATE=0: Wine's own.
+  netstate_switch=
+  case "$s_exe" in s2_mp64_ship.exe) netstate_switch=WW2_NETSTATE ;; s1_mp64_ship.exe) netstate_switch=AW_NETSTATE ;; esac
+  if [ -n "$netstate_switch" ]; then
+    s32="$WINEPREFIX/drive_c/windows/system32" wn="$engine/lib/wine/x86_64-windows/wininet.dll"
+    if on "$netstate_switch" && [ -f "$kit/payload/steam/wwii-wininet.dll" ] && [ -f "$wn" ] &&
+       { cmp -s "$wn" "$s32/wininet_wine.dll" || cp "$wn" "$s32/wininet_wine.dll"; } &&
+       { cmp -s "$kit/payload/steam/wwii-wininet.dll" "$s32/wininet.dll" || cp "$kit/payload/steam/wwii-wininet.dll" "$s32/wininet.dll"; }; then
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v wininet /d native /f
+    else
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v wininet /d builtin /f
     fi
   fi
   # Advanced Warfare with its own shader translator (winemetal.so, the unix
@@ -1372,7 +1469,8 @@ if [ "$t" = steam ]; then
   if [ "$use_steam" = 1 ]; then
   clog="$steamdir/logs/connection_log.txt"
   seen=$(wc -l < "$clog" 2>/dev/null | tr -d ' '); seen=${seen:-0}
-  if bash "$kit/steam.sh" start; then :
+  # (Steam on the engine's own loader, never the game bundle: tools/game-bundle.sh)
+  if env -u WINELOADER bash "$kit/steam.sh" start; then :
   elif [ -n "${s_client:-}" ]; then use_steam=0
   else exit 1; fi
   signed=
@@ -1387,7 +1485,7 @@ if [ "$t" = steam ]; then
   elif [ -n "${s_client:-}" ]; then
     printf '%s\n' "--- $(date) Steam did not sign in: $s_name starts without Steam (servers that require Steam will refuse it)" >> "$log"
   elif [ -z "$signed" ]; then
-    bash "$kit/steam.sh" open
+    env -u WINELOADER bash "$kit/steam.sh" open
     die "Steam is not signed in: sign in in Steam's window (tick Remember me), then press Play again"
   fi
   console="$steamdir/logs/console_log.txt"
@@ -1442,17 +1540,24 @@ if [ "$t" = steam ]; then
     # this start is Steam's own: the in-game switch relay (tools/steam-relay.sh) lets it through
     mkdir -p "$WINEPREFIX/drive_c/users/Public/Siliconium/relay" &&
       : > "$WINEPREFIX/drive_c/users/Public/Siliconium/relay/bypass-$s_app"
-    (cd "$steamdir" && "$wine" Steam.exe -applaunch "$s_app" ${s_argv[@]+"${s_argv[@]}"} >> "$log" 2>&1 &)
+    (cd "$steamdir" && env -u WINELOADER "$engine/lib/wine/x86_64-unix/wine" Steam.exe -applaunch "$s_app" ${s_argv[@]+"${s_argv[@]}"} >> "$log" 2>&1 &)
   else
     # Call of Duty and Call of Duty 2 load steam.dll by name ("Failed to find
     # Steam." otherwise): Steam's folder on their search path, as when Steam
     # starts them
     steam_env=(SteamAppId="$s_app" SteamGameId="$s_app")
     [ "$s_kind" = q3 ] && steam_env+=(WINEPATH='C:\Program Files (x86)\Steam')
-    game_wine=$wine
-    [ -n "${aw_engine:-}" ] && game_wine="$aw_engine/lib/wine/x86_64-unix/wine"
+    game_wine=$wine game_unset=
+    # (Advanced Warfare / Infinite Warfare's engine clone: its own Game Mode
+    # bundle, never the main engine's WINELOADER)
+    if [ -n "${aw_engine:-}" ]; then
+      game_wine="$aw_engine/lib/wine/x86_64-unix/wine"
+      if [ -n "${WINELOADER:-}" ] && gb=$(game_bundle "$game_wine"); then
+        game_wine=$gb; steam_env+=(WINELOADER="$gb")
+      else game_unset=1; fi
+    fi
     # (a fix's launcher, m_start, starts the game itself with these arguments)
-    (cd "$dir" && env "${steam_env[@]}" "$game_wine" "./${m_start:-$s_exe}" ${s_argv[@]+"${s_argv[@]}"} >> "$log" 2>&1 &)
+    (cd "$dir" && env ${game_unset:+-u WINELOADER} "${steam_env[@]}" "$game_wine" "./${m_start:-$s_exe}" ${s_argv[@]+"${s_argv[@]}"} >> "$log" 2>&1 &)
   fi
   # The game is running when its executable works the CPU; Steam says right
   # away when it will not start it
@@ -1469,14 +1574,14 @@ if [ "$t" = steam ]; then
     err=$(tail -n +$((cseen + 1)) "$console" 2>/dev/null | grep -oE "AppID $s_app.*LaunchApp failed with [A-Za-z_]+[0-9]*" | grep -oE '[A-Za-z]+Error_[0-9]+|k_E[A-Za-z0-9_]+' | tail -1)
     case "$err" in
       AppError_5) die "Steam has no license for $s_name on this account: sign in with the account that owns it (Open Steam)" ;;
-      ?*) bash "$kit/steam.sh" open; die "Steam could not start $s_name ($err): look at Steam's window" ;;
+      ?*) env -u WINELOADER bash "$kit/steam.sh" open; die "Steam could not start $s_name ($err): look at Steam's window" ;;
     esac
     sleep 1
   done
   if [ -z "$game_pid" ] && [ -n "${s_client:-}" ]; then
     die "$s_name did not start (see logs/${log##*/})"
   elif [ -z "$game_pid" ]; then
-    bash "$kit/steam.sh" open
+    env -u WINELOADER bash "$kit/steam.sh" open
     die "Steam did not start $s_name: look at Steam's window (license, an update, or a first-time setup step)"
   fi
   : > "$marker"
@@ -1484,35 +1589,32 @@ if [ "$t" = steam ]; then
   # Wine did not restore it when the player came back (black screen): Ghosts'
   # helper restores the game's window when its Mac app is activated again
   focus_pid=
-  # (Call of Duty and United Offensive through GLDirect draw with Direct3D 9
-  # too: same black screen)
-  if { [ "$s_kind:$s_api" = q3:d3d9 ] || steam_gldirect; } &&
-     [ -x "$kit/payload/iw6/iw6-focus" ]; then
-    # The helper needs the game's own Mac process: the one found above can be
-    # Wine's start.exe (its command line names the game too), which is never
-    # the frontmost app, so the window was never restored (Call of Duty)
-    app_pid=$game_pid
-    # (Call of Duty 2's campaign had the same wrong pid: after Cmd+Tab its window
-    # stayed minimized, keys only beeped). Every part: the multiplayer
-    # executables start the same way
-    if [ "$s_kind" = q3 ]; then
-      for pid in $(pgrep -f "$exe_re"); do
-        case "$(ps -o comm= -p "$pid" 2>/dev/null)" in *"$s_exe") app_pid=$pid; break ;; esac
-      done
-    fi
-    "$kit/payload/iw6/iw6-focus" "$app_pid" "$wine" "$kit/payload/iw6/iw6-restore.exe" "$s_exe" >> "$log" 2>&1 &
-    focus_pid=$!
-  elif [ "$s_exe" = iw6sp64_ship.exe ] && [ -x "$kit/payload/iw6/iw6-focus" ]; then
+  # Every part (2026-11-23): the game is made the active app when its window
+  # is up, and its window is restored after Cmd+Tab (focus_helper above).
+  # Call of Duty, United Offensive (GLDirect) and Call of Duty 2 minimized
+  # their fullscreen window when they lost the focus and stayed black, and
+  # WWII (s2) left its window iconic at -32000,-32000 (2026-11-22): restoring
+  # it in Wine brought the picture back.
+  # The helper needs the game's own Mac process: the one found above can be
+  # Wine's start.exe (its command line names the game too), which is never
+  # the frontmost app, so the window was never restored (Call of Duty and
+  # Call of Duty 2's campaign: after Cmd+Tab the window stayed minimized)
+  app_pid=$game_pid
+  for pid in $(pgrep -f "$exe_re"); do
+    case "$(ps -o comm= -p "$pid" 2>/dev/null)" in *"$s_exe") app_pid=$pid; break ;; esac
+  done
+  # (other parts: found by program name, the fix's executable when it runs
+  # the game in its own process, e.g. iw3sp_mod.exe: comm is cut to 16
+  # characters there and named start.exe's pid instead, 2026-11-23)
+  if [ "$s_exe" = iw6sp64_ship.exe ] && [ -x "$kit/payload/iw6/iw6-focus" ]; then
     # Ghosts' campaign: the helper exactly as Siliconium's own Ghosts runs it
     # (no executable name: it also hides Ghosts' black fullscreen window while
     # another app is in front)
-    "$kit/payload/iw6/iw6-focus" "$game_pid" "$wine" "$kit/payload/iw6/iw6-restore.exe" >> "$log" 2>&1 &
+    SIL_FOCUS_FROM="$sil_focus_from" "$kit/payload/iw6/iw6-focus" "$app_pid" "$wine" "$kit/payload/iw6/iw6-restore.exe" >> "$log" 2>&1 &
     focus_pid=$!
-  elif [ "$s_exe" = iw6mp64_ship.exe ] && [ -x "$kit/payload/iw6/iw6-focus" ]; then
-    # Ghosts' multiplayer (same engine and window): the same helper, told its
-    # executable (a Ghosts name keeps the hiding)
-    "$kit/payload/iw6/iw6-focus" "$game_pid" "$wine" "$kit/payload/iw6/iw6-restore.exe" "$s_exe" >> "$log" 2>&1 &
-    focus_pid=$!
+  else
+    # (Ghosts' multiplayer passes its executable: a Ghosts name keeps the hiding)
+    focus_helper "${m_start:+${m_start##*/}:}$s_exe" 0
   fi
   while pgrep -f "$exe_re" > /dev/null; do sleep 2; done
   [ -n "${s_client:-}" ] || steam_mod_remove "$dir"   # the fix's files go with the game
@@ -1574,7 +1676,10 @@ if [ "$t" = t6s ]; then
     bash "$bs" open
     die "Steam did not start the campaign: look at Steam's window (license, an update, or a first-time setup step)"
   fi
+  log="$home/logs/bo2-steam-campaign.log"; log_cap "$log"
+  focus_helper t6sp.exe
   while pgrep -f 't6sp\.exe' >/dev/null; do sleep 2; done
+  [ -n "$focus_pid" ] && kill "$focus_pid" 2> /dev/null
   exit 0
 fi
 
@@ -1813,8 +1918,11 @@ except Exception: pass' boiii_players/properties.json 2>/dev/null)
     case " ${GAME_ARGS:-} " in *" -noupdate "*) ;; *) GAME_ARGS="${GAME_ARGS:+$GAME_ARGS }-noupdate" ;; esac
   fi
   # shellcheck disable=SC2086
-  "$wine" "$boiii_exe" ${GAME_ARGS:-} > "$log" 2>&1
+  : > "$log"
+  focus_helper "${boiii_exe##*/}"
+  "$wine" "$boiii_exe" ${GAME_ARGS:-} >> "$log" 2>&1
   boiii_status=$?
+  [ -n "$focus_pid" ] && kill "$focus_pid" 2> /dev/null
   "$WINESERVER" -w 2>/dev/null
   exit "$boiii_status"
 fi
@@ -2191,7 +2299,7 @@ reg_flush
 if [ -n "$t5mp_engine" ]; then
   export CX_ROOT="$t5mp_engine"
   export WINEDLLPATH="$t5mp_engine/lib/wine/x86_64-windows:$t5mp_engine/lib/wine/x86_64-unix"
-  wine="$t5mp_engine/lib/wine/x86_64-unix/wine"
+  use_wine "$t5mp_engine/lib/wine/x86_64-unix/wine"   # (its own Game Mode bundle)
 fi
 if [ "$t" = iw4 ]; then
   cd "$dir" || exit 1
@@ -2205,7 +2313,9 @@ if [ "$t" = iw4 ]; then
   # IW4X's launcher updates itself and the game, then starts the 32-bit
   # client (--arch x86: our patched D3D9 and x87 paths). Without a network it
   # fails: then the installed client starts directly.
-  if [ -f iw4x-launcher.exe ] && "$wine" iw4x-launcher.exe "${iw4_args[@]}" --no-connect-protocol > "$log" 2>&1; then
+  : > "$log"
+  focus_helper iw4x.exe   # (the launcher starts the client)
+  if [ -f iw4x-launcher.exe ] && "$wine" iw4x-launcher.exe "${iw4_args[@]}" --no-connect-protocol >> "$log" 2>&1; then
     :
   elif [ -f iw4x.exe ]; then
     printf '\nStarting the installed IW4X client directly.\n' >> "$log"
@@ -2227,6 +2337,9 @@ case "$t:$mode" in
     [ -f "$plutonium/storage/t6/mods/dlc5/mod.ff" ] || [ -d "$plutonium/storage/t6/mods/dlc5" ] || die "Zombies Declassified is not installed"
     GAME_ARGS="+set fs_game mods/dlc5 ${GAME_ARGS:-}" ;;
 esac
+# (Plutonium's launcher starts the bootstrapper, which runs the game)
+: > "$log"
+focus_helper plutonium-bootstrapper-win32.exe
 if [ "${4:-}" != --lan ] && [ "$mode" != declassified ]; then
   launcher="$plutonium/bin/plutonium-launcher-win32.exe"
   [ -f "$launcher" ] || die "Plutonium is not installed in the prefix. Run Install first."
@@ -2234,13 +2347,13 @@ if [ "${4:-}" != --lan ] && [ "$mode" != declassified ]; then
   if [ "$mode" = online ]; then
     # Opening the launcher also lets the user sign in again if its session expired.
     /usr/bin/python3 -I "$kit/tools/plutonium-config.py" link "$plutonium_cfg" "$t" "$winpath" "$pmode" || true
-    exec "$wine" "$launcher" > "$log" 2>&1
+    exec "$wine" "$launcher" >> "$log" 2>&1
   fi
   /usr/bin/python3 -I "$kit/tools/plutonium-config.py" link "$plutonium_cfg" "$t" "$winpath" ||
     die "Could not load your Plutonium setup. Open Plutonium to sign in again, or run Install."
   # The launcher's URI skips game selection and hands an online session to
   # the bootstrapper. Keep the Wine configuration and patches set above.
-  "$wine" "$launcher" "plutonium://play/$pmode" > "$log" 2>&1 ||
+  "$wine" "$launcher" "plutonium://play/$pmode" >> "$log" 2>&1 ||
     die "Plutonium could not start $pmode (see logs/$game-$mode.log). Open Plutonium to check your session."
   "$WINESERVER" -w 2>/dev/null
   exit
@@ -2251,7 +2364,7 @@ cd "$plutonium" || exit 1
 # shellcheck disable=SC2086
 if [ "$t" = iw5 ]; then
   on SKIP_INTRO && extra="+set intro 0 $extra"
-  exec "$wine" bin/plutonium-bootstrapper-win32.exe "$pmode" "$winpath" +set name "${3:-Player}" -lan $extra > "$log" 2>&1
+  exec "$wine" bin/plutonium-bootstrapper-win32.exe "$pmode" "$winpath" +set name "${3:-Player}" -lan $extra >> "$log" 2>&1
 fi
 # shellcheck disable=SC2086
-exec "$wine" bin/plutonium-bootstrapper-win32.exe "$pmode" "$winpath" +name "${3:-Player}" -lan $extra > "$log" 2>&1
+exec "$wine" bin/plutonium-bootstrapper-win32.exe "$pmode" "$winpath" +name "${3:-Player}" -lan $extra >> "$log" 2>&1

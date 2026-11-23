@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0 — Black Ops 4 & WWII
+
+**New**
+- **Battle.net** section, below the Steam Library: Siliconium installs Battle.net for Windows in its own prefix, and **Black Ops 4** plays from it (Zombies), with two Wine fixes of our own for Battle.net's games only.
+- Steam Library: **Call of Duty: WWII** (campaign, Multiplayer, Nazi Zombies). Our fixes make online Multiplayer about twice as fast (~60 FPS on an M1 Pro) and campaign missions load about 45 s sooner.
+- Steam Library: a **Mod Tools** button for Black Ops III downloads Treyarch's Mod Tools; launcher, Radiant, compiling, lighting and linking work, in a workspace that never changes Steam's files.
+- **macOS Game Mode in every game**, also Plutonium, IW4X and the 32-bit Steam games (WWII campaign: ~76 FPS instead of 53-54). `GAME_MODE=0` in settings.conf turns it off.
+- Every game **comes to the front by itself** when it starts: the menu bar no longer stays over it until a click. Only once, and only while Siliconium, Steam, Battle.net or the game's launcher is in front, never over another app.
+
+**Fixed**
+- **Back from Cmd-Tab within about a second**: the window-restore helper now waits in the background from the game's start (starting it took seconds of black screen, 6-8 s in Black Ops 4).
+- After Cmd-Tab the display stays in the game's 1x mode (macOS put the HiDPI mode back and the game then drew at 5120x2880: Black Ops 4 fell from 115 to 52 FPS).
+
 ## 1.2.1
 
 **Removed**

@@ -1,5 +1,6 @@
 # Siliconium: the copies of Steam games that community clients play from
-# (CoD4X: tools/cod4x.sh, IW7-Mod: tools/iw7mod.sh), sourced by them. Also run:
+# (CoD4X: tools/cod4x.sh, IW7-Mod: tools/iw7mod.sh) and Black Ops III's Mod
+# Tools work from (bo3-modtools.sh), sourced by them. Also run:
 #
 #   steam-copy.sh tidy                    every copy nobody is using: Steam's
 #                                         files leave it (launch.sh before a
@@ -48,18 +49,51 @@ sil_copy_own() {   # <client> <path in the copy>
   esac
   return 1
 }
-# The client's game process (its copy is in use while it runs)
-sil_copy_exe() { case "$1" in cod4x) echo 'iw3mp\.exe' ;; iw7mod) echo 'iw7-mod\.exe' ;; esac; }
-sil_copy_main() { case "$1" in cod4x) echo iw3mp.exe ;; iw7mod) echo iw7_ship.exe ;; esac; }
+# The client's game process (its copy is in use while it runs). Mod Tools:
+# any Windows program started from the workspace (the tools, a map test), by
+# its Mac path or by the workspace's drive letter (bo3-modtools.sh)
+sil_copy_exe() {
+  local l
+  case "$1" in
+    cod4x) echo 'iw3mp\.exe' ;; iw7mod) echo 'iw7-mod\.exe' ;;
+    bo3-modtools)
+      l=$(sil_copy_drive "$sil_copy_home/bo3-modtools/Call of Duty Black Ops III")
+      if [ -n "$l" ]; then
+        printf '%s' 'Siliconium[/\]bo3-modtools[/\].*\.exe|(^|[^A-Za-z])['"$l$(printf '%s' "$l" | tr '[:lower:]' '[:upper:]')"']:\\.*\.exe'
+      else printf '%s' 'Siliconium[/\]bo3-modtools[/\].*\.exe'; fi ;;
+  esac
+}
+# The drive letter (lowercase) Steam's prefix maps to <folder>, if any
+sil_copy_drive() {
+  local d l
+  for d in "$sil_copy_home/prefix-steam/dosdevices/"?:; do
+    [ "$(readlink "$d" 2> /dev/null)" = "$1" ] || continue
+    l=${d##*/}; printf '%s' "${l%:}"; return 0
+  done
+}
+sil_copy_main() { case "$1" in cod4x) echo iw3mp.exe ;; iw7mod) echo iw7_ship.exe ;; bo3-modtools) echo BlackOps3.exe ;; esac; }
+# Folders kept in a copy between sessions even when empty (the Mac folder of
+# the player's Mod Tools work links to them)
+sil_copy_keep_dirs() {
+  case "$1" in bo3-modtools) echo "map_source usermaps mods model_export source_data texture_assets sound_assets" ;; esac
+}
+# Clients whose own files are all the ones that did not come from Steam (no
+# names of Steam's files are theirs): their lists skip the per-file check
+# (Black Ops III and its Mod Tools: ~188,000 files, 14 s in that loop)
+sil_copy_no_own() { [ "$1" = bo3-modtools ]; }
 
 sil_copy_files() {   # <folder>: its files, one path per line, sorted
   (cd "$1" && find . -mindepth 1 \( -type f -o -type l \) -print) | sed -e 's|^\./||' -e '/^\.siliconium-/d' | LC_ALL=C sort
 }
 sil_copy_list() {    # <client> <Steam's folder or its fresh copy>: Steam's files and folders
   local rel
-  sil_copy_files "$2" | while IFS= read -r rel; do
-    sil_copy_own "$1" "$rel" || printf 'f %s\n' "$rel"
-  done
+  if sil_copy_no_own "$1"; then
+    sil_copy_files "$2" | sed 's/^/f /'
+  else
+    sil_copy_files "$2" | while IFS= read -r rel; do
+      sil_copy_own "$1" "$rel" || printf 'f %s\n' "$rel"
+    done
+  fi
   (cd "$2" && find . -mindepth 1 -type d -print) | sed 's|^\./||' | LC_ALL=C sort | sed 's|^|d |'
 }
 
@@ -119,8 +153,29 @@ sil_copy_carry() {   # <client> <previous copy> <new copy>
   else
     cp "$t/new" "$t/steam"
   fi
-  { while IFS= read -r rel; do sil_copy_own "$client" "$rel" && printf '%s\n' "$rel"; done < "$t/old"
+  { sil_copy_no_own "$client" || while IFS= read -r rel; do sil_copy_own "$client" "$rel" && printf '%s\n' "$rel"; done < "$t/old"
     LC_ALL=C comm -23 "$t/old" "$t/steam" | LC_ALL=C comm -23 - "$t/new"; } | LC_ALL=C sort -u > "$t/carry"
+  # (the Mod Tools' workspace: thousands of the player's files, converted
+  # textures among them; one Python process clones them, as sil_copy_merge)
+  if sil_copy_no_own "$client" && [ -s "$t/carry" ] && xcode-select -p > /dev/null 2>&1 &&
+     /usr/bin/python3 -I - "$old" "$new" "$t/carry" 2> /dev/null <<'PY'; then
+import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+old, new, listing = sys.argv[1:4]
+for rel in open(listing, encoding='utf-8', errors='surrogateescape').read().split('\n'):
+    if not rel:
+        continue
+    s, d = os.path.join(old, rel), os.path.join(new, rel)
+    os.makedirs(os.path.dirname(d), exist_ok=True)
+    if os.path.lexists(d):
+        os.unlink(d)
+    if os.path.islink(s):
+        os.symlink(os.readlink(s), d)
+    elif libc.clonefile(s.encode('utf-8', 'surrogateescape'), d.encode('utf-8', 'surrogateescape'), 1) != 0:
+        raise OSError(ctypes.get_errno(), d)
+PY
+    : > "$t/carry"
+  fi
   while IFS= read -r rel; do
     d=$(dirname -- "$new/$rel")
     mkdir -p "$d" && rm -f "$new/$rel" || { rm -rf "$t"; return 1; }
@@ -155,18 +210,66 @@ sil_copy_sync_full() {   # <client> <Steam's folder> <copy>
   mv -f "$dst/.siliconium-steam-files.new" "$dst/.siliconium-steam-files"
 }
 
-# sil_copy_make <client> <Steam's folder> <copy>: the copy for this start,
-# with Steam's current files and the client's own. Sets sil_copy_dir and
-# sil_copy_gen when Steam's files are to leave it after the game (clones);
-# sil_copy_error says why it failed ("clones": no APFS clones, for IW7-Mod).
+# Two Steam folders in one copy, the second's files over the first's, with
+# APFS clones (no disk space). clonefile(2) clones a whole folder tree in one
+# call: the second folder is cloned whole, then each entry of the first it
+# does not have, also whole; folders both have are merged the same way one
+# level down. One Python process does it (Black Ops III + its Mod Tools,
+# 187,600 files: 3.2 s for the tools' tree); cp -c, a process per entry and a
+# file at a time inside folders both have, took 46 s (12.5 s merging only
+# zone/). Python only when the Command Line Tools are there (otherwise macOS's
+# python3 asks to install them); cp -c otherwise.
+sil_copy_merge() {   # <first> <second> <copy>
+  local e n f
+  if xcode-select -p > /dev/null 2>&1; then
+    /usr/bin/python3 -I - "$1" "$2" "$3" 2> /dev/null <<'PY' && return 0
+import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+def clone(a, b):   # CLONE_NOFOLLOW: a link is cloned as a link
+    if libc.clonefile(a.encode(), b.encode(), 1) != 0:
+        raise OSError(ctypes.get_errno(), b)
+def merge(src, dst):
+    for n in os.listdir(src):
+        s, d = os.path.join(src, n), os.path.join(dst, n)
+        if not os.path.lexists(d):
+            clone(s, d)
+        elif os.path.isdir(s) and not os.path.islink(s) and os.path.isdir(d) and not os.path.islink(d):
+            merge(s, d)
+first, second, copy = sys.argv[1:4]
+clone(second, copy)
+merge(first, copy)
+PY
+    rm -rf "$3"
+  fi
+  cp -cRp "$2" "$3" 2> /dev/null || return 1
+  while IFS= read -r -d '' e; do
+    n=${e##*/}
+    if [ ! -e "$3/$n" ] && [ ! -L "$3/$n" ]; then
+      cp -cRp "$e" "$3/$n" 2> /dev/null || return 1
+    elif [ -d "$e" ] && [ ! -L "$e" ] && [ -d "$3/$n" ] && [ ! -L "$3/$n" ]; then
+      while IFS= read -r -d '' f; do
+        f=${f#./}
+        [ -e "$3/$n/$f" ] || [ -L "$3/$n/$f" ] && continue
+        mkdir -p "$(dirname "$3/$n/$f")" && cp -cp "$e/$f" "$3/$n/$f" 2> /dev/null || return 1
+      done < <(cd "$e" && find . -mindepth 1 \( -type f -o -type l \) -print0)
+    fi
+  done < <(find "$1" -mindepth 1 -maxdepth 1 -print0)
+}
+# sil_copy_make <client> <Steam's folder> <copy> [<Steam's folder 2>]: the
+# copy for this start, with Steam's current files and the client's own. A
+# second folder goes over the first (Black Ops III's Mod Tools: Steam puts
+# them in a folder of their own, the tools need them beside the game). Sets
+# sil_copy_dir and sil_copy_gen when Steam's files are to leave it after the
+# game (clones); sil_copy_error says why it failed ("clones": no APFS clones,
+# for IW7-Mod and the Mod Tools).
 sil_copy_make() {
-  local client=$1 src=$2 dst=$3 part="$3.part" old="$3.old" full=
+  local client=$1 src=$2 dst=$3 over=${4:-} part="$3.part" old="$3.old" full=
   sil_copy_error= sil_copy_dir= sil_copy_gen=
-  case "$dst" in "$sil_copy_home/cod4x/"?*|"$sil_copy_home/iw7mod/"?*) ;; *) sil_copy_error="unexpected copy folder: $dst"; return 1 ;; esac
+  case "$dst" in "$sil_copy_home/cod4x/"?*|"$sil_copy_home/iw7mod/"?*|"$sil_copy_home/bo3-modtools/"?*) ;; *) sil_copy_error="unexpected copy folder: $dst"; return 1 ;; esac
   mkdir -p "$(dirname "$dst")" || return 1
   sil_copy_lock "$dst" || { sil_copy_error="Siliconium is still updating its copy of the game: press Play again in a moment."; return 1; }
   sil_copy_recover "$dst"
-  if ! cp -cRp "$src" "$part" 2> /dev/null; then
+  if ! if [ -n "$over" ]; then sil_copy_merge "$src" "$over" "$part"; else cp -cRp "$src" "$part" 2> /dev/null; fi; then
     rm -rf "$part"
     if [ "$client" != cod4x ]; then sil_copy_error=clones; sil_copy_unlock "$dst"; return 1; fi
     if [ -f "$dst/.siliconium-full-copy" ]; then   # kept between games: brought up to date
@@ -205,7 +308,7 @@ sil_copy_make() {
 # (a full copy only when the game is no longer in Steam). Nothing happens
 # while it is in use, or when it was made again since <generation>.
 sil_copy_release() {
-  local client=$1 dst=$2 gen=${3:-} list="$2/.siliconium-steam-files" src
+  local client=$1 dst=$2 gen=${3:-} list="$2/.siliconium-steam-files" src d
   [ -d "$dst" ] || return 0
   # (between games already: only the client's files)
   [ -f "$list" ] && [ ! -s "$list" ] && [ ! -e "$dst/.siliconium-in-use" ] && [ ! -e "$dst.part" ] && [ ! -e "$dst.old" ] && return 0
@@ -227,6 +330,7 @@ sil_copy_release() {
     (cd "$dst" && sed -n 's/^d //p' "$list" | LC_ALL=C sort -r | tr '\n' '\0' | xargs -0 rmdir 2> /dev/null; true) || {
     sil_copy_unlock "$dst"; return 1; }
   : > "$list"
+  for d in $(sil_copy_keep_dirs "$client"); do mkdir -p "$dst/$d"; done
   rm -f "$dst/.siliconium-in-use" "$dst/.siliconium-full-copy"
   xattr -d com.apple.metadata:com_apple_backup_excludeItem "$dst" 2> /dev/null
   sil_copy_unlock "$dst"
@@ -235,7 +339,7 @@ sil_copy_release() {
 
 sil_copy_tidy() {    # [client]: every copy (of that client)
   local client c base
-  for client in ${1:-cod4x iw7mod}; do
+  for client in ${1:-cod4x iw7mod bo3-modtools}; do
     for c in "$sil_copy_home/$client"/*; do
       [ -d "$c" ] || continue
       case "${c##*/}" in

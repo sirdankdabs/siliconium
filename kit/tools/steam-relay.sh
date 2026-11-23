@@ -49,7 +49,37 @@ while :; do
   now=$(wc -l < "$clog" 2>/dev/null | tr -d ' '); now=${now:-0}
   [ "$now" -lt "$clines" ] && clines=0   # a new log
   if [ "$now" -gt "$clines" ]; then
-    tail -n +$((clines + 1)) "$clog" 2>/dev/null | head -n $((now - clines)) | grep -q 'waiting for user response to ShowLaunchOption' &&
+    new=$(tail -n +$((clines + 1)) "$clog" 2>/dev/null | head -n $((now - clines)))
+    # WWII (s2): its campaign's Multiplayer / Nazi Zombies buttons ask Steam for
+    # steam://run/476620//+zombiesMode 1; Steam then asks for a launch option and
+    # to confirm the arguments, the second inside Steam's main window, which
+    # stays minimized on the Mac (nothing to click, 2026-11-22). The relay starts
+    # that part itself (launch.sh closes and reopens Steam, which drops Steam's
+    # questions), unless launch.sh asked Steam for it (relay/bypass-<app>)
+    took=
+    while IFS= read -r url; do
+      app=${url#steam://run/}; app=${app%%/*}; args=
+      case "$url" in "steam://run/$app//"*) args=${url#"steam://run/$app//"} ;; esac
+      args=$(/usr/bin/python3 -I -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.argv[1]))' "$args" 2>/dev/null)
+      row=
+      for r in $rows; do
+        steam_title "${r%%:*}" "${r#*:}"
+        [ "$s_app" = "$app" ] && [ "$s_kind" = s2 ] && { row="${r%%:*}-${r#*:}"; break; }
+      done
+      [ -n "$row" ] || continue
+      # Nazi Zombies has its own row (the same executable with +zombiesMode 1)
+      case " $args " in *" +zombiesMode 1 "*)
+        if steam_title "${row%-*}" zm 2> /dev/null && [ "$s_app" = "$app" ]; then
+          row="${row%-*}-zm"; args=$(printf '%s' " $args " | sed 's/ +zombiesMode 1 / /; s/^ *//; s/ *$//')
+        fi ;;
+      esac
+      bypass="$rd/bypass-$app"
+      if [ -f "$bypass" ] && [ $(( $(date +%s) - $(stat -f %m "$bypass") )) -lt 120 ]; then continue; fi
+      took=1
+      printf '%s relay: steam://run/%s %s → launch.sh steam %s\n' "$(date '+%F %T')" "$app" "$args" "$row" >> "$log"
+      (GAME_ARGS="$args" nohup bash "$kit/launch.sh" steam "$row" >> "$log" 2>&1 &)
+    done < <(printf '%s\n' "$new" | sed -n -E 's/.*ExecuteSteamURL: "(steam:\/\/run\/[0-9]+[^"]*)".*/\1/p')
+    [ -z "$took" ] && printf '%s\n' "$new" | grep -q 'waiting for user response to ShowLaunchOption' &&
       { front_steam; printf '%s relay: Steam launch-option window brought forward\n' "$(date '+%F %T')" >> "$log"; }
     clines=$now
   fi

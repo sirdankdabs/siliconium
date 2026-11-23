@@ -14,7 +14,7 @@
 #           not the foreground app), so on a captured display the player
 #           saw only black (MW2 Multiplayer): 0 wherever the game allows it.
 #   s_kind  q3 (CoD, CoD 2) | iw (CoD 4 … MW3, BO1) | t6 | iw6 (Ghosts) | s1 (AW) | t7 (BO3)
-#           | iw7 (Infinite Warfare)
+#           | iw7 (Infinite Warfare) | s2 (WWII)
 #   s_name  the title shown in errors
 steam_title() {
   # s_async: DXVK_ASYNC. 2 compiles every new pipeline in the background, even
@@ -64,6 +64,14 @@ steam_title() {
     # Zombies in Spaceland (chosen in its menu); its own setup (iw7): nothing
     # is taken from Ghosts / Advanced Warfare until tested on it
     iw:sp)    s_exe=iw7_ship.exe      s_app=292730 s_api=d3d11x64 s_own=0 s_kind=iw7 s_pad=native s_name="Infinite Warfare" ;;
+    # WWII: the campaign (s2_sp64_ship.exe) and the multiplayer executable
+    # (s2_mp64_ship.exe, its own Steam app 476620, Nazi Zombies inside it);
+    # its own setup (s2): nothing taken from Advanced Warfare until tested on it
+    wwii:sp)  s_exe=s2_sp64_ship.exe  s_app=476600 s_api=d3d11x64 s_own=0 s_kind=s2 s_pad=native s_name="WWII" ;;
+    wwii:mp)  s_exe=s2_mp64_ship.exe  s_app=476620 s_api=d3d11x64 s_own=0 s_kind=s2 s_pad=native s_name="WWII Multiplayer" ;;
+    # Nazi Zombies: the multiplayer executable with +zombiesMode 1 (as Steam's
+    # own Zombies launch option and the campaign's Nazi Zombies button ask)
+    wwii:zm)  s_exe=s2_mp64_ship.exe  s_app=476620 s_api=d3d11x64 s_own=0 s_kind=s2 s_pad=native s_name="WWII Nazi Zombies" ;;
     *) return 1 ;;
   esac
 }
@@ -139,6 +147,14 @@ steam_args() {   # <width> <height> <hz> <first run: 1|0>
                +set r_subdiv 0 +set r_adaptiveSubdiv 0 +set r_subdivLimit 0)
       [ "$first" = 1 ] && s_argv+=(+set r_tessellation "$off" +set r_mbEnable 0 +set r_picmip_manual 1
                                    +set r_picmip 0 +set r_picmip_bump 0 +set r_picmip_spec 0) ;;
+    s2)
+      # WWII: its multiplayer executable took the resolution from its
+      # encrypted system_config_mp.cfg, not from the profile (it went back to
+      # 1280x720, 2026-11-22); on the command line it holds. Every start: the
+      # desktop's size. (Its frame-rate cap is not taken from the command line:
+      # steam_config writes it into the profile)
+      [ "$s_part" = zm ] && s_argv+=(+zombiesMode 1)
+      [ -n "$w" ] && [ -n "$h" ] && s_argv+=(+set r_mode "${w}x$h") ;;
   esac
   # The games' own controller support (World at War, Black Ops): on, with
   # console aim as Siliconium sets it for Plutonium (CONSOLE_AIM=0: off)
@@ -277,6 +293,21 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
         steam_cfg_set "$f" r_texFilterAnisoMax 16
         : > "$marks/.defaults-aw-$s_part"
       fi
+      # WWII's two engine fixes (Sledgehammer's next engine, s2; measured there
+      # 2026-11-23, inferred here: not measured on AW, which was not installed):
+      # - the campaign's shader preload: AW's profile has the same
+      #   r_preloadShaders "1", and its mission loads showed the same ~70 s at
+      #   a fixed 20 FPS on one CPU thread (2026-11-20) that WWII's preload
+      #   cost, for nothing under DXMT (WWII: load 157 -> 112 s, play the
+      #   same). AW_PRELOAD=1 leaves it on.
+      # - the multiplayer executable's frame cap, read from its profile (WWII's
+      #   ignored "+set com_maxfps" and held its own 85): the held mode's rate
+      #   in config_mp.cfg. AW_MP_MAXFPS=0 leaves the profile's value.
+      if [ "$s_part" = sp ]; then
+        if [ "${AW_PRELOAD:-0}" = 1 ]; then steam_cfg_set "$f" r_preloadShaders 1; else steam_cfg_set "$f" r_preloadShaders 0; fi
+      elif [ "${AW_MP_MAXFPS:-1}" != 0 ] && [ -n "$hz" ]; then
+        steam_cfg_set "$f" com_maxfps "$hz"
+      fi
       return 0 ;;
     bo3)
       # Black Ops III: what Siliconium writes for BOIII (Ezz's client, launch.sh
@@ -330,6 +361,43 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
       fi
       [ -n "$w" ] && [ -n "$h" ] && steam_setcl "$f" 1984923617 "${w}x$h"
       [ -n "$hz" ] && steam_setcl "$f" -1226230005 "$hz.00 Hz"
+      return 0 ;;
+    wwii)
+      # WWII: the campaign's profile is players2/user_config.cfg (made on its
+      # first start, 2026-11-22: seta r_mode "1280x720", seta r_refreshRate
+      # "60.00 Hz", r_fullscreen 1: exclusive fullscreen at that mode; LF line
+      # ends; system_config.cfg next to it is not plain text). Every start:
+      # the desktop's size and the rate of the 1x mode launch.sh holds.
+      # Multiplayer / Zombies (s2_mp64_ship.exe): user_config_mp.cfg (made on its
+      # first start, 2026-11-22: r_mode "1280x720", our r_refreshRate kept,
+      # com_maxfps "85"); it takes r_mode from its encrypted system_config_mp.cfg
+      # instead, so steam_args puts that on the command line.
+      case "$s_part" in sp) f="$dir/players2/user_config.cfg" ;; mp|zm) f="$dir/players2/user_config_mp.cfg" ;; *) return 0 ;; esac
+      mkdir -p "$dir/players2" && { [ -f "$f" ] || : > "$f"; } || return 0
+      [ -n "$w" ] && [ -n "$h" ] && steam_cfg_set "$f" r_mode "${w}x$h"
+      [ -n "$hz" ] && steam_cfg_set "$f" r_refreshRate "$hz.00 Hz"
+      # The multiplayer executable's frame-rate cap (its own default 85) comes
+      # from this profile's com_maxfps, not from the command line: with
+      # "+set com_maxfps 160" (and "+com_maxfps 160") its frame limiter still
+      # held 11 ms (1000/85, read in its memory), with the profile at 160 it held
+      # 6 ms (2026-11-23). The cap at the held mode's rate, as for the other
+      # games: the start menu 42 -> 48 FPS on an M1 Pro (its loop presents about
+      # every other turn); a local match is held by the GPU there (65.7 FPS at 85
+      # and at 160), so the cap matters on faster Macs and high-rate displays.
+      if [ "$s_part" != sp ] && [ -n "$hz" ]; then steam_cfg_set "$f" com_maxfps "$hz"; fi
+      # The campaign's shader preload (r_preloadShaders 1 in its profile): a
+      # fixed ~40 s at 20 FPS on every mission load, and under DXMT it buys
+      # nothing. Its pipelines are not the ones play needs (with warm caches
+      # play built ~85 new ones and skipped 13-17 draws either way); with cold
+      # caches its 3,200 pipelines were still compiling when play began, so
+      # play waited more (8 blocking waits, 597 ms, against 1, 74 ms without).
+      # First mission on an M1 Pro: 157 -> 112 s warm, 175 -> 112 s cold
+      # (2026-11-23). Multiplayer / Zombies already have it off.
+      # WW2_PRELOAD=1 leaves it on.
+      if [ "$s_part" = sp ]; then
+        if [ "${WW2_PRELOAD:-0}" = 1 ]; then steam_cfg_set "$f" r_preloadShaders 1; else steam_cfg_set "$f" r_preloadShaders 0; fi
+      fi
+      sed -i '' $'s/\r$//' "$f"
       return 0 ;;
     *) return 0 ;;
   esac

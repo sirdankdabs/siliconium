@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Call of Duty on Apple silicon, in one app.</b><br>
-  Call of Duty · United Offensive · Call of Duty 2 · Call of Duty 4 · World at War · Modern Warfare 2 · Black Ops · Modern Warfare 3 · Black Ops II · Ghosts · Advanced Warfare · Black Ops III · Infinite Warfare
+  Call of Duty · United Offensive · Call of Duty 2 · Call of Duty 4 · World at War · Modern Warfare 2 · Black Ops · Modern Warfare 3 · Black Ops II · Ghosts · Advanced Warfare · Black Ops III · Infinite Warfare · WWII · Black Ops 4
 </p>
 
 <p align="center">
@@ -20,7 +20,7 @@
 
 ---
 
-Download your games in the **Steam Library**, or choose a game folder for Plutonium, IW4X, CoD4X or BOIII, then press **Play**. Siliconium brings its own engine, built from open source, with patches tuned for Apple GPUs and Rosetta. You don't need CrossOver, a Wine install or Terminal.
+Download your games in the **Steam Library** or **Battle.net**, or choose a game folder for Plutonium, IW4X, CoD4X or BOIII, then press **Play**. Siliconium brings its own engine, built from open source, with patches tuned for Apple GPUs and Rosetta. You don't need CrossOver, a Wine install or Terminal.
 
 <p align="center">
   <a href="docs/assets/showcase.mp4"><img src="docs/assets/showcase-poster.jpg" width="820" alt="Siliconium showcase video"></a><br>
@@ -40,7 +40,7 @@ Download your games in the **Steam Library**, or choose a game folder for Pluton
 
 ## Games
 
-There are two ways to play. The **Steam Library** plays Steam's own files with Siliconium's setup. The **community clients** (Plutonium, IW4X, CoD4X, BOIII, IW7-Mod) and the **Offline** campaign (Ghosts) play your game folder, and IW4X, CoD4X, BOIII and IW7-Mod can also use your Steam download. The **AlterWare** section explains why AlterWare's Ghosts and Advanced Warfare clients cannot be played on Apple silicon.
+There are three ways to play. The **Steam Library** plays Steam's own files with Siliconium's setup, and the **Battle.net** section does the same for the games sold only on Battle.net (Black Ops 4). The **community clients** (Plutonium, IW4X, CoD4X, BOIII, IW7-Mod) and the **Offline** campaign (Ghosts) play your game folder, and IW4X, CoD4X, BOIII and IW7-Mod can also use your Steam download. The **AlterWare** section explains why AlterWare's Ghosts and Advanced Warfare clients cannot be played on Apple silicon.
 
 FPS numbers come from a MacBook Pro M1 Pro (macOS 15.8.3) at 2560×1440, in game, with the display at 160 Hz. A range is the lowest and highest the FPS counter showed during play; "avg" is the average over a play session. Your numbers depend on your Mac and settings. Test conditions and what is verified for each game: [COMPATIBILITY.md](COMPATIBILITY.md).
 
@@ -60,9 +60,16 @@ FPS numbers come from a MacBook Pro M1 Pro (macOS 15.8.3) at 2560×1440, in game
 | **Ghosts** (2013) | Runs (player)<br>**150–154 FPS** (borderless, on the 154 Hz desktop) | Not tested<br>not measured yet | – |
 | **Advanced Warfare** (2014) | Playable (validation in progress)<br>**108 FPS** avg (first mission, 15 min) | Blocked: stays at "Connecting to online services" | Exo Zombies: blocked, as Multiplayer |
 | **Black Ops III** (2015) | Not verified yet<br>not measured yet | Not verified yet<br>not measured yet | Runs (player)<br>**~55 FPS** at Extra detail (GPU-bound) |
-| **Infinite Warfare** (2016)<br>*new in 1.2.0* | Playable<br>**~50–58 FPS** at the game's own settings (GPU-bound) | Not tested<br>not measured yet | Not tested in Steam's game<br>(IW7-Mod: see below) |
+| **Infinite Warfare** (2016) | Playable<br>**~50–58 FPS** at the game's own settings (GPU-bound) | Not tested<br>not measured yet | Not tested in Steam's game<br>(IW7-Mod: see below) |
+| **WWII** (2017)<br>*new in 1.3.0* | Playable<br>**74–78 FPS** at the game's own settings (first mission, GPU-bound) | Runs<br>**~60 FPS** online (Team Deathmatch) | Runs (player)<br>**52–63 FPS** (The Final Reich, solo) |
 
-Call of Duty's official timedemo runs at 138–139 FPS. Black Ops III has one **Play** button: Campaign, Multiplayer and Zombies are chosen in its own menu.
+Call of Duty's official timedemo runs at 138–139 FPS. Black Ops III has one **Play** button: Campaign, Multiplayer and Zombies are chosen in its own menu. Its **Mod Tools** button downloads Treyarch's Black Ops III Mod Tools from Steam: the launcher, Radiant, compiling, lighting and linking work, in a workspace that never changes Steam's files (your maps and mods are linked from `Documents/Black Ops III Mod Tools`).
+
+### Battle.net
+
+| Game | Multiplayer | Zombies | Blackout |
+|---|---|---|---|
+| **Black Ops 4** (2018)<br>*new in 1.3.0* | Not tested yet | Plays (player)<br>**~47 FPS** at 100 % render resolution, **115–121** at 50 % (Blood of the Dead, GPU-bound) | Not tested yet |
 
 ### Community clients and offline
 
@@ -77,6 +84,11 @@ Call of Duty's official timedemo runs at 138–139 FPS. Black Ops III has one **
 | **T7** | Black Ops III | Ezz (BOIII) | Zombies, Campaign, Multiplayer | Works | 120+ at High with lighter shadows and effects; 40–50 with everything at maximum (GPU-bound) |
 | **IW7** | Infinite Warfare | IW7-Mod (CBServers) | Zombies, Campaign, Multiplayer, custom maps | Zombies works (player) | Zombies 55–70 at High settings |
 | **IW6** | Ghosts | Offline | Campaign | Works | not measured yet (Steam Library copy: 150–154) |
+
+**New in 1.3.0**
+- **Battle.net** section with **Black Ops 4**: Siliconium installs Battle.net for Windows, you sign in and install the game there, and **Play** starts it with Siliconium's setup.
+- **Call of Duty: WWII** in the Steam Library (campaign, Multiplayer, Nazi Zombies), and a **Mod Tools** button for Black Ops III.
+- **macOS Game Mode in every game**, the game comes to the front by itself when it starts, and it is back within about a second after Cmd-Tab.
 
 **New in 1.2.0**
 - **Call of Duty: Infinite Warfare** in the Steam Library, and the **IW7-Mod (CBServers)** section: CBServers' community client with its servers and custom maps, from your Steam download (Steam's files are never changed) or your own folder.
@@ -97,7 +109,7 @@ All changes: [CHANGELOG.md](CHANGELOG.md).
 ## Highlights
 
 - **Fast and steady.** Direct3D 9 runs on DXVK + MoltenVK and Direct3D 11 on DXMT. Call of Duty and United Offensive draw through Siliconium's own GLDirect build (OpenGL on Direct3D 9). Shaders compile in the background and are kept between sessions. The games run on the performance cores, and x87 maths is accelerated by [x87sidecar](https://github.com/athei/x87sidecar).
-- **Fullscreen done right.** Games open at your display's resolution and true refresh rate, in a native 1x mode, so a HiDPI desktop doesn't cost frames.
+- **Fullscreen done right.** Games open at your display's resolution and true refresh rate, in a native 1x mode, so a HiDPI desktop doesn't cost frames. Every game runs in macOS Game Mode, comes to the front by itself, and is back within about a second after Cmd-Tab.
 - **Controllers.** Xbox, PlayStation (DualShock 4, DualSense, DualSense Edge), Switch Pro, Joy-Con and 8BitDo, wired or Bluetooth, also in the Steam games that have no controller support on PC. Optional console-style aim assist.
 - **No surprises.** "Set Optimal Settings?" and "Safe Mode" prompts never undo your settings. Intro movies are skipped.
 - **Ready the first time.** *Prepare all maps* compiles every map's shaders once, so even a first visit loads complete.
@@ -116,6 +128,8 @@ All changes: [CHANGELOG.md](CHANGELOG.md).
 3. Press **Play**.
 
 **Steam Library:** press **Install** for the engine and **Install Steam** (Steam for Windows, in its own prefix), then sign in to Steam and tick *Remember me*. Download your games in Steam (**Open Steam**, or **Download all**); each one then gets a button for every part (**Campaign**, **Multiplayer**, **Zombies**).
+
+**Battle.net:** press **Install** for the engine and **Install Battle.net** (Battle.net for Windows, in its own prefix), then sign in to Battle.net and tick *Keep me logged in*. **Install** opens the game's page in Battle.net to download it there; then press **Play**.
 
 Plutonium games ask you to sign in once; Siliconium downloads Plutonium for you. CoD4X installs from its official releases without any installer windows. For Black Ops III (Windows), Siliconium downloads boiii and opens Ezz's launcher. Pick **Beta** there.
 
@@ -148,7 +162,7 @@ Open Siliconium once more and start the game again. The app clears the download 
 It asks once for the Call of Duty 4 key. Steam shows it under **Manage → CD Keys**.
 
 **Where are my files?**
-In `~/Library/Application Support/Siliconium`: the engine, the Wine prefixes (Steam's too), Plutonium and the shader caches. Your game folders are never modified, except for the settings each game keeps there. A fix chosen in a Steam game's **Fixes** menu puts its files in the game's folder only while that part runs. IW4X's launcher adds its own files next to the game's, and CoD4X and IW7-Mod play Steam's Call of Duty 4 and Infinite Warfare from their own copy (APFS clones made at each start: no extra disk space, and between games the copy keeps only the client's own files). Siliconium keeps no installers once it is set up, and its game logs keep only their newest part.
+In `~/Library/Application Support/Siliconium`: the engine, the Wine prefixes (Steam's and Battle.net's too), Plutonium and the shader caches. Your game folders are never modified, except for the settings each game keeps there. A fix chosen in a Steam game's **Fixes** menu puts its files in the game's folder only while that part runs. IW4X's launcher adds its own files next to the game's, and CoD4X and IW7-Mod play Steam's Call of Duty 4 and Infinite Warfare from their own copy (APFS clones made at each start: no extra disk space, and between games the copy keeps only the client's own files). Siliconium keeps no installers once it is set up, and its game logs keep only their newest part.
 
 **I used BO-Mac before.**
 Siliconium is its new name. Your installation moves over on its own the first time the app opens.
@@ -189,7 +203,7 @@ bo3/      BO3 Mac Client and BO3MacFix sources (optional Black Ops III for Mac)
 
 Siliconium does not include game files, Steam or any Steam API replacement; you need your own copies of the games.
 
-Not affiliated with Activision, Treyarch, Infinity Ward, Sledgehammer Games, Gray Matter Interactive, Aspyr, Valve, CodeWeavers, Plutonium, IW4X, CoD4X or Ezz. Call of Duty, Black Ops and Modern Warfare are trademarks of Activision Publishing, Inc.
+Not affiliated with Activision, Blizzard, Treyarch, Infinity Ward, Sledgehammer Games, Gray Matter Interactive, Aspyr, Valve, CodeWeavers, Plutonium, IW4X, CoD4X or Ezz. Call of Duty, Black Ops and Modern Warfare are trademarks of Activision Publishing, Inc.
 
 ## License
 
