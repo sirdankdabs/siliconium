@@ -6,7 +6,8 @@
 
 <p align="center">
   <b>Call of Duty on Apple silicon, in one app.</b><br>
-  Call of Duty · United Offensive · Call of Duty 2 · Call of Duty 4 · World at War · Modern Warfare 2 · Black Ops · Modern Warfare 3 · Black Ops II · Ghosts · Advanced Warfare · Black Ops III · Infinite Warfare · WWII · Black Ops 4
+  Call of Duty · United Offensive · Call of Duty 2 · Call of Duty 4 · World at War · Modern Warfare 2 · Black Ops · Modern Warfare 3 · Black Ops II · Ghosts · Advanced Warfare · Black Ops III · Infinite Warfare · WWII · Black Ops 4<br>
+  (Plutonium, BOIII/Ezz, IW4X, CoD4X, IW7-Mod and Project-BO4 included)
 </p>
 
 <p align="center">
