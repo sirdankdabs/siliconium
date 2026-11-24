@@ -201,6 +201,17 @@ bnet_play() {
   [ "$b_id" = bo4 ] && rm -f "$dir/BlackOps4.start"
   bnet_config "$dir" "${dw:-}" "${dh:-}" "${hz:-}" "${maxfps:-${hz:-}}"
   bnet_prefix_settings
+  # A community fix chosen in the app (settings.conf STEAM_MOD_<GAME>, the
+  # Steam Library's fixes: tools/steam-mods.sh): checked and put into the
+  # game's folder only while it runs, taken out when it quits (or, after a
+  # crash, at its next start). Shield starts the game itself, below.
+  local s_id=$b_id s_part=all s_exe=$b_exe s_argv=()
+  m_mod=none m_error=
+  if . "$kit/tools/steam-mods.sh"; then
+    steam_mod_prepare "$dir" || die "$m_error"
+    steam_mod_args "$dir"
+    reg_flush
+  fi
   local mark="$home/cache/.battlenet-start"
   : > "$mark"
   # macOS Game Mode for the game Battle.net starts: our ntdll.so
@@ -210,17 +221,19 @@ bnet_play() {
   # Game Mode can be on while the game plays fullscreen (WWII's campaign: +40 %
   # FPS with it, 2026-11-23). Battle.net passes its environment to the game.
   if [ "${GAME_MODE:-1}" != 0 ]; then export SIL_GAME_EXES="$b_exe"; else unset SIL_GAME_EXES; fi
-  # In the background, as Steam (-silent): --autostarted is what Windows' log-in
-  # start passes, and Battle.net then keeps its window minimized when its "start
-  # minimized" setting is on (its default, Client.AutoStartMinimized)
-  bnet_start_client --autostarted
-  # Battle.net hands a launch command over only once it is signed in (this start's log)
-  local signed=0
-  for _ in $(seq 1 90); do bnet_signed_in "$mark" && { signed=1; break; }; sleep 2; done
-  if [ "$signed" = 0 ]; then
-    die "Battle.net is not signed in: sign in in its window (tick Keep me logged in), then press Play again"
+  if [ "$m_mod" != shield ]; then
+    # In the background, as Steam (-silent): --autostarted is what Windows' log-in
+    # start passes, and Battle.net then keeps its window minimized when its "start
+    # minimized" setting is on (its default, Client.AutoStartMinimized)
+    bnet_start_client --autostarted
+    # Battle.net hands a launch command over only once it is signed in (this start's log)
+    local signed=0
+    for _ in $(seq 1 90); do bnet_signed_in "$mark" && { signed=1; break; }; sleep 2; done
+    if [ "$signed" = 0 ]; then
+      die "Battle.net is not signed in: sign in in its window (tick Keep me logged in), then press Play again"
+    fi
+    sleep 3
   fi
-  sleep 3
   # The game's questions in Windows message boxes (tools/bnet-guard.c): "Yes"
   # to Black Ops 4's minimum-requirements warning (seen while Wine reported the
   # GPU's memory as 0; kept for Macs whose GPU memory is still read low), "No"
@@ -231,8 +244,16 @@ bnet_play() {
     bnet_guard_pid=$!
     trap '[ -n "${bnet_guard_pid:-}" ] && kill "$bnet_guard_pid" 2> /dev/null; pkill -f "bnet-guard\.exe" 2> /dev/null; true' EXIT
   fi
-  bnet_cmd --exec="launch $b_code"
-  printf 'Asked Battle.net: --exec="launch %s"\n' "$b_code" >> "$log"
+  if [ "$m_mod" = shield ]; then
+    # Shield: the game started as its instructions say (BlackOps4.exe, no
+    # Battle.net: its own Demonware emulator), with this same environment
+    printf 'Fix %s: %s started directly, without Battle.net\n' "$m_mod" "$b_exe" >> "$log"
+    (cd "$dir" && WINE_SIMULATE_WRITECOPY=${WINE_SIMULATE_WRITECOPY:-1} \
+      nohup "$wine" "$b_exe" >> "$log" 2>&1 &)
+  else
+    bnet_cmd --exec="launch $b_code"
+    printf 'Asked Battle.net: --exec="launch %s"\n' "$b_code" >> "$log"
+  fi
   # The game is running when its executable works the CPU. Battle.net may first
   # update it or ask something in its window (up to 10 minutes)
   game_pid=
@@ -244,6 +265,10 @@ bnet_play() {
     sleep 1
   done
   if [ -z "$game_pid" ]; then
+    if [ "$m_mod" = shield ]; then
+      steam_mod_remove "$dir"
+      die "$b_name did not start with Shield: choose No fix in its Fixes menu to play through Battle.net"
+    fi
     bnet_cmd
     die "Battle.net did not start $b_name: look at Battle.net's window (an update, a question, or the licence)"
   fi
@@ -263,6 +288,7 @@ bnet_play() {
   fi
   while [ -n "$(bnet_game_pids)" ]; do sleep 2; done
   [ -n "$focus_pid" ] && kill "$focus_pid" 2> /dev/null
+  [ "$m_mod" = none ] || steam_mod_remove "$dir"   # the fix's files go with the game
   printf -- '--- %s: %s quit\n' "$(date)" "$b_name" >> "$log"
   return 0
 }

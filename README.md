@@ -40,7 +40,7 @@ Download your games in the **Steam Library** or **Battle.net**, or choose a game
 
 ## Games
 
-There are three ways to play. The **Steam Library** plays Steam's own files with Siliconium's setup, and the **Battle.net** section does the same for the games sold only on Battle.net (Black Ops 4). The **community clients** (Plutonium, IW4X, CoD4X, BOIII, IW7-Mod) and the **Offline** campaign (Ghosts) play your game folder, and IW4X, CoD4X, BOIII and IW7-Mod can also use your Steam download. The **AlterWare** section explains why AlterWare's Ghosts and Advanced Warfare clients cannot be played on Apple silicon.
+There are three ways to play. The **Steam Library** plays Steam's own files with Siliconium's setup, and the **Battle.net** section does the same for the games sold only on Battle.net (Black Ops 4, also offline with Project-BO4's **Shield**). The **community clients** (Plutonium, IW4X, CoD4X, BOIII, IW7-Mod) and the **Offline** campaign (Ghosts) play your game folder, and IW4X, CoD4X, BOIII and IW7-Mod can also use your Steam download. The **AlterWare** section explains why AlterWare's Ghosts and Advanced Warfare clients cannot be played on Apple silicon.
 
 FPS numbers come from a MacBook Pro M1 Pro (macOS 15.8.3) at 2560×1440, in game, with the display at 160 Hz. A range is the lowest and highest the FPS counter showed during play; "avg" is the average over a play session. Your numbers depend on your Mac and settings. Test conditions and what is verified for each game: [COMPATIBILITY.md](COMPATIBILITY.md).
 
@@ -63,13 +63,13 @@ FPS numbers come from a MacBook Pro M1 Pro (macOS 15.8.3) at 2560×1440, in game
 | **Infinite Warfare** (2016) | Playable<br>**~50–58 FPS** at the game's own settings (GPU-bound) | Not tested<br>not measured yet | Not tested in Steam's game<br>(IW7-Mod: see below) |
 | **WWII** (2017)<br>*new in 1.3.0* | Playable<br>**74–78 FPS** at the game's own settings (first mission, GPU-bound) | Runs<br>**~60 FPS** online (Team Deathmatch) | Runs (player)<br>**52–63 FPS** (The Final Reich, solo) |
 
-Call of Duty's official timedemo runs at 138–139 FPS. Black Ops III has one **Play** button: Campaign, Multiplayer and Zombies are chosen in its own menu. Its **Mod Tools** button downloads Treyarch's Black Ops III Mod Tools from Steam: the launcher, Radiant, compiling, lighting and linking work, in a workspace that never changes Steam's files (your maps and mods are linked from `Documents/Black Ops III Mod Tools`).
+Call of Duty's official timedemo runs at 138–139 FPS. Black Ops III has one **Play** button: Campaign, Multiplayer and Zombies are chosen in its own menu; its **Fixes** menu offers **Clean Ops**, the community Multiplayer patch (also in the Mod Tools' map tests). Its **Mod Tools** button downloads Treyarch's Black Ops III Mod Tools from Steam: the launcher, Radiant, compiling, lighting and linking work, in a workspace that never changes Steam's files (your maps and mods are linked from `Documents/Black Ops III Mod Tools`).
 
 ### Battle.net
 
 | Game | Multiplayer | Zombies | Blackout |
 |---|---|---|---|
-| **Black Ops 4** (2018)<br>*new in 1.3.0* | Not tested yet | Plays (player)<br>**~47 FPS** at 100 % render resolution, **115–121** at 50 % (Blood of the Dead, GPU-bound) | Not tested yet |
+| **Black Ops 4** (2018)<br>*new in 1.3.0* | Not tested yet | Plays (player)<br>**~62 FPS** at 1920x1080, 100 % render resolution (Blood of the Dead, GPU-bound); also offline with **Shield** (player) | Not tested yet |
 
 ### Community clients and offline
 
@@ -87,8 +87,10 @@ Call of Duty's official timedemo runs at 138–139 FPS. Black Ops III has one **
 
 **New in 1.3.0**
 - **Battle.net** section with **Black Ops 4**: Siliconium installs Battle.net for Windows, you sign in and install the game there, and **Play** starts it with Siliconium's setup.
-- **Call of Duty: WWII** in the Steam Library (campaign, Multiplayer, Nazi Zombies), and a **Mod Tools** button for Black Ops III.
+- **Call of Duty: WWII** in the Steam Library (campaign, Multiplayer, Nazi Zombies), and a **BO3 Mod Tools** button for Black Ops III.
 - **macOS Game Mode in every game**, the game comes to the front by itself when it starts, and it is back within about a second after Cmd-Tab.
+- Optional fixes: **Shield (Project-BO4)** for Black Ops 4 (offline, without Battle.net's online services) and **Clean Ops** for Black Ops III (also in the Mod Tools' map tests).
+- Your Mac keeps its HiDPI display mode while you play (no mode switch at start, at the end or after Cmd-Tab).
 
 **New in 1.2.0**
 - **Call of Duty: Infinite Warfare** in the Steam Library, and the **IW7-Mod (CBServers)** section: CBServers' community client with its servers and custom maps, from your Steam download (Steam's files are never changed) or your own folder.
@@ -99,7 +101,7 @@ Call of Duty's official timedemo runs at 138–139 FPS. Black Ops III has one **
 - Call of Duty and United Offensive draw trees, lit models and distant fog as with OpenGL (tree leaves were missing).
 
 **New in 1.1.0**
-- **Steam Library:** play the Steam versions from Steam's own files, with Siliconium's setup: fullscreen at your display's size and refresh rate, controller support (also for the games without it on PC), shader caches, and an optional **Fixes** menu for some games (IW3SP-MOD, T4Me, IW-Pad, T6SP-Mod).
+- **Steam Library:** play the Steam versions from Steam's own files, with Siliconium's setup: fullscreen at your display's size and refresh rate, controller support (also for the games without it on PC), shader caches, and an optional **Fixes** menu for some games (IW3SP-MOD, T4Me, IW-Pad, T6SP-Mod, Clean Ops).
 - **CoD4X:** Call of Duty 4 multiplayer through the CoD4X client, also from your Steam download (Steam's files are never changed).
 
 All changes: [CHANGELOG.md](CHANGELOG.md).
@@ -109,7 +111,7 @@ All changes: [CHANGELOG.md](CHANGELOG.md).
 ## Highlights
 
 - **Fast and steady.** Direct3D 9 runs on DXVK + MoltenVK and Direct3D 11 on DXMT. Call of Duty and United Offensive draw through Siliconium's own GLDirect build (OpenGL on Direct3D 9). Shaders compile in the background and are kept between sessions. The games run on the performance cores, and x87 maths is accelerated by [x87sidecar](https://github.com/athei/x87sidecar).
-- **Fullscreen done right.** Games open at your display's resolution and true refresh rate, in a native 1x mode, so a HiDPI desktop doesn't cost frames. Every game runs in macOS Game Mode, comes to the front by itself, and is back within about a second after Cmd-Tab.
+- **Fullscreen done right.** Games open at your display's resolution and true refresh rate. On a HiDPI desktop drawn at the panel's own resolution (for example "looks like 1920x1080" on a 4K display) your Mac keeps its display mode: no switch when a game starts, ends or is left with Cmd-Tab. A scaled desktop (one that macOS draws larger than the panel) is held in a 1x mode while the game runs, so it doesn't cost frames. Every game runs in macOS Game Mode, comes to the front by itself, and is back within about a second after Cmd-Tab.
 - **Controllers.** Xbox, PlayStation (DualShock 4, DualSense, DualSense Edge), Switch Pro, Joy-Con and 8BitDo, wired or Bluetooth, also in the Steam games that have no controller support on PC. Optional console-style aim assist.
 - **No surprises.** "Set Optimal Settings?" and "Safe Mode" prompts never undo your settings. Intro movies are skipped.
 - **Ready the first time.** *Prepare all maps* compiles every map's shaders once, so even a first visit loads complete.
@@ -129,7 +131,7 @@ All changes: [CHANGELOG.md](CHANGELOG.md).
 
 **Steam Library:** press **Install** for the engine and **Install Steam** (Steam for Windows, in its own prefix), then sign in to Steam and tick *Remember me*. Download your games in Steam (**Open Steam**, or **Download all**); each one then gets a button for every part (**Campaign**, **Multiplayer**, **Zombies**).
 
-**Battle.net:** press **Install** for the engine and **Install Battle.net** (Battle.net for Windows, in its own prefix), then sign in to Battle.net and tick *Keep me logged in*. **Install** opens the game's page in Battle.net to download it there; then press **Play**.
+**Battle.net:** press **Install** for the engine and **Install Battle.net** (Battle.net for Windows, in its own prefix), then sign in to Battle.net and tick *Keep me logged in*. **Install** opens the game's page in Battle.net to download it there; then press **Play**. To play Black Ops 4 offline, choose **Shield (Project-BO4)** in its **Fixes** menu (Battle.net must have started the game once).
 
 Plutonium games ask you to sign in once; Siliconium downloads Plutonium for you. CoD4X installs from its official releases without any installer windows. For Black Ops III (Windows), Siliconium downloads boiii and opens Ezz's launcher. Pick **Beta** there.
 
@@ -188,7 +190,7 @@ bo3/      BO3 Mac Client and BO3MacFix sources (optional Black Ops III for Mac)
 - **CoD4X team**: the [CoD4X](https://cod4x.ovh) Call of Duty 4 client.
 - **Ezz / BOIII**: [boiii-free](https://github.com/Ezz-lol/boiii-free), built on momo5502's BOIII.
 - **CBServers**: [IW7-Mod (CBServers)](https://github.com/CBServers/iw7-mod), their fork of **AuroraMod**'s [IW7-Mod](https://github.com/auroramod/iw7-mod) Infinite Warfare client (GPL-3.0), downloaded from CBServers' official link.
-- Optional fixes, downloaded from their authors and never shipped: **JerryALT** ([IW3SP-MOD](https://gitea.com/JerryALT/iw3sp_mod)), **JBShady** ([T4M Enhanced](https://github.com/JBShady/T4M-Enhanced)), **GalvarinoDev** ([IW-Pad](https://github.com/GalvarinoDev/IW-Pad)), **Rattpak** ([T6SP-Mod](https://github.com/Rattpak/T6SP-Mod-Release)).
+- Optional fixes, downloaded from their authors and never shipped: **JerryALT** ([IW3SP-MOD](https://gitea.com/JerryALT/iw3sp_mod)), **JBShady** ([T4M Enhanced](https://github.com/JBShady/T4M-Enhanced)), **GalvarinoDev** ([IW-Pad](https://github.com/GalvarinoDev/IW-Pad)), **Rattpak** ([T6SP-Mod](https://github.com/Rattpak/T6SP-Mod-Release)), **nxghtwolf** ([Clean Ops](https://cleanops.dev)), **project-bo4** ([Shield](https://github.com/project-bo4/shield-development); Build R2 by **Scroptss**).
 - **The Wine project**, **CodeWeavers** (open-source CrossOver Wine) and **WineHQ** (Wine Mono, Wine Gecko).
 - **Sikarugir** (Gcenx and contributors): the engine's x86_64 libraries.
 - **athei**: [x87sidecar](https://github.com/athei/x87sidecar). **Lifeisawful**: [rosettax87](https://github.com/Lifeisawful/rosettax87).

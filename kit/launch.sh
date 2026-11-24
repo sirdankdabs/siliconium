@@ -29,8 +29,12 @@
 #   RUMBLE_FIX=0       CrossOver's xinput (vibration stalls controller input)
 #   CAPTURE_DISPLAY=0  fullscreen through the window compositor
 #   DISPLAY_MODE=0     keep the desktop's display mode while in fullscreen
+#   KEEP_HIDPI=0       fullscreen games are held in a 1x mode on an unscaled HiDPI
+#                      desktop too (default: that desktop's mode is kept)
 #   MSAA_FIX=0         allow the games' 8x+ MSAA (not supported by Apple GPUs)
 #   BO1_ASYNC=0        BO1 shaders compile while drawing (stutters)
+#   BO1_ASYNC_LEVEL=1  BO1 compiles a newly drawn surface's shaders on the render
+#                      thread (1.3.0: longer first loads, short freezes on new maps)
 #   BO1_WARM=0         BO1 shaders compile during play instead of on the loading screen
 #   BO1_SHADER_CACHE=0 BO1 keeps no shader caches between runs
 #   BO1_MP_FAST_LOAD=0 restore the original T5 Multiplayer shader preparation
@@ -55,6 +59,8 @@
 #   IW5_GRAPHICS=0     Modern Warfare 3 keeps its own first-start video defaults
 #   IW5_ASYNC=0        MW3 shaders compile while drawing
 #   IW5_SHADER_CACHE=0 MW3 keeps no shader caches between runs
+#   IW5_PRELOAD=0      MW3 compiles a new map's shaders as play begins (short
+#                      freezes) instead of on its loading screen (Plutonium, Steam)
 #   IW5_METAL_PARALLEL=0  Metal compiles a few shaders at a time
 #   IW4_GRAPHICS=0     Modern Warfare 2 keeps its own first-start video defaults
 #   IW4_SCREEN=0       MW2 keeps the resolution set in the game
@@ -62,6 +68,9 @@
 #                      visit takes longer to load and nothing appears late
 #   WW2_PRELOAD=1      WWII's campaign preloads a mission's shaders while it loads
 #                      (~45 s longer; under DXMT nothing appears sooner in play)
+#   STEAM_SCREEN=0     Steam Library games keep a windowed mode chosen in their
+#                      options (default: fullscreen at the desktop's size every start)
+#   WW2_SCREEN=0       the same for WWII only
 #   WW2_NETSTATE=0     WWII multiplayer / Zombies ask Wine's network state on
 #                      every frame online (~10 ms each) instead of a cached answer
 #   AW_PRELOAD=1       Advanced Warfare's campaign preloads a mission's shaders (as WWII's)
@@ -166,12 +175,17 @@ focus_helper() {
   focus_pid=$!
 }
 stop_all() { "$WINESERVER" -k 2>/dev/null; "$WINESERVER" -w 2>/dev/null; }
+# A display mode hold (hold_1x_size) that was killed before it could put the
+# desktop's mode back: put it back now, unless the player chose another mode
+# since (tools/displaymode restore). A hold that is still on is left alone: it
+# restores the mode itself once its game has ended.
+restore_display() { "$kit/tools/displaymode" restore >> "$home/logs/displaymode.log" 2>&1 || true; }
 
 game=${1:-}; mode=${2:-}
-[ "$game:$mode" = stop:iw6 ] && { WINEPREFIX="$home/prefix-iw6" stop_all; exit 0; }
+[ "$game:$mode" = stop:iw6 ] && { WINEPREFIX="$home/prefix-iw6" stop_all; restore_display; exit 0; }
 [ "$game" = stop ] && { stop_all; WINEPREFIX="$home/prefix-bo2c" "$WINESERVER" -k 2>/dev/null
   WINEPREFIX="$home/prefix-steam" "$WINESERVER" -k 2>/dev/null
-  WINEPREFIX="$home/prefix-battlenet" "$WINESERVER" -k 2>/dev/null; exit 0; }
+  WINEPREFIX="$home/prefix-battlenet" "$WINESERVER" -k 2>/dev/null; restore_display; exit 0; }
 [ -x "$wine" ] || die "the engine is not installed"
 # CoD4X or IW7-Mod without the Steam Library set up yet: Steam's prefix, without
 # Steam (as steam.sh setup makes it; Steam for Windows can be added to it later)
@@ -444,7 +458,14 @@ hold_1x() { # <game cfg>
 }
 hold_1x_size() { # "<width> <height>"
   [ -z "$held_1x" ] && [ "${DISPLAY_MODE:-1}" != 0 ] && [ -n "$1" ] || return 0
-  local res=$1 log="$home/logs/displaymode.log" size i launch_pid=$$
+  local res=$1 log="$home/logs/displaymode.log" size i launch_pid=$$ keep=0
+  # A HiDPI desktop that is not scaled (its pixels are the panel's own, e.g.
+  # "looks like 1920x1080" on a 4K panel) stays as it is (displaymode
+  # SIL_KEEP_UNSCALED): no mode switch at the start and the end, and a sharp
+  # desktop after Cmd-Tab. Black Ops, 2026-11-23 (Kino, 40 s): 159.0 FPS held
+  # at 1x, 158.9 in the HiDPI mode, same 1 % low, pacing and GPU time.
+  # KEEP_HIDPI=0: held at 1x as before. A scaled desktop is always held.
+  on KEEP_HIDPI && keep=1
   ( while kill -0 "$launch_pid" 2>/dev/null; do sleep 2; done
     sleep 3   # the launcher may close a moment before the game window is up
     while pgrep -qf 'plutonium-bootstrapper-win32\.exe|t6sp\.exe|iw4x(-launcher)?\.exe'; do sleep 2; done
@@ -453,7 +474,7 @@ hold_1x_size() { # "<width> <height>"
   log_cap "$log"
   size=$(stat -f %z "$log" 2>/dev/null || echo 0)
   # shellcheck disable=SC2086
-  "$kit/tools/displaymode" $res $! >> "$log" 2>&1 &
+  SIL_KEEP_UNSCALED=$keep "$kit/tools/displaymode" $res $! >> "$log" 2>&1 &
   held_1x=1
   for i in $(seq 25); do   # wait (up to 5 s) for the switch
     if [ "$(stat -f %z "$log" 2>/dev/null || echo 0)" != "$size" ]; then
@@ -483,7 +504,9 @@ console_aim() { # <game cfg>
 on() { [ "${!1:-1}" != 0 ]; }
 # The desktop's logical size and refresh rate. Read before the display block:
 # hold_1x_size starts the body from there, and on a first run there is no game
-# profile to read the size from.
+# profile to read the size from. (After restore_display: never the size a
+# killed hold left the display in.)
+restore_display
 read -r dw dh hz < <("$kit/tools/displaymode" current 2>/dev/null || true)
 # Games held in a 1x mode of the desktop's size (see hold_1x) get that mode's
 # refresh rate, which can be higher than the HiDPI desktop's: a 2560x1440
@@ -535,8 +558,11 @@ case "$t:$mode" in
     case "$s_api:$s_kind" in
       gl:*|d3d9:*|d3d9x64:*|d3d11:t6|d3d11x64:s1|d3d11x64:t7|d3d11x64:iw7|d3d11x64:s2) [ -n "${dw:-}" ] && [ -n "${dh:-}" ] && hold_1x_size "$dw $dh" ;;
     esac ;;
-  t5:mp) hold_1x "$plutonium/storage/t5/players/config_mp.cfg" ;;
-  t5:*) hold_1x "$plutonium/storage/t5/players/config.cfg" ;;
+  # Black Ops (t5) is held further down (hold_1x "$gamecfg"), as Black Ops II
+  # is: after common_cvars has fitted its profile's r_mode to the desktop.
+  # Held from the profile here, a desktop made smaller since the last game
+  # (2560x1440 -> 1920x1080) got a 2560x1440 mode for the whole game, with the
+  # game drawn 1920x1080 inside it and the Mac's windows rearranged.
   t4:*)
     # World at War: hold the mode it will run at from the desktop's *logical*
     # size, not from the profile. A first run has no profile yet, and the
@@ -892,13 +918,17 @@ else
   # every missing pipeline in the background instead, as for IW4X
   # (DXVK_ASYNC=2); the map's pipelines queue while it loads and a new effect
   # appears a frame later instead of stopping the frame that draws it.
-  # T5 goes back to 1 (the 0.8.1 behaviour): with 2, and a cold MoltenVK cache,
-  # new in-game materials were drawn black until their pipeline finished (they
-  # took minutes to compile on this fresh engine). 1 compiles a new in-game
-  # pipeline on the render thread (a small hitch) and never draws it black;
-  # T4 keeps 2 (there it only queues while the map loads).
+  # T5 had gone back to 1 (with 2 and a cold MoltenVK cache on a fresh engine,
+  # new in-game materials stayed black until their pipeline finished). Measured
+  # again 2026-11-23 on maps never loaded before (warm engine): with 1 the
+  # render thread compiled every pipeline of a newly bound render target, so a
+  # new multiplayer map loaded in 38 s and froze 0.4-1 s in play and on the
+  # class menu; with 2: 12 s, worst frame 56-69 ms in Multiplayer, Zombies and
+  # the campaign, every material drawn from the first frames. Both T4 and T5
+  # use 2; BO1_ASYNC_LEVEL / WAW_ASYNC_LEVEL=1 bring back the render-thread
+  # compiles.
   if on BO1_ASYNC; then
-    if [ "$t" = t4 ]; then set_env DXVK_ASYNC 2; else set_env DXVK_ASYNC 1; fi
+    if [ "$t" = t4 ]; then set_env DXVK_ASYNC "${WAW_ASYNC_LEVEL:-2}"; else set_env DXVK_ASYNC "${BO1_ASYNC_LEVEL:-2}"; fi
     clear_env DXVK_WARM_ASYNC
   else set_env DXVK_ASYNC 0; set_env DXVK_WARM_ASYNC 0; fi
   if on BO1_WARM; then clear_env DXVK_WARM_WAIT; else set_env DXVK_WARM_WAIT 0; fi
@@ -1317,7 +1347,13 @@ if [ "$t" = steam ]; then
   if [ -n "$xa_dll" ]; then
     xa_lc=$(printf '%s' "$xa_dll" | tr '[:upper:]' '[:lower:]')
     xa="$WINEPREFIX/$xa_lc.native.dll"
-    for cab in "$dir/redist/DirectX/$xa_cab" "$dir/DirectX/$xa_cab"; do   # Steam's WaW: DirectX/
+    xa_more=()   # Black Ops / Black Ops II: the same Jun2010 cab from the other one or Plutonium's folders
+    case "$xa_on" in BO1_XAUDIO|BO2_XAUDIO)
+      xa_more=(${BO1_DIR:+"$BO1_DIR/redist/DirectX/$xa_cab"} ${BO2_DIR:+"$BO2_DIR/redist/DirectX/$xa_cab"}
+               "$WINEPREFIX/drive_c/Program Files (x86)/Steam/steamapps/common/Call of Duty Black Ops/redist/DirectX/$xa_cab"
+               "$WINEPREFIX/drive_c/Program Files (x86)/Steam/steamapps/common/Call of Duty Black Ops II/redist/DirectX/$xa_cab") ;;
+    esac
+    for cab in "$dir/redist/DirectX/$xa_cab" "$dir/DirectX/$xa_cab" ${xa_more[@]+"${xa_more[@]}"}; do   # Steam's WaW: DirectX/
       [ ! -f "$xa" ] && [ -f "$cab" ] || continue
       tmp=$(mktemp -d)
       bsdtar -xf "$cab" -C "$tmp" "$xa_dll.dll" 2>/dev/null && cp "$tmp/$xa_dll.dll" "$xa"
@@ -1894,7 +1930,8 @@ PY
   if on DISPLAY_MODE && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
     stop_displaymode
     log_cap "$home/logs/displaymode.log"
-    "$kit/tools/displaymode" "$dw" "$dh" $$ >> "$home/logs/displaymode.log" 2>&1 &
+    keep=0; on KEEP_HIDPI && keep=1   # (see hold_1x_size)
+    SIL_KEEP_UNSCALED=$keep "$kit/tools/displaymode" "$dw" "$dh" $$ >> "$home/logs/displaymode.log" 2>&1 &
     sleep 2   # the switch first: Wine reads the desktop mode as the game starts
   fi
   # Ezz can exit the launcher after starting versions/boiii-beta.exe.
@@ -1949,9 +1986,16 @@ common_cvars() {
   if [ -n "$desktop" ]; then
     local rmode
     rmode=$(sed -n -E 's/^seta r_mode "([0-9]+)x[0-9]+"/\1/p' "$1")
-    # BO2 can render on a different monitor, and its saved pixel resolution
-    # can exceed the desktop's logical width even when using the same display.
-    if [ "$rmode" = 800 ] || { [ "$t" != t6 ] && [ -n "$rmode" ] && [ "$rmode" -gt "${desktop%x*}" ]; }; then
+    # A resolution larger than the desktop (one saved before the desktop was
+    # made smaller, or the game's own pick of the panel's pixels) comes back
+    # to the desktop's size: the display is held at the game's resolution, and
+    # a larger one changed the Mac's resolution while the game ran (Black Ops
+    # II's profiles kept 2560x1440 on a 1920x1080 desktop, 2026-11-23). BO2
+    # on another monitor (r_monitor 2 and up), whose size can differ, is left
+    # as it is.
+    local mon
+    mon=$(sed -n -E 's/^seta r_monitor "([0-9]+)"/\1/p' "$1" | tail -1)
+    if [ "$rmode" = 800 ] || { { [ "$t" != t6 ] || [ "${mon:-0}" -le 1 ]; } && [ -n "$rmode" ] && [ "$rmode" -gt "${desktop%x*}" ]; }; then
       set_cvar "$1" r_mode "$desktop"
     fi
   fi
@@ -1995,8 +2039,11 @@ cleanup_t5mp_engine() {
   t5mp_engine=
 }
 
-if [ "$t:$mode" = t5:mp ] && [ "${4:-}" != --lan ]; then
-  if on BO1_MP_FAST_LOAD && on BO1_WARM && on BO1_ASYNC && prepare_t5mp_engine; then
+if [ "$t" = t5 ]; then
+  # (cleared for every other Black Ops start too: Zombies and the campaign
+  # kept an online Multiplayer start's value in the prefix)
+  if [ "$mode" = mp ] && [ "${4:-}" != --lan ] && on BO1_MP_FAST_LOAD && on BO1_WARM && on BO1_ASYNC &&
+     prepare_t5mp_engine; then
     set_env DXVK_T5MP_WARM 1
     trap cleanup_t5mp_engine EXIT
   else
@@ -2042,13 +2089,18 @@ if [ "$t" = t5 ]; then
   dxvk="d3d9.numBackBuffers = 3"$'\n'"dxvk.numCompilerThreads = $dxvk_threads"$'\n'"dxvk.numAsyncThreads = $dxvk_threads"$'\n'
   [ "$maxfps" != 0 ] && dxvk+="d3d9.maxFrameRate = $maxfps"$'\n'
   for d in "$dir" "$plutonium" "$plutonium/bin"; do [ -d "$d" ] && printf '%s' "$dxvk" > "$d/dxvk.conf"; done
-  # XAudio2 2.7 from BO1's redist: Wine's leaves BO1's gunfire silent
+  # XAudio2 2.7 from BO1's redist: Wine's leaves BO1's gunfire silent. A BO1
+  # folder copied without its redist: the same cab from Black Ops II's folder
+  # or from Black Ops / Black Ops II in Siliconium's Steam Library (as for BO2)
   xa="$WINEPREFIX/xaudio2_7.native.dll"
-  if [ ! -f "$xa" ] && [ -f "$dir/redist/DirectX/Jun2010_XAudio_x86.cab" ]; then
+  steam_common="$home/prefix-steam/drive_c/Program Files (x86)/Steam/steamapps/common"
+  xa_cabs=("$dir" ${BO2_DIR:+"$BO2_DIR"} "$steam_common/Call of Duty Black Ops" "$steam_common/Call of Duty Black Ops II")
+  for cab in "${xa_cabs[@]/%//redist/DirectX/Jun2010_XAudio_x86.cab}"; do
+    [ ! -f "$xa" ] && [ -f "$cab" ] || continue
     tmp=$(mktemp -d)
-    bsdtar -xf "$dir/redist/DirectX/Jun2010_XAudio_x86.cab" -C "$tmp" XAudio2_7.dll 2>/dev/null && cp "$tmp/XAudio2_7.dll" "$xa"
+    bsdtar -xf "$cab" -C "$tmp" XAudio2_7.dll 2>/dev/null && cp "$tmp/XAudio2_7.dll" "$xa"
     rm -rf "$tmp"
-  fi
+  done
   if ! on BO1_XAUDIO; then
     reg delete "$bootstrapper\\DllOverrides" /v xaudio2_7 /f
   elif [ -f "$xa" ]; then
@@ -2140,10 +2192,15 @@ elif [ "$t" = iw5 ]; then
       r_aaSamples 2 r_picmip_manual 0 r_texFilterAnisoMax 16
   fi
   [ -f "$cfg" ] || : > "$cfg"
-  # The game's shader preload (r_preloadShaders) stalled the menu/loading screen
-  # for about a minute on its first run: keep it off. Compiled pipelines are
-  # saved in the DXVK state cache instead, so later visits do not compile them.
-  set_or_add "$cfg" r_preloadShaders 0
+  # The game's shader preload (r_preloadShaders): every material of a map is
+  # drawn once on its loading screen, so nothing compiles as play begins, as
+  # Black Ops' and World at War's shader warming. Off, a never-loaded map froze
+  # for 274 ms as play began (mp_bootleg, 2026-11-23); on, its loading screen
+  # took ~6 s longer (2-6 FPS while compiling) and play began at 147 FPS with
+  # no frame over 50 ms (mp_carbon). The compiled pipelines stay in the DXVK
+  # state cache, so later loads are quick; the very first start also preloads
+  # the menu's (a longer first start). IW5_PRELOAD=0: off.
+  if on IW5_PRELOAD; then set_or_add "$cfg" r_preloadShaders 1; else set_or_add "$cfg" r_preloadShaders 0; fi
   # No "Set Optimal Settings?" question at start-up (it waits for a click
   # before the game window opens, and would replace the settings above).
   set_or_add "$cfg" com_recommendedSet 1
@@ -2253,11 +2310,16 @@ if [ "$t:$mode" = iw5:mp ]; then
       set_or_add "$gamecfg" r_displayRefresh "$hz Hz"
     fi
   fi
-elif [ "$t" = iw5 ]; then
+fi
+if [ "$t" = iw5 ]; then
   # A 1x display mode of the resolution Modern Warfare 3 runs at, while it is
-  # fullscreen (as for BO1/BO2), so a HiDPI desktop is not scaled every frame.
+  # fullscreen (as for BO1/BO2), so a HiDPI desktop is not scaled every frame;
+  # an unscaled HiDPI desktop is kept (hold_1x_size). Both modes: the
+  # multiplayer had none, and the other mode passed "1920x1080" as one
+  # argument, which displaymode refused (it takes width and height), so it
+  # never held either (found by a code audit, 2026-11-23).
   if on DISPLAY_MODE && grep -q '^seta r_displayMode "fullscreen"' "$gamecfg"; then
-    hold_1x_size "$(sed -n -E 's/^seta r_mode "([0-9]+x[0-9]+)"/\1/p' "$gamecfg" | tail -1)"
+    hold_1x_size "$(sed -n -E 's/^seta r_mode "([0-9]+)x([0-9]+)"/\1 \2/p' "$gamecfg" | tail -1)"
   fi
 else
   hold_1x "$gamecfg"

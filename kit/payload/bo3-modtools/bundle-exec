@@ -1,0 +1,19 @@
+#!/bin/sh
+# Siliconium: X87_SIDECAR_PATH for the BO3 Mod Tools' launcher (bo3-modtools.sh).
+#
+# A program the launcher starts (a map test: BlackOps3.exe) runs on Wine's own
+# loader, whichever loader the launcher runs on: macOS then gives it no Game
+# Mode (only the executable of an app bundle of the games category gets it).
+# Wine's ntdll starts a program named in X87_SIDECAR_PROGRAMS (here only
+# BlackOps3.exe) as `<this> --cooperative <loader> <program>`; this starts it on
+# WINELOADER's "Siliconium Game" loader (tools/game-bundle.sh) instead, as
+# launch.sh starts the Steam Library's games, with no x87 sidecar (a 64-bit
+# game has no x87 code). Tested 2026-11-23: the hook covers 64-bit programs,
+# and Wine reads these variables from the launcher's own environment.
+[ "$1" = --cooperative ] && shift
+loader=$1
+shift
+case "${WINELOADER:-}" in
+  *.app/Contents/MacOS/*) [ -x "$WINELOADER" ] && loader=$WINELOADER ;;
+esac
+exec "$loader" "$@"

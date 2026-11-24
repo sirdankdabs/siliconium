@@ -355,8 +355,14 @@ struct SteamTitle: Identifiable {
               colors: Game.boiii.colors, linked: .boiii, linkedButton: "Play with BOIII", workshop: true, tools: "ModTools",
               modes: [.init(id: "sp", title: "Play", exe: "BlackOps3.exe")],
               // T7Patch was tried and taken out (session 10): under Wine the game
-              // crashed (+devmap) or hung loading a map with it
-              mods: [.init(id: "boiii", title: "Ezz (BOIII)", parts: "Its own tab",
+              // crashed (+devmap) or hung loading a map with it.
+              // Clean Ops (2026-11-23, owner's request): also used by a map test
+              // from the Mod Tools (bo3-modtools.sh); it updates itself
+              mods: [.init(id: "cleanops", title: "Clean Ops", parts: "Every mode",
+                           about: "The community patch for Black Ops III's Multiplayer: protection against exploits, crashes and remote attacks, its own cheater blacklist (listed players are kicked from lobbies with a Clean Ops player), peer-to-peer hosting with its own server browser and lobby tools, and an in-game menu that opens by itself when the game starts. That menu's key is Insert, which Mac keyboards lack: choose End (fn+→ on a Mac keyboard) as its Menu Hotkey there, once. It loads in every mode, and in the map tests the Mod Tools start. It updates itself from its author's GitHub when the game starts; Siliconium keeps its newest copy and its settings for the next game. Siliconium downloads it from its author the first time and takes it out of the game's folder when the game quits: the game's own files are never changed.",
+                           source: "https://cleanops.dev", license: "Closed source: downloaded from its author, never shipped",
+                           warning: "Closed source and packed, so antivirus tools may flag it. At every start it sends your Steam ID and IP address to its own server, and shares your IP with other Clean Ops players when you host."),
+                     .init(id: "boiii", title: "Ezz (BOIII)", parts: "Its own tab",
                            about: "Not a fix: opens the Black Ops III tab, where Ezz's BOIII client plays this same Steam download.",
                            source: "https://github.com/Ezz-lol/boiii-free", license: "GPL-3.0", opensLinked: true)]),
         // Infinite Warfare: one executable for the campaign, Multiplayer and
@@ -394,13 +400,22 @@ struct BattleNetTitle: Identifiable {
     let modes: String
     /// A known problem on a Mac that Siliconium cannot fix yet (shown under Play)
     var known: String? = nil
+    /// Community fixes the player can choose (kit/tools/steam-mods.sh, same ids;
+    /// settings.conf STEAM_MOD_<GAME>=<id>, as the Steam Library's)
+    var mods: [SteamTitle.Mod] = []
+
+    /// Black Ops 4: Project-BO4's Shield (offline client)
+    static let shield = SteamTitle.Mod(id: "shield", title: "Shield (Project-BO4)", parts: "Every mode",
+        about: "Project-BO4's Shield, the community client for Black Ops 4: its built-in Demonware server emulator plays the game without Battle.net's online services (Zombies, Multiplayer and Blackout, offline), with an in-game console and GSC and Lua mods (in the game folder's project-bo4/mods). With it, Play starts the game directly, not through Battle.net; Battle.net must have started the game once before (it downloads the files Shield needs). Siliconium uses Build R2, the community's update for the game's current version (project-bo4's own release closes the current game), downloads it from GitHub the first time and takes it out of the game's folder when the game quits, with Shield's own settings and log: the game's own files are never changed. Your progress with Shield is a separate offline profile.",
+        source: "https://github.com/project-bo4/shield-development", license: "GPL-3.0 (project-bo4; Build R2 by Scroptss)",
+        warning: "Unofficial: a community client, not Activision's or Blizzard's. Build R2 comes from a fork whose update project-bo4 has not merged yet.")
 
     static let catalog: [BattleNetTitle] = [
         // Black Ops 4: one executable for Zombies, Multiplayer and Blackout
         // (chosen in its own menu), Direct3D 11 on DXMT; sold only on Battle.net
         .init(id: "bo4", title: "Black Ops 4", year: "2018", badge: "T8",
               colors: [Color(red: 0.95, green: 0.42, blue: 0.12), Color(red: 0.26, green: 0.08, blue: 0.03)],
-              exe: "BlackOps4.exe", modes: "Zombies, Multiplayer, Blackout"),
+              exe: "BlackOps4.exe", modes: "Zombies, Multiplayer, Blackout", mods: [shield]),
     ]
 }
 
@@ -630,7 +645,7 @@ extension Patch {
               info: "Black Ops reads its video memory through DirectDraw, where Wine reported 128 MB and the game capped texture quality to fit. It now sees 4 GB.",
               games: [.waw, .bo1]),
         Patch(key: "BO1_XAUDIO", title: "Gunfire sound fix",
-              info: "Uses the XAudio2 from the game's own DirectX redistributable: with Wine's, Black Ops plays no gunfire sounds.",
+              info: "Uses the XAudio2 from the game's own DirectX redistributable: with Wine's, Black Ops plays no gunfire sounds. Also used by Steam's Black Ops (campaign, Zombies and Multiplayer).",
               games: [.bo1]),
         // Black Ops II
         Patch(key: "BO2_MOUSE_LAG_FIX", title: "Fix mouse lag",
@@ -862,8 +877,34 @@ final class AppState: ObservableObject {
         if Self.engineRunning {
             running = settings["LAST_GAME"].flatMap(Game.init(rawValue:)) ?? .bo1
             watchUntilStopped()
+        } else {
+            Self.restoreDisplayMode()
         }
         refreshCampaign()
+    }
+
+    /// A game's display mode hold (kit/tools/displaymode) that was killed
+    /// before it could put the desktop's mode back: put it back now, unless the
+    /// player chose another mode since. A hold that is still on is left alone.
+    nonisolated static func restoreDisplayMode() {
+        DispatchQueue.global(qos: .utility).async {
+            let fm = FileManager.default
+            let tool = Paths.kit.appendingPathComponent("tools/displaymode")
+            guard fm.isExecutableFile(atPath: tool.path) else { return }
+            let log = Paths.home.appendingPathComponent("logs/displaymode.log")
+            try? fm.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if !fm.fileExists(atPath: log.path) { fm.createFile(atPath: log.path, contents: nil) }
+            let p = Process()
+            p.executableURL = tool
+            p.arguments = ["restore"]
+            if let h = try? FileHandle(forWritingTo: log) {
+                h.seekToEndOfFile()
+                p.standardOutput = h
+                p.standardError = h
+            }
+            try? p.run()
+            p.waitUntilExit()
+        }
     }
 
     // Statuses
@@ -1539,6 +1580,16 @@ final class AppState: ObservableObject {
         return title.mods.first { $0.id == id && !$0.opensLinked }
     }
     func setSteamMod(_ title: SteamTitle, _ mod: SteamTitle.Mod?) {
+        settings["STEAM_MOD_\(title.id.uppercased())"] = mod?.id
+        settings.save()
+    }
+
+    /// The community fix chosen for a Battle.net game (nil: none, the game as it is)
+    func bnetMod(_ title: BattleNetTitle) -> SteamTitle.Mod? {
+        let id = settings["STEAM_MOD_\(title.id.uppercased())"]
+        return title.mods.first { $0.id == id }
+    }
+    func setBnetMod(_ title: BattleNetTitle, _ mod: SteamTitle.Mod?) {
         settings["STEAM_MOD_\(title.id.uppercased())"] = mod?.id
         settings.save()
     }

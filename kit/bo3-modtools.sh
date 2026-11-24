@@ -76,17 +76,19 @@ make_work() {
 # setx, which Wine does not have. One import of every value (regedit, UTF-16
 # as launch.sh's)
 reg_import() {   # [<key>] <name>=<value> | -<name> (removed) ...
-  local f kv v
+  local f kv n v
   f=$(mktemp "$home/cache/sil-reg.XXXXXX") || return 1
   { printf '\xff\xfe'
     { printf 'Windows Registry Editor Version 5.00\r\n\r\n'
       for kv in "$@"; do
+        # (a name can be a path: its backslashes escaped as the value's)
         case "$kv" in
           \[*) printf '\r\n%s\r\n' "$kv"; continue ;;
-          -*) printf '"%s"=-\r\n' "${kv#-}"; continue ;;
+          -*) n=${kv#-}; n=${n//\\/\\\\}; printf '"%s"=-\r\n' "${n//\"/\\\"}"; continue ;;
         esac
+        n=${kv%%=*}; n=${n//\\/\\\\}; n=${n//\"/\\\"}
         v=${kv#*=}; v=${v//\\/\\\\}; v=${v//\"/\\\"}
-        printf '"%s"="%s"\r\n' "${kv%%=*}" "$v"
+        printf '"%s"="%s"\r\n' "$n" "$v"
       done
     } | iconv -f UTF-8 -t UTF-16LE
   } > "$f"
@@ -127,8 +129,10 @@ start)
     [ "$sil_copy_error" = clones ] &&
       die "the Mod Tools need Black Ops III and the Mod Tools in Steam's library on this Mac's disk (APFS): Siliconium puts them together without copying them"
     die "${sil_copy_error:-could not prepare the Mod Tools workspace in $home/bo3-modtools}"; }
-  # a minute after the tools close, Steam's files leave the workspace
-  trap '( /bin/bash "$kit/tools/steam-copy.sh" release bo3-modtools "$sil_copy_dir" "$sil_copy_gen" 60 > /dev/null 2>&1 & )' EXIT
+  # a minute after the tools close, Steam's files leave the workspace; the
+  # game's community fix (below) leaves it at once
+  trap '{ declare -F steam_mod_remove > /dev/null && steam_mod_remove "$ws"; }
+        ( /bin/bash "$kit/tools/steam-copy.sh" release bo3-modtools "$sil_copy_dir" "$sil_copy_gen" 60 > /dev/null 2>&1 & )' EXIT
   make_work || printf '%s\n' "Warning: could not make $work" >&2
   # The launcher's own script (modtools_launcher.bat): both roots = the
   # workspace, the asset cache in its share\assetconvert. Drawing: Radiant's,
@@ -296,6 +300,40 @@ start)
   [ -e "$ws/bin/t7_layered_material_library.txt" ] ||
     printf 'LayeredMaterialLibrary 1\n' > "$ws/bin/t7_layered_material_library.txt" ||
     die "could not prepare Radiant's layered-material library"
+  # The community fix the player chose for Black Ops III in the Steam Library
+  # (tools/steam-mods.sh, STEAM_MOD_BO3), when it also suits a map test
+  # (md_tools: Clean Ops): a map test is the game started from the workspace
+  # (the launcher's Run), so the fix goes there while the tools run, as into
+  # Steam's folder for Play, and leaves with them (the exit trap above). None
+  # or another fix: the game as before (what an earlier start left goes)
+  [ -n "${STEAM_MOD_BO3+x}" ] ||
+    STEAM_MOD_BO3=$(sed -n 's/^[[:space:]]*STEAM_MOD_BO3[[:space:]]*=[[:space:]]*\([A-Za-z0-9_]*\).*/\1/p' \
+                    "$home/settings.conf" 2> /dev/null | head -n 1)
+  reg_pending=()
+  reg() {   # steam-mods.sh's registry calls (as launch.sh's): into the import below
+    local op=$1 key=$2 name= data=
+    shift 2
+    while [ $# -gt 0 ]; do case "$1" in /v) name=$2; shift 2 ;; /d) data=$2; shift 2 ;; *) shift ;; esac; done
+    reg_pending+=("[HKEY_CURRENT_USER\\${key#HKCU\\}]")
+    if [ "$op" = add ]; then reg_pending+=("$name=$data"); else reg_pending+=("-$name"); fi
+  }
+  s_id=bo3 s_part=sp s_exe=BlackOps3.exe s_pad=native s_argv=() steam_x87_programs= m_tools=1
+  . "$kit/tools/steam-mods.sh"
+  m_record="$home/bo3-modtools/mod-installed.list"
+  steam_mod_prepare "$ws" || die "$m_error"
+  steam_mod_args "$ws"
+  [ "$m_mod" = none ] || printf '%s\n' "Community fix for map tests: $m_mod" >> "$log"
+  # A map test runs as the launcher's Steam app: the launcher starts
+  # BlackOps3.exe with its own environment (as on Windows), where Steam's
+  # sign-in leaves its app ID. A fix whose server checks the game's Steam
+  # ticket (md_appid: Clean Ops takes Black Ops III's only, and closed the
+  # game) needs the game's: the launcher then runs as that app (Steam shows the
+  # tools as Black Ops III). Tried first (2026-11-23): the launcher from bin\
+  # with a steam_appid.txt naming the tools and one naming Black Ops III where
+  # the map test starts; Steam still counted the game as the tools' (455130)
+  # and Clean Ops refused it again. None or another fix: the tools' app
+  mt_app=$app
+  if [ "$m_mod" != none ] && steam_mod_def "$m_mod" && [ -n "$md_appid" ]; then mt_app=$md_appid; fi
   # The Steam Library's cursor fix (launch.sh: an invisible Mac cursor, the Dock
   # and menu bar hidden) stays in the prefix after a game and reached the
   # tools the launcher starts (logs: "[Si14]: BO2 cursor workaround enabled"):
@@ -319,7 +357,8 @@ start)
              "[$ov\\cod2map64.exe\\DllOverrides]" msvcr110=native,builtin msvcp110=native,builtin \
                windowscodecs=native,builtin d3d11=builtin \
              "[$ov\\linker_modtools.exe\\DllOverrides]" msvcr110=native,builtin msvcp110=native,builtin d3d11=builtin \
-             "[$ov\\umbraconvert.exe\\DllOverrides]" windowscodecs=native,builtin
+             "[$ov\\umbraconvert.exe\\DllOverrides]" windowscodecs=native,builtin \
+             ${reg_pending[@]+"${reg_pending[@]}"}
   unset SIL_BO2_TRANSPARENT_CURSOR __CX_UNIX_SIL_BO2_TRANSPARENT_CURSOR
   # The linker hung for good after its first image with all 10 cores of an
   # M1 Pro shown to it (0 % CPU; ProtonDB reports the same on Linux): with the
@@ -333,12 +372,41 @@ start)
   # the engine's GStreamer, as for the Steam Library's Black Ops III
   export GST_PLUGIN_SYSTEM_PATH_1_0="$engine/lib64/gstreamer-1.0" GST_PLUGIN_PATH_1_0= \
          GST_REGISTRY_1_0="$home/cache/gstreamer-registry.bin"
-  printf '%s\n' "--- $(date) Mod Tools: $ws ($root)" >> "$log"
+  # macOS Game Mode, as for the games (tools/game-bundle.sh; GAME_MODE=0 in
+  # settings.conf: off): the launcher runs on the "Siliconium Game" loader
+  # (WINELOADER), and so does a map test. Wine starts every program another
+  # one starts on its own loader, whatever the parent runs on (tested
+  # 2026-11-23: the map test ran on it, no Game Mode); the one hook it has
+  # per program (X87_SIDECAR_PROGRAMS, read from the launcher's environment)
+  # starts BlackOps3.exe through payload/bo3-modtools/bundle-exec, which puts
+  # the game on WINELOADER's loader (no x87 sidecar: a 64-bit game). The other
+  # tools stay windowed on Wine's loader; Steam and the setup above stay on
+  # the engine's own loader
+  [ -n "${GAME_MODE+x}" ] ||
+    GAME_MODE=$(sed -n 's/^[[:space:]]*GAME_MODE[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+                "$home/settings.conf" 2> /dev/null | head -n 1)
+  . "$kit/tools/game-bundle.sh"
+  mt_wine=$wine gm_env=(-u WINELOADER -u X87_SIDECAR_PATH -u X87_SIDECAR_PROGRAMS)
+  # The map test's hook is opt-in for now (MODTOOLS_GAME_MODE=1 in
+  # settings.conf): tested in an isolated prefix only, never seen in a real
+  # map test yet; the launcher on the Game Mode loader is tested (2026-11-23)
+  [ -n "${MODTOOLS_GAME_MODE+x}" ] ||
+    MODTOOLS_GAME_MODE=$(sed -n 's/^[[:space:]]*MODTOOLS_GAME_MODE[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+                         "$home/settings.conf" 2> /dev/null | head -n 1)
+  if [ "${GAME_MODE:-1}" != 0 ] && gb=$(game_bundle "$wine"); then
+    mt_wine=$gb
+    gm_env=(-u X87_SIDECAR_PATH -u X87_SIDECAR_PROGRAMS WINELOADER="$gb")
+    if [ "${MODTOOLS_GAME_MODE:-0}" = 1 ] && [ -x "$kit/payload/bo3-modtools/bundle-exec" ]; then
+      gm_env=(WINELOADER="$gb" X87_SIDECAR_PATH="$kit/payload/bo3-modtools/bundle-exec" X87_SIDECAR_PROGRAMS=BlackOps3.exe)
+    fi
+  fi
+  printf '%s\n' "--- $(date) Mod Tools: $ws ($root)${gb:+ [Game Mode loader]}" >> "$log"
   step "Opening the Mod Tools"
-  # Started directly with Steam's app ID, as the Steam Library starts its games,
-  # by its path on the workspace's drive: the process then names it, as the
-  # tools it starts do (with "./bin/…" the wait below did not see it)
-  (cd "$ws" && SteamAppId=$app SteamGameId=$app "$wine" "${root}bin\\modlauncher.exe" >> "$log" 2>&1 &)
+  # Started directly with Steam's app ID (the tools', or a fix's: above), as
+  # the Steam Library starts its games, by its path on the workspace's drive:
+  # the process then names it, as the tools it starts do (with "./bin/…" the
+  # wait below did not see it)
+  (cd "$ws" && env "${gm_env[@]}" SteamAppId=$mt_app SteamGameId=$mt_app "$mt_wine" "${root}bin\\modlauncher.exe" >> "$log" 2>&1 &)
   # Every tool runs from the workspace (bin\…), and a map test is the game
   # from there: wait until none of them is left
   tools_re=$(sil_copy_exe bo3-modtools)

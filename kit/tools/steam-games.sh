@@ -48,8 +48,10 @@ steam_title() {
     mw2:mp)   s_exe=iw4mp.exe         s_app=10190  s_api=d3d9x64  s_own=0 s_async=2 s_name="Modern Warfare 2 Multiplayer" ;;
     mw3:sp)   s_exe=iw5sp.exe         s_app=42680  s_api=d3d9x64  s_own=0 s_async=1 s_name="Modern Warfare 3" ;;
     mw3:mp)   s_exe=iw5mp.exe         s_app=42690  s_api=d3d9x64  s_own=0 s_async=1 s_name="Modern Warfare 3 Multiplayer" ;;
-    bo1:sp)   s_exe=BlackOps.exe      s_app=42700  s_api=d3d9     s_own=0 s_async=1 s_pad=native s_name="Black Ops" ;;
-    bo1:mp)   s_exe=BlackOpsMP.exe    s_app=42710  s_api=d3d9     s_own=0 s_async=1 s_pad=native s_name="Black Ops Multiplayer" ;;
+    # Black Ops: 2 as Plutonium's (launch.sh, BO1_ASYNC_LEVEL; 2026-11-23: new
+    # maps loaded 3x faster without the 0.4-1 s render-thread compiles)
+    bo1:sp)   s_exe=BlackOps.exe      s_app=42700  s_api=d3d9     s_own=0 s_async=2 s_pad=native s_name="Black Ops" ;;
+    bo1:mp)   s_exe=BlackOpsMP.exe    s_app=42710  s_api=d3d9     s_own=0 s_async=2 s_pad=native s_name="Black Ops Multiplayer" ;;
     bo2:sp)   s_exe=t6sp.exe          s_app=202970 s_api=d3d11    s_own=0 s_kind=t6 s_pad=native s_name="Black Ops II" ;;
     bo2:mp)   s_exe=t6mp.exe          s_app=202990 s_api=d3d11    s_own=0 s_kind=t6 s_pad=native s_name="Black Ops II Multiplayer" ;;
     bo2:zm)   s_exe=t6zm.exe          s_app=212910 s_api=d3d11    s_own=0 s_kind=t6 s_pad=native s_name="Black Ops II Zombies" ;;
@@ -197,6 +199,14 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
   local dir=$1 w=$2 h=$3 hz=$4 marks=$5 files=() f p
   case "$s_id" in
     cod4|waw)
+      # World at War reads its profiles from AppData (Activision\CoDWaW, made
+      # by its first start), not from the game's folder: writing them there
+      # changed nothing and left a players folder in the game's folder. Before
+      # its first start (no AppData profile yet) its command line does it all.
+      if [ "$s_id" = waw ]; then
+        dir=$(ls -d "$WINEPREFIX"/drive_c/users/*/AppData/Local/Activision/CoDWaW 2>/dev/null | head -1)
+        [ -n "$dir" ] && [ -f "$dir/players/profiles/active.txt" ] || return 0
+      fi
       # profiles: the active one, else a "Player" profile made for it
       p=$(tr -d '\r\n' < "$dir/players/profiles/active.txt" 2>/dev/null)
       if [ -z "$p" ]; then p=Player; mkdir -p "$dir/players/profiles/$p"; printf '%s' "$p" > "$dir/players/profiles/active.txt"; fi
@@ -226,6 +236,9 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
           steam_cfg_set "$f" r_textureMode trilinear
           : > "$m"
         fi
+        # fullscreen every start, as the other Steam games (its profile loads
+        # after the command line); STEAM_SCREEN=0 keeps a window
+        [ "${STEAM_SCREEN:-1}" != 0 ] && steam_cfg_set "$f" r_fullscreen 1
         if [ -n "$w" ] && [ -n "$h" ]; then
           cur=$(sed -n -E 's/^seta r_mode "([0-9]+)x([0-9]+)".*/\1 \2/p' "$f" | tail -1)
           if [ -n "$cur" ] && { [ "${cur% *}" -gt "$w" ] || [ "${cur#* }" -gt "$h" ]; }; then steam_cfg_set "$f" r_mode "${w}x$h"; fi
@@ -287,6 +300,9 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
       mkdir -p "$dir/players2" "$marks" && { [ -f "$f" ] || : > "$f"; } || return 0
       [ -n "$w" ] && [ -n "$h" ] && steam_cfg_set "$f" r_mode "${w}x$h"
       [ -n "$hz" ] && steam_cfg_set "$f" r_refreshRate "$hz.00 Hz"
+      if [ "${STEAM_SCREEN:-1}" != 0 ]; then   # fullscreen every start (as the other games)
+        steam_cfg_set "$f" r_fullscreen 1; steam_cfg_set "$f" r_fullscreenWindow 0
+      fi
       if [ ! -f "$marks/.defaults-aw-$s_part" ]; then
         steam_cfg_set "$f" r_fullscreen 1
         steam_cfg_set "$f" r_fullscreenWindow 0
@@ -376,6 +392,13 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
       mkdir -p "$dir/players2" && { [ -f "$f" ] || : > "$f"; } || return 0
       [ -n "$w" ] && [ -n "$h" ] && steam_cfg_set "$f" r_mode "${w}x$h"
       [ -n "$hz" ] && steam_cfg_set "$f" r_refreshRate "$hz.00 Hz"
+      # Fullscreen every start: the multiplayer profile had r_fullscreen "0"
+      # (2026-11-23: a 1920x1080 window at the desktop's level, which the player
+      # could drag, composited, not fullscreen). WW2_SCREEN=0 keeps a window the
+      # player chose in the game's options.
+      if [ "${WW2_SCREEN:-${STEAM_SCREEN:-1}}" != 0 ]; then
+        steam_cfg_set "$f" r_fullscreen 1; steam_cfg_set "$f" r_fullscreenWindow 0
+      fi
       # The multiplayer executable's frame-rate cap (its own default 85) comes
       # from this profile's com_maxfps, not from the command line: with
       # "+set com_maxfps 160" (and "+com_maxfps 160") its frame limiter still
@@ -413,6 +436,10 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
       steam_cfg_set "$f" com_introPlayed 1
       : > "$m"
     fi
+    # Fullscreen every start, also in the profile (Modern Warfare 2 ignored
+    # "+set" on the command line; WWII's profile had turned windowed by itself).
+    # STEAM_SCREEN=0 keeps a window the player chose in the game's options.
+    [ "${STEAM_SCREEN:-1}" != 0 ] && steam_cfg_set "$f" r_fullscreen 1
     if [ -n "$w" ] && [ -n "$h" ]; then
       local cur
       cur=$(sed -n -E 's/^seta r_mode "([0-9]+)x([0-9]+)".*/\1 \2/p' "$f" | tail -1)
@@ -425,6 +452,12 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
     # vsync the multiplayer presented FIFO and sat at about 44 FPS); the
     # frame cap above keeps it at the refresh rate
     case "$s_id" in mw2|mw3) steam_cfg_set "$f" r_vsync 0 ;; esac
+    # Modern Warfare 3: the game's shader preload on, as for Plutonium's MW3
+    # (launch.sh, IW5_PRELOAD): a map's shaders compile on its loading screen
+    # instead of freezing the first moments of play
+    if [ "$s_id" = mw3 ]; then
+      if on IW5_PRELOAD; then steam_cfg_set "$f" r_preloadShaders 1; else steam_cfg_set "$f" r_preloadShaders 0; fi
+    fi
     # Black Ops, as Siliconium sets it for Plutonium: no shadow maps (they
     # froze it, BO1_NO_SHADOWS=0 keeps them) and no texture streaming
     # (STREAM=1 keeps it)

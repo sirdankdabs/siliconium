@@ -27,9 +27,27 @@
 #   md_args   arguments added to the game's
 #   md_keep   1: launch.sh sets those DLLs' load order itself every start
 #             (nothing to undo when another fix or none is chosen)
-steam_mod_all="iw3spmod iwpad t4me t6spmod t7patch bo1pad"
+#   md_load   DLLs the game loads from its folder in place of Wine's own: that
+#             one file native (its full path in this executable's load order),
+#             so the same DLL loaded from the system folder stays Wine's
+#   md_self   files the fix updates itself (its own updater, from its author):
+#             taken out when the game quits whatever they hold, with what the
+#             updater leaves beside them (names starting like theirs that the
+#             folder did not have); an updated copy (whole, and the fix's by
+#             the internal name md_selfid in its version information) is kept
+#             in mods/<mod>/self/ for the next start
+#   md_state  folders and files the fix keeps its state in (settings, logs,
+#             what it downloads) in the game's folder: kept in
+#             mods/<mod>/state/ between games
+#   md_tools  1: also used when the game's Mod Tools start it (a map test,
+#             bo3-modtools.sh, which sets m_tools=1)
+#   md_appid  the Steam app the game must run as for the fix (its server
+#             checks the game's Steam ticket): the Mod Tools then run as that
+#             app, so their map tests do too (bo3-modtools.sh)
+steam_mod_all="iw3spmod iwpad t4me t6spmod t7patch bo1pad cleanops shield"
 steam_mod_def() {
   md_game= md_parts= md_base= md_zip=() md_exe= md_start= md_extra= md_pad= md_dlls= md_conf= md_keep= md_args=()
+  md_load= md_self= md_selfid= md_state= md_tools= md_appid=
   case "$1" in
     # T4Me (T4M Enhanced, JBShady; no licence, so downloaded from its GitHub
     # release): World at War's campaign and Zombies with higher engine limits,
@@ -79,6 +97,28 @@ steam_mod_def() {
              md_zip=(https://github.com/Scroptss/T7Patch/releases/download/v3.09/Linux.Steamdeck.and.Manual.Windows.Install.v3.09.zip
                      2ba9a3ad6e491f991561dae411522cfdb20111a639317669a5810675982409cf
                      Linux.Steamdeck.and.Manual.Windows.Install.v3.09/linux) ;;
+    # Clean Ops (nxghtwolf; closed source, no licence, so downloaded from its
+    # author: the d3d11.dll cleanops.dev/download/ serves, from its GitHub at
+    # the commit that published that build): Black Ops III's community patch
+    # for Multiplayer (exploit and crash protection, its cheater blacklist,
+    # its own lobby tools and server browser, an in-game menu). Its d3d11.dll
+    # in the game's folder hands drawing on to the system's Direct3D 11: that
+    # file alone loads native (md_load), so the Direct3D 11 it loads from the
+    # system folder stays the engine's DXMT, as without it (a plain
+    # d3d11=native,builtin chained to Steam's prefix's system32 d3d11.dll,
+    # Advanced Warfare's DXMT; tested 2026-11-23). It updates itself from its
+    # GitHub at the game's start (an older build may be refused online): its
+    # newest copy is kept for the next start (md_self). Its folder (cleanops/:
+    # settings, logs, the files it downloads the first time) and its menu's
+    # window positions (imgui.ini, Dear ImGui's file, written into the game's
+    # folder: seen 2026-11-23) are kept in Siliconium's folder between games.
+    # A map test from the Mod Tools uses it too (md_tools), as Black Ops III
+    # (md_appid): its server refused the Mod Tools' Steam ticket (app 455130,
+    # which a map test inherits from the launcher) and it closed the game
+    # ("Exiting: Could not establish a secure connection", 2026-11-23).
+    cleanops) md_game=bo3 md_parts=sp md_load=d3d11 md_self=d3d11.dll md_selfid=cleanopsT7 md_tools=1
+              md_state="cleanops imgui.ini" md_appid=311210
+              md_base=https://raw.githubusercontent.com/notnightwolf/cleanopsT7/a6e4a42778e95559301296347328255faccfb132/ ;;
     # IW3SP-MOD (JerryALT, GPL-3.0; gitea.com/JerryALT/iw3sp_mod): Call of
     # Duty 4's campaign with its own controller support (console aim assist),
     # no frame cap, raw mouse. Its executable (iw3sp_mod.exe + game.dll) has
@@ -108,6 +148,22 @@ steam_mod_def() {
     bo1pad) md_game=bo1 md_parts=sp md_dlls=xinput1_3 md_conf=bo1pad.ini md_extra=bo1pad.log
             md_zip=(https://github.com/Castlesea/BO1-Gamepad-Plus/releases/download/v1.0/BO1-Gamepad-Plus-v1.0.zip
                     4d50d41953e176f40ce303f8ab1d45e960d580c298cd69498d7f0152e5be0750 .) ;;
+    # Shield (project-bo4, GPL-3.0; github.com/project-bo4/shield-development;
+    # its "Build R2" for the game's June 2026 build from Scroptss' fork, the
+    # offsets update sent to project-bo4 as PR #76: project-bo4's own R1 closes
+    # the current game): Battle.net's Black Ops 4 without
+    # its online services, from its XInput9_1_0.dll proxy in the game's folder
+    # (native, BlackOps4.exe only): a built-in Demonware server emulator
+    # (offline play), an in-game console, GSC and Lua mods. Its instructions
+    # start the game as BlackOps4.exe, not through Battle.net: so does
+    # tools/battlenet-games.sh with it. It needs the publisher files that
+    # Battle.net's first start of the game downloads (the folder's LPC).
+    # Its own settings, log and mods/plugins folders (made in the game's folder
+    # at its first start, 2026-11-23) are kept in Siliconium's folder between
+    # games; the offline profile it plays with is the game's own
+    # (players/bnet-<id>), left in place.
+    shield) md_game=bo4 md_parts=all md_dlls=xinput9_1_0 md_state="project-bo4 project-bo4.json project-bo4.log"
+            md_base=https://github.com/Scroptss/shield-development/releases/download/XInput9_1_0.dll/ ;;
     *) return 1 ;;
   esac
 }
@@ -117,8 +173,44 @@ m_store="$home/mods"
 steam_mod_for() { case " $md_game " in *" $1 "*) return 0 ;; esac; return 1; }
 m_record="$home/cache/steam-${s_id:-x}/mod-installed.list"
 
+# The Windows path Wine gives a Mac folder in Steam's prefix (Wine's own rule:
+# the drive whose folder is the deepest one holding it, the first letter on a
+# tie; the rest with backslashes), as a game started from there sees its folder
+steam_mod_dospath() {   # <folder>
+  local dir l t best= bl= rest
+  dir=$(cd -P -- "$1" 2> /dev/null && pwd -P) || return 1
+  for l in a b c d e f g h i j k l m n o p q r s t u v w x y z; do
+    t=$(cd -P -- "$WINEPREFIX/dosdevices/$l:" 2> /dev/null && pwd -P) || continue
+    case "$dir/" in "${t%/}/"*) [ ${#t} -gt ${#best} ] && best=$t bl=$l ;; esac
+  done
+  [ -n "$bl" ] || return 1
+  rest=${dir#"${best%/}"}
+  printf '%s:%s' "$(printf '%s' "$bl" | tr '[:lower:]' '[:upper:]')" "${rest//\//\\}"
+}
+
+# A copy of a file a fix updated itself (md_self): kept only when it is that
+# fix's and whole (a Windows program as long as its sections say, whose
+# version information has the fix's internal name, md_selfid), not a
+# half-written one. Shell tools only (python3 may be Xcode's install prompt)
+steam_mod_self_ok() {   # <copy> <the fix's internal name>
+  local f=$1 o n s i end max=0
+  [ -f "$f" ] && [ -n "$2" ] && [ "$(head -c 2 "$f" 2> /dev/null)" = MZ ] || return 1
+  o=$(steam_mod_le "$f" 4 60)
+  [ -n "$o" ] && [ "$(dd if="$f" bs=1 skip="$o" count=4 2> /dev/null | od -An -t x1 | tr -d ' \n')" = 50450000 ] || return 1
+  n=$(steam_mod_le "$f" 2 $((o + 6))) s=$((o + 24 + $(steam_mod_le "$f" 2 $((o + 20)))))
+  for (( i = 0; i < ${n:-0}; i++ )); do
+    end=$(( $(steam_mod_le "$f" 4 $((s + 40 * i + 20))) + $(steam_mod_le "$f" 4 $((s + 40 * i + 16))) ))
+    [ "$end" -gt "$max" ] && max=$end
+  done
+  [ "$max" -gt 0 ] && [ "$(stat -f %z "$f")" -ge "$max" ] || return 1
+  [ "$(LC_ALL=C tr -d '\000' < "$f" | LC_ALL=C grep -c -a -F "InternalName$2")" -gt 0 ]
+}
+steam_mod_le() { od -An -t "u$2" -j "$3" -N "$2" "$1" 2> /dev/null | tr -d ' \n'; }   # <file> <bytes> <offset>
+
 # The fix chosen for this game and part (m_mod; none when there is none),
 # downloaded and put into the game's folder. Returns 1 with m_error set.
+# m_tools=1 (bo3-modtools.sh): only a fix that is also for a map test from the
+# game's Mod Tools (md_tools); any other is left out there
 steam_mod_prepare() {   # <game folder>
   local dir=$1 key want
   steam_mod_remove "$dir"   # what a crash left behind
@@ -128,28 +220,41 @@ steam_mod_prepare() {   # <game folder>
   [ "$want" = none ] && return 0
   steam_mod_def "$want" && steam_mod_for "$s_id" || return 0   # unknown here: the plain game
   case " $md_parts " in *" $s_part "*) ;; *) return 0 ;; esac
+  [ -n "${m_tools:-}" ] && [ -z "$md_tools" ] && return 0
   m_mod=$want
   steam_mod_fetch "$m_mod" || return 1
   steam_mod_install "$dir" || return 1
   [ -n "$md_exe" ] && s_exe=$md_exe
   m_start=$md_start
   [ "$md_pad" = native ] && s_pad=native
-  steam_x87_programs="$steam_x87_programs:$s_exe"
+  # a fix that starts the game its own way: the x87 sidecar's list names it
+  # (one that only adds files leaves the game's start as it was: Black Ops
+  # III, 64-bit, is not in that list)
+  [ -n "$md_exe$md_start" ] && steam_x87_programs="$steam_x87_programs:$s_exe"
   return 0
 }
 
 # The fix's arguments and settings, after steam_args / steam_config
 steam_mod_args() {   # <game folder>
-  local m d
-  # the DLL overrides of this game's fixes: only the chosen one's stay
+  local m d dos=
+  # the DLL overrides of this game's fixes: only the chosen one's stay (a
+  # file's own load order by its full path in this folder, md_load)
   for m in $steam_mod_all; do
     [ "$m" = "$m_mod" ] && continue
     steam_mod_def "$m" && steam_mod_for "$s_id" && [ -z "$md_keep" ] || continue
     for d in $md_dlls; do reg delete "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v "$d" /f; done
+    for d in $md_load; do
+      [ -n "$dos" ] || dos=$(steam_mod_dospath "$1") || continue
+      reg delete "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v "$dos\\$d" /f
+    done
   done
   [ "$m_mod" = none ] && return 0
   steam_mod_def "$m_mod"
   for d in $md_dlls; do reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v "$d" /d native,builtin /f; done
+  for d in $md_load; do
+    [ -n "$dos" ] || dos=$(steam_mod_dospath "$1") || continue
+    reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v "$dos\\$d" /d native,builtin /f
+  done
   s_argv+=(${md_args[@]+"${md_args[@]}"})
   case "$m_mod" in
     t7patch)
@@ -269,15 +374,25 @@ steam_mod_fetch_zip() {   # <mod> <file list>
 # Into the game's folder: only names the game does not have (or ours, the same
 # bytes); each file and each folder made is written down for steam_mod_remove
 steam_mod_install() {   # <game folder>
-  local dir=$1 sum size path src dst sub d kind
+  local dir=$1 sum size path src dst sub d kind n
   mkdir -p "$(dirname "$m_record")"
   printf 'mod %s\n' "$m_mod" > "$m_record"
+  # the names starting like a file the fix updates itself that the folder
+  # has already: steam_mod_remove leaves them
+  for path in $md_self; do
+    [ -n "${path%.*}" ] || continue
+    for n in "$dir/${path%.*}"*; do [ -e "$n" ] && printf 'k %s\n' "${n#"$dir/"}" >> "$m_record"; done
+  done
   while read -r sum size path; do
     case "$sum" in ''|\#*) continue ;; esac
     src="$m_store/$m_mod/files/$path" dst="$dir/$path" kind=f
     # a settings file: the player's own copy once there is one
     case " $md_conf " in
       *" $path "*) kind=c; [ -f "$m_store/$m_mod/${path##*/}" ] && src="$m_store/$m_mod/${path##*/}" ;;
+    esac
+    # a file the fix updates itself: its newest copy once there is one
+    case " $md_self " in
+      *" $path "*) kind=u; steam_mod_self_ok "$m_store/$m_mod/self/$path" "$md_selfid" && src="$m_store/$m_mod/self/$path" ;;
     esac
     if [ -e "$dst" ] && ! cmp -s "$src" "$dst"; then
       steam_mod_remove "$dir"
@@ -297,6 +412,13 @@ steam_mod_install() {   # <game folder>
     printf '%s %s\n' "$kind" "$path" >> "$m_record"
   done < "$kit/payload/steam/mods/$m_mod.files"
   for path in $md_extra; do [ -e "$dir/$path" ] || printf 'x %s\n' "$path" >> "$m_record"; done
+  # its state (folders, files): the player's, from Siliconium's folder (one
+  # the game's folder has already is the player's own: used, and left there)
+  for path in $md_state; do
+    [ -n "$path" ] && [ "${path#*/}" = "$path" ] && [ ! -e "$dir/$path" ] || continue
+    printf 's %s\n' "$path" >> "$m_record"
+    [ -e "$m_store/$m_mod/state/$path" ] && mv "$m_store/$m_mod/state/$path" "$dir/$path"
+  done
   case "$m_mod" in
     t4me)
       # its settings, our DXVK as its dxvk.dll (the engine's carries Wine's
@@ -323,7 +445,7 @@ steam_mod_install() {   # <game folder>
 # What steam_mod_install put into the game's folder goes: files still the
 # fix's (same bytes as Siliconium's copy), then the folders it made, if empty
 steam_mod_remove() {   # <game folder>
-  local dir=$1 kind path mod= dirs=() i
+  local dir=$1 kind path mod= dirs=() keep=() selfs=() i n k x id
   [ -f "$m_record" ] || return 0
   while read -r kind path; do
     case "$kind" in
@@ -333,8 +455,36 @@ steam_mod_remove() {   # <game folder>
       c) [ -n "$mod" ] && [ -f "$dir/$path" ] && cp "$dir/$path" "$m_store/$mod/${path##*/}" && rm -f "$dir/$path" ;;
       d) dirs+=("$path") ;;
       x) rm -f "$dir/$path" ;;   # made because of the fix (the folder had none)
+      # a file the fix updates itself: out, whatever it holds (the folder had
+      # none); a copy its updater changed is kept for the next start
+      u) if [ -n "$mod" ] && [ -f "$dir/$path" ]; then
+           id=$(steam_mod_def "$mod" && printf '%s' "$md_selfid")
+           if ! cmp -s "$m_store/$mod/files/$path" "$dir/$path" && steam_mod_self_ok "$dir/$path" "$id"; then
+             mkdir -p "$(dirname "$m_store/$mod/self/$path")" && mv -f "$dir/$path" "$m_store/$mod/self/$path"
+           fi
+           rm -f "$dir/$path"
+         fi
+         [ -n "${path%.*}" ] && selfs+=("$path") ;;
+      k) keep+=("$path") ;;
+      # the fix's state (a folder or a file): kept in Siliconium's folder until
+      # the next game (a name in the game's folder, never the folder itself)
+      s) if [ -n "$mod" ] && [ -n "$path" ] && [ "${path#*/}" = "$path" ] && [ "$path" != . ] && [ "$path" != .. ] &&
+            [ -e "$dir/$path" ]; then
+           mkdir -p "$m_store/$mod/state" && rm -rf "$m_store/$mod/state/$path" &&
+             mv "$dir/$path" "$m_store/$mod/state/$path"
+         fi ;;
     esac
   done < "$m_record"
+  # what an updater left beside those files (an old copy, a disabled one):
+  # names the folder did not have
+  for path in ${selfs[@]+"${selfs[@]}"}; do
+    for n in "$dir/${path%.*}"*; do
+      [ -f "$n" ] || continue
+      k=
+      for x in ${keep[@]+"${keep[@]}"}; do [ "$x" = "${n#"$dir/"}" ] && k=1; done
+      [ -n "$k" ] || rm -f "$n"
+    done
+  done
   for (( i=${#dirs[@]}-1; i>=0; i-- )); do rmdir "$dir/${dirs[$i]}" 2>/dev/null; done
   rm -f "$m_record"
   return 0

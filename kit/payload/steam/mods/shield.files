@@ -1,0 +1,6 @@
+# Shield (project-bo4, GPL-3.0), "Project-BO4 DLL Build R2": the community update for Black Ops 4's
+# June 2026 build (Scroptss' fork, commit 42b651b "Update Offsets" = project-bo4 PR #76, offsets only),
+# released 2026-08-24. project-bo4's own release (R1, 2024-09-03, SHA-256 c669c617…9954) closes the
+# current game ~7 s after the start.
+# https://github.com/Scroptss/shield-development/releases/download/XInput9_1_0.dll/XInput9_1_0.dll
+318fc7e6dc38d587a1218a00dede1782810a4214998211133227940e0403b5cb 1960960 XInput9_1_0.dll

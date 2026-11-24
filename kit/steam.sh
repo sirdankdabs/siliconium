@@ -105,12 +105,41 @@ gamedir() {
   dir=$(sed -n -E 's/^[[:space:]]*"installdir"[[:space:]]*"(.*)"/\1/p' "$m")
   [ -n "$dir" ] && [ -d "$(dirname "$m")/common/$dir" ] && echo "$(dirname "$m")/common/$dir"
 }
-# StateFlags 4 = fully installed (other values: downloading, update needed…)
+# StateFlags 4 = fully installed (other values: downloading, update needed…).
+# Installed also takes the game's files: Steam keeps the manifest (StateFlags 4)
+# of a game whose files were deleted, and Steam Cloud puts its saves back in
+# its folder (players/), so an .exe in the folder (or one level down: the Mod
+# Tools' are in bin/). Without one the app is missing again (request_download).
+# A part that shares its folder with another (Modern Warfare 2/3: campaign and
+# multiplayer are two apps in one folder) is installed only with its own
+# executable (tools/steam-games.sh), not with the other part's.
+app_exe_table=
+app_exes() {
+  [ -n "$app_exe_table" ] || app_exe_table=$(sed -n -E 's/.*s_exe=([^ ]+) +s_app=([0-9]+) .*/\2 \1/p' "$kit/tools/steam-games.sh" 2>/dev/null)
+  awk -v a="$1" '$1 == a {print $2}' <<< "$app_exe_table" | sort -u
+}
 app_state() {
-  local m flags
+  local m flags dir exes e
   m=$(manifest "$1"); [ -n "$m" ] || { echo missing; return; }
   flags=$(sed -n -E 's/^[[:space:]]*"StateFlags"[[:space:]]*"([0-9]+)"/\1/p' "$m")
-  if [ "$flags" = 4 ] && [ -n "$(gamedir "$1")" ]; then echo installed; else echo downloading; fi
+  [ "$flags" = 4 ] || { echo downloading; return; }
+  dir=$(gamedir "$1")
+  [ -n "$dir" ] || { echo missing; return; }
+  exes=$(app_exes "$1")
+  if [ -n "$exes" ]; then
+    while IFS= read -r e; do [ -f "$dir/$e" ] && { echo installed; return; }; done <<< "$exes"
+    echo missing
+  elif [ -n "$(find "$dir" -maxdepth 2 -iname '*.exe' -print -quit 2>/dev/null)" ]; then
+    echo installed
+  else
+    echo missing
+  fi
+}
+# Asks Steam for a missing app: its install dialog, or, when Steam still has
+# the app's manifest (its files were deleted), a check of its files, which
+# downloads them again (Steam takes such an app for installed)
+request_download() {
+  if [ -n "$(manifest "$1")" ]; then steam_cmd "steam://validate/$1"; else steam_cmd "steam://install/$1"; fi
 }
 # DLC the account owns (map packs…) is downloaded by Steam with the game: its
 # depots are listed in the game's manifests with a "dlcappid"
@@ -237,7 +266,7 @@ download)
   ensure_running
   for a in $apps; do
     [ "$(app_state "$a")" = missing ] || continue
-    steam_cmd "steam://install/$a"; sleep 2
+    request_download "$a"; sleep 2
   done
   ;;
 download-all)
@@ -248,7 +277,7 @@ download-all)
     for a in $(apps_of "$id"); do
       [ "$(app_state "$a")" = missing ] || continue
       step "Asking Steam to download $id ($a)"
-      steam_cmd "steam://install/$a"; sleep 4
+      request_download "$a"; sleep 4
     done
   done
   step "Confirm each download in Steam's window"
@@ -259,7 +288,7 @@ download-tool)
   need_steam
   a=$(tool_of "${2:-}"); [ -n "$a" ] || die "no tools for: ${2:-}"
   ensure_running
-  if [ "$(app_state "$a")" = missing ]; then steam_cmd "steam://install/$a"; fi
+  if [ "$(app_state "$a")" = missing ]; then request_download "$a"; fi
   ;;
 store)
   need_steam

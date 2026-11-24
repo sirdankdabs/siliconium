@@ -70,6 +70,7 @@ struct BattleNetTitleRow: View {
     @EnvironmentObject var state: AppState
     let title: BattleNetTitle
     let ready: Bool
+    @State private var showModInfo = false
 
     private var gameState: String { state.battlenetLibrary[title.id]?.state ?? "missing" }
     private var folder: String { state.battlenetLibrary[title.id]?.folder ?? "" }
@@ -109,10 +110,12 @@ struct BattleNetTitleRow: View {
     @ViewBuilder private var actions: some View {
         switch gameState {
         case "installed":
+            if !title.mods.isEmpty { modPicker }
             Button { state.playBattleNet(title) } label: { Label("Play", systemImage: "play.fill") }
                 .buttonStyle(.borderedProminent)
                 .disabled(state.running != nil || state.progress != nil)
-                .help("Starts \(title.title) through Battle.net, with Siliconium's settings. Choose Zombies, Multiplayer or Blackout in the game's menu.")
+                .help(state.bnetMod(title).map { "Starts \(title.title) with \($0.title), without Battle.net, with Siliconium's settings. Choose Zombies, Multiplayer or Blackout in the game's menu." }
+                      ?? "Starts \(title.title) through Battle.net, with Siliconium's settings. Choose Zombies, Multiplayer or Blackout in the game's menu.")
             Menu {
                 if !folder.isEmpty {
                     Button("Show the game's folder") { NSWorkspace.shared.open(URL(fileURLWithPath: folder)) }
@@ -128,6 +131,37 @@ struct BattleNetTitleRow: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!ready || state.progress != nil)
                 .help("Opens \(title.title) in Battle.net: press Install there (your account must own it). It needs a lot of disk space: Black Ops 4 with every mode is about 152 GB (November 2026).")
+        }
+    }
+
+    /// The community fix used when this game starts (None: through Battle.net,
+    /// the game as it is), and what each one does
+    @ViewBuilder private var modPicker: some View {
+        let chosen = state.bnetMod(title)
+        HStack(spacing: 4) {
+            Menu {
+                Button { state.setBnetMod(title, nil) } label: {
+                    if chosen == nil { Label("None", systemImage: "checkmark") } else { Text("None") }
+                }
+                ForEach(title.mods) { mod in
+                    Button { state.setBnetMod(title, mod) } label: {
+                        if chosen?.id == mod.id { Label("\(mod.title) (\(mod.parts))", systemImage: "checkmark") }
+                        else { Text("\(mod.title) (\(mod.parts))") }
+                    }
+                }
+            } label: {
+                Label(chosen?.title ?? "No fix", systemImage: "wrench.and.screwdriver")
+            }
+            .fixedSize()
+            .disabled(state.running != nil || state.progress != nil)
+            .help("A community fix used when this game starts. None: the game exactly as Siliconium plays it, through Battle.net.")
+            Button { showModInfo.toggle() } label: { Image(systemName: "info.circle") }
+                .buttonStyle(.borderless)
+                .help("What each fix does")
+                .popover(isPresented: $showModInfo, arrowEdge: .bottom) {
+                    SteamModInfo(title: SteamTitle(id: title.id, title: title.title, year: title.year,
+                                                   badge: title.badge, colors: title.colors, mods: title.mods))
+                }
         }
     }
 

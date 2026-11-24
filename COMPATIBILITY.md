@@ -1,8 +1,33 @@
 # Compatibility
 
 Test machine for every number here: MacBook Pro M1 Pro, macOS 15.8.3, external 2560x1440 display
-(HiDPI desktop 154 Hz, native 1x mode 160 Hz). "Verified" = measured in a log or confirmed by the
-player in that run. Nothing below is verified on another Mac.
+(HiDPI desktop 154 Hz, native 1x mode 160 Hz), unless a section says otherwise. "Verified" = measured
+in a log or confirmed by the player in that run. Nothing below is verified on another Mac.
+
+## First visit to a map (audit, unreleased changes)
+
+Same M1 Pro on macOS 27.2.1, external 4K display at "looks like 1920x1080" (HiDPI, 160 Hz), the Mac's
+display mode kept while playing. Each run: a map never loaded before on this Mac, spawned for real
+(team and class chosen), 30 s walking and turning, then Cmd-Tab out and back. "Load" = the loading
+screen; frames per second include the first-visit shader work.
+
+| Game (launcher, mode) | Load | In play (first visit) | Worst frames after the load | Fullscreen, Game Mode, Cmd-Tab |
+|---|---|---|---|---|
+| MW2 (IW4X, Multiplayer, Rundown) | 13 s | 137 FPS (157 on a second visit) | 100 ms on the team menu | OK |
+| Black Ops (Plutonium, Multiplayer, Cracked) | 12 s (Villa before the change: 38 s) | 131 FPS | 56 ms (Villa before: 831 + 419 ms) | OK |
+| Black Ops (Plutonium, Zombies, Moon) | (includes the map's intro movie) | 134 FPS | 69 ms | OK |
+| Black Ops (Plutonium, Campaign, Vorkuta) | (includes the intro) | 131 FPS | 56-69 ms | OK |
+| World at War (Plutonium, Multiplayer, Station) | 6 s | 156 FPS | 94 ms as the map appears | OK |
+| World at War (Plutonium, Campaign, Semper Fi) | 42 s | 126 FPS | 56 ms | OK |
+| Black Ops II (Plutonium, Multiplayer, Hijacked) | 10 s | 135 FPS | 212 ms as the map appears | OK |
+| Black Ops II (Plutonium, Zombies, Origins) | 15 s | 131 FPS | 206 ms as play starts | OK |
+| CoD4X (Multiplayer, Bloc) | 7 s | 156 FPS | 75 ms on the menus | OK |
+| Black Ops III (Ezz BOIII, Zombies, Ascension) | ~11 s + intro | ~72 FPS (GPU-bound) | 669 + 375 + 225 ms as play starts | OK |
+| Black Ops III (Steam, Zombies, Shadows of Evil) | — | 82 FPS, 3-8 frames of 31-44 ms every second | 69 ms | OK |
+| WWII (Steam, Nazi Zombies, Gröesten Haus) | ~24 s (with the match countdown) | 86 FPS standing (GPU-bound ~13 ms) | 206 ms on the loading screen; 156-181 ms in play; a 50-60 ms frame every 1-3 s | OK |
+| WWII (Steam, Campaign, D-Day; the only unlocked mission, warm) | ~106 s | 87 FPS walking | 283 ms as the map appears; 244 ms once | OK |
+| WWII (Steam, Multiplayer, Pointe du Hoc, local match) | — | 64 FPS walking | 200 ms once; 10 frames > 50 ms in 30 s (not GPU work) | OK |
+| Black Ops 4 (Battle.net, Zombies, Blood of the Dead; warm) | 3 min 24 s (intro movie during the load) | 62 FPS walking (GPU-bound, 17 ms) | 169-189 ms once, 30 s into play | OK |
 
 ## Published path (1.0.0: Plutonium, IW4X, Ezz, own Ghosts / BO2 campaign)
 
@@ -66,10 +91,12 @@ The AlterWare section only explains why these clients are not in Siliconium; not
 | Ghosts Multiplayer (Steam) | Not tested | Gets the campaign's settings file (`players2/config_mp.cfg`: SSAO and Tessellation off every start) and focus helper. |
 | Advanced Warfare Campaign (Steam) | **Playable** (validation in progress) | Fullscreen 2560x1440 at 160 Hz (its profile is set before each start; it chose 3840x2160 at 60 Hz by itself). Two DXMT fixes for AW only: the first cutscene's Metal assertion (upstream ab984cf, `aw-d3d11.dll`) and the gameplay GPU freeze (tessellation workload overflow, `aw-winemetal.so`). First mission: 15 min without a fault, 108 FPS average (median frame 6.25 ms, GPU median 8.7 ms) at Extra textures. Still to verify: long session with the shipped build, controller, audio, load time (~100 s after the cinematic). |
 | Black Ops III (Steam) | Runs (player, Zombies) | Its own setup; fullscreen 2560x1440 at 160 Hz, intro videos, Zombies played ~25 min over several runs without a freeze. At Extra detail GPU-bound at about 55 FPS (61-64 with order-independent transparency off); profile in KNOWN_ISSUES. One crash on the very first start (not repeated). Controller, audio checks, multiplayer and campaign not verified yet. |
+| Black Ops III — with Clean Ops (Steam, Fixes menu) | **Works** (a player, 2026-11-23) | Loads from Steam's folder and chains to the engine's DXMT; connects to its own server; its menu draws; Steam's folder is identical after the game quits. Also in the Mod Tools' map tests (Run). The player saw the small hitches every second go away with it (not measured). |
 | Black Ops III Mod Tools (Steam) | **Partly works** | Downloaded from the Black Ops III row (Mod Tools button). Verified on an M1 Pro: launcher (asset database of 354 GDT files), Radiant with textured 3D view (opens in ~28 s), Asset Property Editor, map compile (a stock sample map: 202 s, 2.4 GB), link (a one-room test map: ~17 s, needs the performance cores only, set by Siliconium). Opening the tools from Siliconium's button: launcher in ~13 s. Lighting bakes, exports and Radiant closes by itself (one-room map: export ~4 s, 6 runs of 6; a Zombies test map from the ZM template: compile 4 s, light 65 s, link 2 min); the asset database's tray no longer crashes; map sounds fail (.NET sound converter under Wine Mono); Run starts the game but no frame was drawn in 8 minutes (see KNOWN_ISSUES). |
 | Infinite Warfare (Steam) | **Playable** (campaign; validation in progress) | One executable for every mode. Fullscreen 2560x1440 at 160 Hz (resolution and refresh rate written into its settings before each start; it chose 1920x1080 at 60 Hz by itself on a 1080p display). Needs both of Advanced Warfare's DXMT fixes (same files, run for its executable too): without them it closed during the first shader preload (Metal assertion) and its GPU page-faulted ~1.5 min into the first mission (tessellation on by default). With them: campaign missions 1-2 played (scripted and by a player) with no GPU fault. First start: ~3.5 min "Preloading Shaders"; later starts reach the menu in ~2 s. At the game's own settings (High textures, AO, volumetric lighting, tessellation Near, native 2560x1440) GPU-bound: ~50-58 FPS in most areas, ~37-40 in heavy fights (M1 Pro). Not verified yet: multiplayer, Zombies in Spaceland, controller, audio, a long session. |
 | WWII Campaign (Steam) | **Playable** (validation in progress) | Engine DXMT, no fixes needed so far: first mission (barracks cutscene, D-Day landing, Normandy beach) played over many runs with no GPU fault. Fullscreen 2560x1440 at 160 Hz (the display is held at its 1x mode; left alone it switched the display to the 1280x720 60 Hz mode of its first profile). At its own settings on an M1 Pro with macOS Game Mode: 74-78 FPS on the Normandy beach, GPU-bound (~16.5-17 ms of GPU per frame; 53-54 FPS before Game Mode worked). Loading a mission: ~112 s, most of it the mission's intro film (the game's shader preload is turned off: it cost ~45 s and saved nothing under DXMT). No license screen in the campaign. |
 | WWII Multiplayer / Nazi Zombies (Steam) | **Runs** (Zombies played by a player; multiplayer custom matches run) | One executable (`+zombiesMode 1` for Zombies). Resolution on its command line (it ignores it in its profile), frame cap in its profile (it ignores it on the command line): 2560x1440 at 160 Hz, cap at the display's rate (its own is 85). Online it asks for the network state on every frame: Siliconium's `wininet.dll` (this executable only) answers from a cached result (Wine's answer cost ~10 ms a frame). Activision's license appears in the game the first time; online services work (Zombies menu, playlists, a public match, custom matches). Nazi Zombies (local solo match, The Final Reich, spawn): 52-63 FPS, GPU-bound (17-22 ms of GPU per frame). Multiplayer (Team Deathmatch, Pointe du Hoc, no bots, spawn): online custom match 62-64 FPS (32-39 FPS without the network-state fix), LOCAL PLAY 65.7 FPS; GPU and DXMT's encoder thread are the limit. Start menu ~48 FPS. |
+| WWII Nazi Zombies, Gröesten Haus (Steam) | **Runs** (2026-11-23, first visit) | Fullscreen, Game Mode on, Cmd-Tab back at once; loads in ~24 s; ~86 FPS standing at the 1920x1080 HiDPI desktop, GPU 12.7 ms; a 50-60 ms frame every 1-3 s that is not GPU work (CPU-side, as Black Ops III's). |
 | Advanced Warfare Multiplayer / Exo Zombies (Steam) | **Blocked** | Choosing Exo Zombies in the campaign's menu starts it through Siliconium (its own setup, 2560x1440 at 160 Hz); it stays at "Connecting to online services" (not investigated). |
 | Achievements / playtime | Not verified | |
 
@@ -80,3 +107,4 @@ The AlterWare section only explains why these clients are not in Siliconium; not
 | Battle.net for Windows 2.53.8 (32-bit) | **Works** (install, login, games page) | Installed by the section's setup in its own prefix; login window, sign-in with "Keep me logged in" and the automatic sign-in at the next start (43 s, also with DXMT as Play starts it); the game's page opens from Siliconium. Needs `WINE_SIMULATE_WRITECOPY=1` and `--in-process-gpu` (set by Siliconium; see Known issues for what each fixes). |
 | Black Ops 4 — Zombies | **Plays** (Blood of the Dead, one session) | Direct3D 11 on DXMT 0.80, started through Battle.net. Needed Battle.net's own Wine modules (Known issues): before them the game quit 2-8 s into fullscreen. M1 Pro, 2560x1440, Game Mode on, the display held at 1x, the graphics the game chose on its first start (its lowest preset, picked while Wine reported 0 bytes of GPU memory), standing at the start of Blood of the Dead: 100 % render resolution ~47 FPS (1 % low 37; ~23 ms of GPU work per frame, the GPU is the limit: ~2,300 draws, 34 render passes and ~100 compute dispatches per frame); 50 % render resolution ~115-120 FPS. Menus: the game's 60 FPS menu cap. |
 | Black Ops 4 — Multiplayer, Blackout | **Not tested yet** | Same executable and setup as Zombies; online play needs Battle.net running and signed in. |
+| Black Ops 4 — with Shield (Project-BO4, Fixes menu) | **Plays** (a player's Zombies session, 2026-11-23) | Build R2 (the community's update for the June 2026 game; project-bo4's own R1 closes the current game ~7 s after the start). The game starts directly (no Battle.net), on Shield's own Demonware emulator: fullscreen, Game Mode, front at start as through Battle.net. Its DLL and its own files leave the game's folder when the game quits; its offline profile is the game's own (players/bnet-<id>). Multiplayer and Blackout with it: not tested. |

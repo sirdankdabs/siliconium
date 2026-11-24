@@ -3,15 +3,30 @@
 ## 1.3.0 — Black Ops 4 & WWII
 
 **New**
-- **Battle.net** section, below the Steam Library: Siliconium installs Battle.net for Windows in its own prefix, and **Black Ops 4** plays from it (Zombies), with two Wine fixes of our own for Battle.net's games only.
+- **Battle.net** section, below the Steam Library: Siliconium installs Battle.net for Windows in its own prefix, and **Black Ops 4** plays from it, with two Wine fixes of our own for Battle.net's games only.
+- Black Ops 4: **Shield (Project-BO4)** in its **Fixes** menu: the game without Battle.net's online services (Shield's own Demonware server emulator), with an in-game console and GSC and Lua mods. Siliconium uses Build R2, the community's update for the game's current version, downloads it from GitHub the first time and takes it out of the game's folder when the game quits, with Shield's settings and log: the game's own files are never changed.
 - Steam Library: **Call of Duty: WWII** (campaign, Multiplayer, Nazi Zombies). Our fixes make online Multiplayer about twice as fast (~60 FPS on an M1 Pro) and campaign missions load about 45 s sooner.
-- Steam Library: a **Mod Tools** button for Black Ops III downloads Treyarch's Mod Tools; launcher, Radiant, compiling, lighting and linking work, in a workspace that never changes Steam's files.
+- Steam Library: a **BO3 Mod Tools** button for Black Ops III downloads Treyarch's Mod Tools; launcher, Radiant, compiling, lighting and linking work, in a workspace that never changes Steam's files, and the launcher opens in macOS Game Mode.
+- Steam Library: **Clean Ops** in Black Ops III's **Fixes** menu, the community patch for Black Ops III's Multiplayer (protection against exploits and crashes, its cheater blacklist, peer-to-peer hosting with its own server browser, an in-game menu). Siliconium downloads it from its author the first time, keeps its updates and settings between games, and takes it out of the game's folder when the game quits; Steam's files are never changed. It connects to its own server with your Steam ID. Its menu key is Insert: on a Mac keyboard choose End (fn+→) in its menu. It also works in the map tests the **BO3 Mod Tools** start (Run).
 - **macOS Game Mode in every game**, also Plutonium, IW4X and the 32-bit Steam games (WWII campaign: ~76 FPS instead of 53-54). `GAME_MODE=0` in settings.conf turns it off.
 - Every game **comes to the front by itself** when it starts: the menu bar no longer stays over it until a click. Only once, and only while Siliconium, Steam, Battle.net or the game's launcher is in front, never over another app.
 
+**Changed**
+- **Your Mac keeps its display mode while you play** when the desktop is an unscaled HiDPI mode at the game's size (for example "looks like 1920x1080" on a 4K display): no mode switch when a game starts, ends or is left with Cmd-Tab. A scaled desktop (one that macOS draws larger than the panel) is still held in a 1x mode while the game runs. `KEEP_HIDPI=0` in settings.conf holds every fullscreen game in a 1x mode as before.
+- **Steam Library: every game starts in fullscreen at your display's size, every time** (now also the profiles of Call of Duty 2, World at War, Modern Warfare 2 and 3, Advanced Warfare and WWII, whose multiplayer profile had turned windowed). `STEAM_SCREEN=0` (or `WW2_SCREEN=0` for WWII only) in settings.conf keeps a window you chose in a game's options.
+- **Black Ops (all modes, Plutonium and Steam): a map you never played loads about 3x faster and no longer freezes** for 0.4-1 s when something new is drawn (on an M1 Pro: a new multiplayer map 38 s → 12 s on its loading screen; worst frame in play 56-69 ms instead of 831 ms). `BO1_ASYNC_LEVEL=1` in settings.conf brings back the old behaviour.
+- **Modern Warfare 3 (Plutonium and Steam): no more freeze when a map you never played starts** (274-331 ms as play began): its shaders are prepared on the loading screen. `IW5_PRELOAD=0` in settings.conf turns it off.
+
 **Fixed**
 - **Back from Cmd-Tab within about a second**: the window-restore helper now waits in the background from the game's start (starting it took seconds of black screen, 6-8 s in Black Ops 4).
-- After Cmd-Tab the display stays in the game's 1x mode (macOS put the HiDPI mode back and the game then drew at 5120x2880: Black Ops 4 fell from 115 to 52 FPS).
+- Steam Library: a game whose campaign and multiplayer are two Steam apps in one folder (Modern Warfare 2, Modern Warfare 3) showed both parts as downloaded when only one was; games whose files were deleted showed as installed (Download now asks Steam to check them, which downloads their files again).
+- Black Ops and Black Ops II (Plutonium) held the display at the resolution saved in their profiles instead of the desktop's.
+- Modern Warfare 3 (Plutonium): the display is handled as in the other games (its multiplayer had no 1x mode on a scaled desktop, and the other mode's never worked).
+- Steam's World at War: Siliconium's settings are written to the profile the game reads (they went to a file in the game's folder that it ignores).
+- A display mode left behind by a game that crashed or was forced to quit is put back when Siliconium opens and when a game starts or stops, unless you chose another mode since.
+- Black Ops' gunfire sound fix (Plutonium and Steam) also finds Microsoft's XAudio2 in Black Ops II's folder or Steam's Black Ops / Black Ops II.
+- The progress notice at the bottom of the Steam Library and Battle.net pages was cut off by the window's edge.
+- On a scaled desktop, the display stays in the game's 1x mode after Cmd-Tab (macOS put the scaled mode back and the game then drew at 5K: Black Ops 4 fell from 115 to 52 FPS).
 
 ## 1.2.1
 

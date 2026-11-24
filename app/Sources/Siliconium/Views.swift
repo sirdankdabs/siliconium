@@ -374,6 +374,9 @@ struct GameDetail: View {
                     }
                     .padding(10)
                     .background(.ultraThinMaterial, in: Capsule())
+                    // (those two pages have no bottom margin: the capsule sat on
+                    // the window's edge and its rounded corner cut it off)
+                    .padding(.bottom, game == .steam || game == .battlenet ? 18 : 0)
                 }
             }
             .padding([.top, .horizontal], 32)
