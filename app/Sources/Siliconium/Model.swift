@@ -610,9 +610,6 @@ extension Patch {
         Patch(key: "CONSOLE_AIM", title: "Console controller aim",
               info: "Makes the controller aim like on the consoles: turn acceleration, the console's turn speeds (slower up/down and while aiming down sights) and aim assist (slowdown and lock-on over targets). Applies to zombies, campaign and multiplayer; mouse aim is not affected.",
               games: [.waw, .bo1, .bo2, .bo2c, .bo2s]),
-        Patch(key: "CAPTURE_DISPLAY", title: "Direct fullscreen",
-              info: "In fullscreen the game takes over the display, so macOS shows its frames directly instead of compositing them with the desktop: lower latency and steadier frame times.",
-              games: [.waw, .bo1, .bo2, .iw5, .iw4, .bo2c, .bo2s, .boiii]),
         Patch(key: "DISPLAY_MODE", title: "Native display mode in fullscreen",
               info: "While the game runs fullscreen, the display switches to a 1x mode of the game's resolution, so a scaled (HiDPI) desktop does not make macOS draw every frame at twice the size.",
               games: [.waw, .bo1, .bo2, .iw5, .iw4, .bo2c, .bo2s, .boiii]),
@@ -878,7 +875,7 @@ final class AppState: ObservableObject {
             running = settings["LAST_GAME"].flatMap(Game.init(rawValue:)) ?? .bo1
             watchUntilStopped()
         } else {
-            Self.restoreDisplayMode()
+            Self.restoreDisplayMode { AppState.shared.refreshDisplay() }
         }
         refreshCampaign()
     }
@@ -886,8 +883,9 @@ final class AppState: ObservableObject {
     /// A game's display mode hold (kit/tools/displaymode) that was killed
     /// before it could put the desktop's mode back: put it back now, unless the
     /// player chose another mode since. A hold that is still on is left alone.
-    nonisolated static func restoreDisplayMode() {
+    nonisolated static func restoreDisplayMode(then done: (@MainActor @Sendable () -> Void)? = nil) {
         DispatchQueue.global(qos: .utility).async {
+            defer { if let done { Task { @MainActor in done() } } }
             let fm = FileManager.default
             let tool = Paths.kit.appendingPathComponent("tools/displaymode")
             guard fm.isExecutableFile(atPath: tool.path) else { return }
@@ -904,6 +902,57 @@ final class AppState: ObservableObject {
             }
             try? p.run()
             p.waitUntilExit()
+        }
+    }
+
+    /// The main display and what a game started now gets on it
+    /// (kit/tools/displaymode info: the same rule the games' display hold
+    /// and launch.sh use, so this view only reports it). Read when the app
+    /// opens, when the display's settings change and when a game ends; not
+    /// while a game runs (the display is in the game's mode then).
+    @Published var display: DisplayInfo?
+    /// Set when the display's settings differ from the last ones shown: the
+    /// window shows the display sheet by itself once.
+    @Published var showDisplayInfo = false
+
+    func refreshDisplay() {
+        guard running == nil else { return }
+        let settings = Settings.load()
+        let keep: String = {
+            switch settings["KEEP_HIDPI"] { case "0": return "0"; case "2": return "2"; default: return "1" }
+        }()
+        let holds = settings["DISPLAY_MODE"] != "0"
+        let maxfps = settings["MAXFPS"]
+        DispatchQueue.global(qos: .utility).async {
+            let tool = Paths.kit.appendingPathComponent("tools/displaymode")
+            guard FileManager.default.isExecutableFile(atPath: tool.path), !AppState.engineRunning else { return }
+            let p = Process()
+            p.executableURL = tool
+            p.arguments = ["info"]
+            var env = ProcessInfo.processInfo.environment
+            env["SIL_KEEP_UNSCALED"] = keep
+            p.environment = env
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { return }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard p.terminationStatus == 0, let text = String(data: data, encoding: .utf8),
+                  var info = DisplayInfo(parsing: text) else { return }
+            info.holds = holds
+            info.maxfps = Int(maxfps ?? "")
+            info.name = NSScreen.main?.localizedName ?? ""
+            Task { @MainActor in
+                let shared = AppState.shared
+                guard shared.running == nil else { return }
+                shared.display = info
+                let defaults = UserDefaults.standard
+                if defaults.string(forKey: "lastDisplaySeen") != info.signature {
+                    defaults.set(info.signature, forKey: "lastDisplaySeen")
+                    shared.showDisplayInfo = true
+                }
+            }
         }
     }
 
@@ -1631,6 +1680,15 @@ final class AppState: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
+    /// The microphone, asked once when Siliconium first opens, for every game:
+    /// macOS asks on behalf of Siliconium whichever game (Wine) opens it, and
+    /// the answer then holds for all of them (the app's signature names its
+    /// identifier, build-app.sh, so a new build keeps it).
+    func askMicrophoneOnce() {
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined else { return }
+        AVCaptureDevice.requestAccess(for: .audio) { _ in }
+    }
+
     func play(_ game: Game, mode: PlayMode, lan: Bool = false) {
         guard progress == nil, running == nil else { return }
         // The games open the microphone (voice chat); Wine then waits for
@@ -2150,4 +2208,76 @@ final class AppState: ObservableObject {
 final class SetupNoteModel: ObservableObject {
     @Published var step = "Starting…"
     @Published var hint = "Sign in in Plutonium's window; Siliconium closes it when you are in. If you cannot see it, click it in the Dock."
+}
+
+/// The main display as `displaymode info` describes it, and what a game
+/// started now gets on it (see AppState.refreshDisplay).
+struct DisplayInfo: Equatable {
+    var width = 0, height = 0, pixelWidth = 0, pixelHeight = 0, hz = 0
+    var kind = ""                       // 1x | hidpi | hidpi-scaled
+    var gameWidth = 0, gameHeight = 0, gamePixelWidth = 0, gamePixelHeight = 0, gameHz = 0
+    var plan = ""                       // 1x | kept | already | none
+    var holds = true                    // DISPLAY_MODE is not 0
+    var maxfps: Int?                    // MAXFPS set in Settings
+    var name = ""
+
+    init?(parsing text: String) {
+        var d: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            let kv = line.split(separator: "=", maxSplits: 1)
+            if kv.count == 2 { d[String(kv[0])] = String(kv[1]) }
+        }
+        func int(_ k: String) -> Int { Int(d[k] ?? "") ?? 0 }
+        width = int("desktop_width"); height = int("desktop_height")
+        pixelWidth = int("desktop_pixel_width"); pixelHeight = int("desktop_pixel_height")
+        hz = int("desktop_hz"); kind = d["desktop_kind"] ?? ""
+        gameWidth = int("game_width"); gameHeight = int("game_height")
+        gamePixelWidth = int("game_pixel_width"); gamePixelHeight = int("game_pixel_height")
+        gameHz = int("game_hz"); plan = d["plan"] ?? ""
+        guard width > 0, height > 0, gameHz > 0 else { return nil }
+    }
+
+    /// What identifies the display's settings (a change shows the sheet again)
+    var signature: String { "\(width)x\(height)@\(pixelWidth)x\(pixelHeight)/\(hz)/\(plan)/\(gameHz)/\(holds)" }
+    /// The mode a fullscreen game runs in
+    var runWidth: Int { holds ? gameWidth : width }
+    var runHeight: Int { holds ? gameHeight : height }
+    var runHz: Int { holds ? gameHz : hz }
+    var runIs1x: Bool { holds ? (gamePixelWidth == gameWidth) : (kind == "1x") }
+    var cap: Int { maxfps ?? runHz }
+
+    var desktopText: String {
+        switch kind {
+        case "hidpi": return "\(width)×\(height) HiDPI (drawn at \(pixelWidth)×\(pixelHeight), the panel's own pixels), \(hz) Hz"
+        case "hidpi-scaled": return "\(width)×\(height) HiDPI scaled (drawn at \(pixelWidth)×\(pixelHeight)), \(hz) Hz"
+        default: return "\(width)×\(height) at 1x, \(hz) Hz"
+        }
+    }
+    var gameText: String {
+        "\(runWidth)×\(runHeight) " + (runIs1x ? "at 1x" : "HiDPI") + ", \(runHz) Hz"
+    }
+    var whyText: String {
+        if !holds { return "Display mode switching is off in Settings (DISPLAY_MODE=0): games use the desktop's mode as it is." }
+        switch plan {
+        case "kept":
+            return kind == "hidpi-scaled"
+                ? "Your scaled HiDPI mode is kept (KEEP_HIDPI=2). macOS draws every frame at \(pixelWidth)×\(pixelHeight), which can cost up to half the FPS."
+                : "Your HiDPI mode is kept: it already uses the panel's own pixels and no 1x mode of this size is faster, so there is no mode switch and the desktop stays sharp after Cmd-Tab."
+        case "1x":
+            if kind == "hidpi-scaled" {
+                return "Your desktop is scaled: kept, macOS would draw every frame at \(pixelWidth)×\(pixelHeight) (up to half the FPS). While a game runs the display uses the 1x mode of the same size; your mode comes back when the game ends."
+            }
+            if kind == "1x" {
+                return "A faster mode of the same size exists: while a game runs the display runs at \(gameHz) Hz; your \(hz) Hz comes back when the game ends."
+            }
+            if gameHz > hz {
+                return "The 1x mode of this size runs at \(gameHz) Hz, faster than your HiDPI mode's \(hz) Hz: it is used while a game runs, and your mode comes back when the game ends."
+            }
+            return "HiDPI is not kept (KEEP_HIDPI=0): while a game runs the display uses the 1x mode of the same size; your mode comes back when the game ends."
+        case "already":
+            return "Your desktop already runs at 1x at its best refresh rate: nothing changes."
+        default:
+            return "There is no 1x mode of this size: games run in your desktop's mode."
+        }
+    }
 }

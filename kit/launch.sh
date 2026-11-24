@@ -27,10 +27,19 @@
 #   Patches (on unless set to the value shown):
 #   EXEC_ON_DEMAND=0   DEP-off code made executable all at once (BO2 slow motion)
 #   RUMBLE_FIX=0       CrossOver's xinput (vibration stalls controller input)
-#   CAPTURE_DISPLAY=0  fullscreen through the window compositor
+#   CAPTURE_DISPLAY=0  borderless instead of real fullscreen (the games never
+#                      capture the display: fullscreen goes through the window
+#                      compositor, so the screen can be recorded; owner 2026-11-24)
 #   DISPLAY_MODE=0     keep the desktop's display mode while in fullscreen
 #   KEEP_HIDPI=0       fullscreen games are held in a 1x mode on an unscaled HiDPI
-#                      desktop too (default: that desktop's mode is kept)
+#                      desktop too (default: an unscaled one, e.g. "looks like
+#                      1920x1080" on a 4K panel, keeps its mode; a scaled one goes
+#                      to the 1x mode of its size); KEEP_HIDPI=2: scaled ones kept too
+#   HIDE_ON_CMDTAB=0   a fullscreen game is not hidden when another app comes to
+#                      the front (Cmd-Tab)
+#   CMDTAB_DESKTOP_MODE=1  while a game is hidden after Cmd-Tab, a HiDPI desktop
+#                      gets its own mode back (two display switches per Cmd-Tab;
+#                      default: the game's 1x mode stays until it quits)
 #   MSAA_FIX=0         allow the games' 8x+ MSAA (not supported by Apple GPUs)
 #   BO1_ASYNC=0        BO1 shaders compile while drawing (stutters)
 #   BO1_ASYNC_LEVEL=1  BO1 compiles a newly drawn surface's shaders on the render
@@ -367,6 +376,29 @@ install_own_engine_module() {
     return 1
   fi
 }
+# Our MoltenVK wrapper (payload/lib64/libMoltenVK.dylib, tools/mvkcache.c) for
+# engines installed with an earlier one (install-engine.sh signs its copy
+# again, so both digests of each earlier build are listed): since 2026-11-24
+# it reads its 8 saved caches in parallel (MoltenVK compiles their Metal
+# libraries while reading them; one at a time, Black Ops' intro and menu
+# stayed black for minutes when Metal had not kept them). Running games keep
+# the file they loaded (a new file is moved over the old one).
+install_own_moltenvk() {
+  local lib="$engine/lib64/libMoltenVK.dylib" new="$kit/payload/lib64/libMoltenVK.dylib" digest staged
+  [ -f "$new" ] && [ -f "$lib" ] && [ -f "$engine/lib64/libMoltenVK.real.dylib" ] || return 0
+  cmp -s "$lib" "$new" && return 0
+  digest=$(shasum -a 256 < "$lib") || return 1
+  case " $* " in
+    *" ${digest%% *} "*) ;;
+    *) return 0 ;;
+  esac
+  staged=$(mktemp "$lib.XXXXXX") || return 1
+  if ! cp -p "$new" "$staged" || ! mv -f "$staged" "$lib"; then rm -f "$staged"; return 1; fi
+}
+install_own_moltenvk \
+  a7524c6e8691c4b54d9450d7441c89f12614ada76731b9d311c32d3902ba334d \
+  c9f3818ae802cc2ea20c37260edfba0190dd9632ad3df23c63c07b085ffdd343 ||
+  printf '%s\n' 'Warning: could not install the shader cache update (MoltenVK).' >&2
 # ntdll.so with the renamed SIL_ variables (the 0.9.x builds read the old ones)
 install_own_engine_module ntdll.so \
   d3cbebc31c425a6edeb275f1fa1dc43af6db66af452febafb799e42a534bad6f \
@@ -411,9 +443,13 @@ case "$t" in
     esac ;;
   *) [ "${macos_major:-0}" -ge 26 ] 2>/dev/null && [ "${CURSOR_FIX:-1}" != 0 ] && cursor_fix=1 ;;
 esac
-if [ "$cursor_fix" = 1 ]; then
+# Our winemac.so also carries the Cmd-Tab hide (SIL_HIDE_ON_DEACTIVATE below),
+# for every game; its other changes stay off unless their variables are set.
+if [ "$cursor_fix" = 1 ] || [ "${HIDE_ON_CMDTAB:-1}" != 0 ]; then
   # Accept the original and earlier cursor modules so existing engines can update.
   install_own_engine_module winemac.so \
+    9e1546c897a168aec2387f771a058a9afae0eea0c392a98339137e6fc464bf9f \
+    db3332fdf57b72dda60dfdaf59ef978fdd55a7a7e0596455195b7edbdd4e350a \
     c44cf8ab1819267438299b0ce2573ffa015ca77260fbbb63e26823b26d3a639c \
     6afccb6313e968b4ba6d8ba9346f1d33f36be14b32967eb9af4079376fdea1c2 \
     60213e14b7d1c501219605d9d523b9f1888ca946565d9dc0c4069db1ccd038cb \
@@ -424,8 +460,17 @@ if [ "$cursor_fix" = 1 ]; then
     2509d6c5a391e5da36a1c97a9cc61bfbffa5b2275f36e197bc4c777ca1e27dd0 \
     5412976bc72c5b4843eed6fac2048910befbebef21abf50ebf5627a44386547a \
     0724dd99b4ad120402a956b9b1836647ccc9431201916c77938ac69f9e55ac95 \
-    eb5eb337107f33cf3fe728e2abd6b3ee6b84bc000768ff0f9d790e045b00108e ||
-    printf '%s\n' 'Warning: could not install the Black Ops II cursor update.' >&2
+    eb5eb337107f33cf3fe728e2abd6b3ee6b84bc000768ff0f9d790e045b00108e \
+    2af530d00139527d319ddf3821c1c849029842b2b02c9490453eab610066debd \
+    4e621b5de62d1f4e9f26d3c6219693298ec4edb23f3a693ab793232bb2106137 ||
+    printf '%s\n' 'Warning: could not install the Mac window driver update (cursor, Cmd-Tab).' >&2
+fi
+# (exported here for the games started from this script, Ghosts included; the
+# prefix's copy for programs that a launcher starts is set further down)
+unset SIL_HIDE_ON_DEACTIVATE SIL_DISPLAYMODE_RECORD
+if [ "${HIDE_ON_CMDTAB:-1}" != 0 ]; then
+  export SIL_HIDE_ON_DEACTIVATE=1
+  [ "${CMDTAB_DESKTOP_MODE:-0}" = 1 ] && export SIL_DISPLAYMODE_RECORD="$home/cache/displaymode-desktop"
 fi
 
 . "$kit/tools/configure-ds4.sh"
@@ -450,22 +495,55 @@ stop_displaymode() {
   for i in $(seq 25); do pgrep -qf '/tools/displaymode [0-9]' || return 0; sleep 0.2; done
 }
 # Direct fullscreen: the fullscreen window mode (2) becomes fullscreen (1)
-fullscreen_cfg() { [ "${CAPTURE_DISPLAY:-1}" != 0 ] && [ -f "$1" ] && sed -i '' 's/^seta r_fullscreen "2"/seta r_fullscreen "1"/' "$1"; return 0; }
+# Not for Black Ops II (t6): its display mode is the player's (fullscreen,
+# fullscreen window or windowed, as chosen in its options); the game starts
+# with the one in its binary hardware profile, and a different r_fullscreen
+# in the .cfg only applied once the game restarted its renderer, so it
+# switched modes while it ran (2026-11-24).
+fullscreen_cfg() { [ "$t" = t6 ] && return 0; [ "${CAPTURE_DISPLAY:-1}" != 0 ] && [ -f "$1" ] && sed -i '' 's/^seta r_fullscreen "2"/seta r_fullscreen "1"/' "$1"; return 0; }
+# bo2_hw_screen <players folder> <cfg|-> <chp>...: Black Ops II starts with the
+# resolution in its binary hardware profile, not the .cfg's r_mode (that one
+# only applies when the game restarts its renderer): after the Mac's
+# resolution changed it opened at the previous game's resolution and switched
+# the display's mode while it ran (2026-11-24). Each start, when the game is
+# fullscreen (its .cfg's r_mode is the desktop's: common_cvars; "-": Steam,
+# fullscreen every start), the profiles get the desktop's resolution
+# (tools/bo2-hwprofile.py: only that text field changes; a profile it cannot
+# read is left alone). BO2_SCREEN=0: left to the game.
+bo2_hw_screen() {
+  local cfg=$2 f size=${dw:+${dw}x${dh:-}}; shift 2
+  on BO2_SCREEN && [[ $size =~ ^[0-9]+x[0-9]+$ ]] || return 0
+  if [ "$cfg" != - ]; then
+    grep -Fxq "seta r_mode \"$size\"" "$cfg" 2>/dev/null && ! grep -q '^seta r_fullscreen "0"' "$cfg" || return 0
+  fi
+  for f in "$@"; do
+    [ -f "$f" ] && /usr/bin/python3 -I "$kit/tools/bo2-hwprofile.py" "$f" "$size" >&2
+  done
+  return 0
+}
 hold_1x() { # <game cfg>
   fullscreen_cfg "$1"
   [ -f "$1" ] && grep -qE '^seta r_fullscreen "[12]"' "$1" || return 0
   hold_1x_size "$(sed -n -E 's/^seta r_mode "([0-9]+)x([0-9]+)"/\1 \2/p' "$1")"
 }
+# displaymode's SIL_KEEP_UNSCALED for KEEP_HIDPI (0, 1 = default, 2)
+keep_hidpi() { case "${KEEP_HIDPI:-1}" in 0) echo 0 ;; 2) echo 2 ;; *) echo 1 ;; esac; }
 hold_1x_size() { # "<width> <height>"
   [ -z "$held_1x" ] && [ "${DISPLAY_MODE:-1}" != 0 ] && [ -n "$1" ] || return 0
   local res=$1 log="$home/logs/displaymode.log" size i launch_pid=$$ keep=0
   # A HiDPI desktop that is not scaled (its pixels are the panel's own, e.g.
-  # "looks like 1920x1080" on a 4K panel) stays as it is (displaymode
-  # SIL_KEEP_UNSCALED): no mode switch at the start and the end, and a sharp
-  # desktop after Cmd-Tab. Black Ops, 2026-11-23 (Kino, 40 s): 159.0 FPS held
-  # at 1x, 158.9 in the HiDPI mode, same 1 % low, pacing and GPU time.
-  # KEEP_HIDPI=0: held at 1x as before. A scaled desktop is always held.
-  on KEEP_HIDPI && keep=1
+  # "looks like 1920x1080" on a 4K panel) stays as it is when no 1x mode of
+  # its size has a higher refresh rate (displaymode SIL_KEEP_UNSCALED=1): no
+  # mode switch, a sharp desktop after Cmd-Tab. Black Ops, 2026-11-23 (Kino,
+  # 40 s): 159.0 FPS held at 1x, 158.9 in the HiDPI mode; owner, 2026-11-24:
+  # BO1 and BO2 "excelente" in that mode at 160 Hz. A scaled desktop ("looks
+  # like 2560x1440" on a 4K panel, drawn at 5K) is held at the 1x mode of its
+  # size: kept, every frame cost a 5K composition (BO1 ~75 FPS, Black Ops 4
+  # 52; Plutonium BO2 lost its steady 160 FPS to spikes). Either way the
+  # games' refresh rate and frame cap are the rate of the mode the display
+  # ends up in (hz, read after restore_display has settled).
+  # KEEP_HIDPI=0: every HiDPI desktop at 1x; KEEP_HIDPI=2: scaled ones kept too.
+  keep=$(keep_hidpi)
   ( while kill -0 "$launch_pid" 2>/dev/null; do sleep 2; done
     sleep 3   # the launcher may close a moment before the game window is up
     while pgrep -qf 'plutonium-bootstrapper-win32\.exe|t6sp\.exe|iw4x(-launcher)?\.exe'; do sleep 2; done
@@ -505,22 +583,30 @@ on() { [ "${!1:-1}" != 0 ]; }
 # The desktop's logical size and refresh rate. Read before the display block:
 # hold_1x_size starts the body from there, and on a first run there is no game
 # profile to read the size from. (After restore_display: never the size a
-# killed hold left the display in.)
+# killed hold left the display in.) A hold of an earlier launch that is still
+# on (its game has just closed and this one starts) is ended first, as
+# hold_1x_size would do: it puts the desktop's mode back, and read before that
+# the desktop's mode was the old hold's 1x one.
+case "$t" in t4|t5|t6|iw4|iw5|t7|steam|bnet|iw6) stop_displaymode ;; esac
 restore_display
 read -r dw dh hz < <("$kit/tools/displaymode" current 2>/dev/null || true)
-# Games held in a 1x mode of the desktop's size (see hold_1x) get that mode's
-# refresh rate, which can be higher than the HiDPI desktop's: a 2560x1440
-# panel scaled from 5120x2880 stops at 154 Hz, its 1x mode runs at 160 Hz.
-# The frame-rate cap and the games' refresh settings follow it.
+# The games held at the desktop's size (hold_1x_size) get the refresh rate of
+# the mode the display will be in while they run: what the hold will do
+# (displaymode plan: the same rule as the hold) - the 1x mode's rate when the
+# desktop is switched to 1x (a 2560x1440 panel scaled from 5120x2880 stops at
+# 154 Hz, its 1x mode runs at 160 Hz), the desktop's own when its HiDPI mode is
+# kept (a 4K panel at "looks like 1920x1080" 144 Hz: 144, never 160). Every
+# frame cap and refresh setting below follows it.
 case "$t" in
-  t4|t5|iw4|iw5|t7|steam|bnet)
+  t4|t5|t6|iw4|iw5|t7|steam|bnet)   # (t6: Plutonium BO2's profile is held too, hold_1x)
     # Steam's Ghosts runs borderless on the desktop as Siliconium's own Ghosts
     # (t=iw6, not in this list): the desktop's rate, not the 1x mode's
     desktop_rate=0
     case "$t:${s_exe:-}" in steam:iw6sp64_ship.exe|steam:iw6mp64_ship.exe) desktop_rate=1 ;; esac
     if [ "$desktop_rate" = 0 ] && on DISPLAY_MODE && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
-      best_hz=$("$kit/tools/displaymode" best "$dw" "$dh" 2>/dev/null)
-      [[ ${best_hz:-} =~ ^[1-9][0-9]*$ ]] && [ "$best_hz" -gt "${hz:-0}" ] && hz=$best_hz
+      read -r _ _ plan_hz plan_kind _ < <(SIL_KEEP_UNSCALED=$(keep_hidpi) "$kit/tools/displaymode" plan "$dw" "$dh" 2>/dev/null || true)
+      [[ ${plan_hz:-} =~ ^[1-9][0-9]*$ ]] && hz=$plan_hz
+      printf 'Siliconium: display %sx%s, %s Hz while the game runs (%s)\n' "$dw" "$dh" "${hz:-?}" "${plan_kind:-?}" >&2
     fi ;;
 esac
 maxfps=${MAXFPS:-${hz:-0}}
@@ -825,6 +911,47 @@ else
     clear_env __CX_UNIX_SIL_REAPPLY_GAMMA
   fi
 fi
+# - SIL_HIDE_ON_DEACTIVATE (every game; HIDE_ON_CMDTAB=0 in settings.conf: off):
+#   without display capture (so the screen can be recorded) macOS handles
+#   Cmd-Tab itself and the game was only deactivated: its fullscreen window
+#   stayed on screen, black, behind the other app (2026-11-24). winemac now
+#   hides the game when another regular app comes to the front, as Wine did on
+#   Cmd-Tab while the displays were captured (1.0.0) and as Windows does on
+#   Alt-Tab (wine-winemac-hide-on-deactivate.patch); Cmd-Tab back shows it.
+#   Only a window that covers the screen, never in the game's first 3 s in
+#   front. iw6-focus's own hide could not do it (macOS hides another app
+#   asynchronously, and the helper is throttled while Game Mode is on).
+#   With it, a program the player left neither activates nor unhides itself
+#   until the player brings it back (Windows' foreground lock): Black Ops II,
+#   after its display mode was changed in its options, came back in front by
+#   itself 17-29 ms after each Cmd-Tab and then took no click (2026-11-24).
+#   Whatever the game does with its window then (fullscreen, fullscreen
+#   window, windowed) cannot pull it in front.
+# - SIL_DISPLAYMODE_RECORD (only with CMDTAB_DESKTOP_MODE=1, off by default):
+#   while the game is hidden, the desktop has its own mode back (HiDPI, sharp)
+#   and the game's 1x mode returns when the player comes back. Off since
+#   2026-11-24 (owner: "TODOS LOS JUEGOS en 1x, en su mejor performance"):
+#   each Cmd-Tab then reconfigured the display twice (the monitor resyncs, black,
+#   on every return) and Wine told the game the display changed each time
+#   (DisplayModeChanged -> WM_DISPLAYCHANGE), not shown to be harmless for
+#   exclusive-fullscreen D3D9 / DXMT games (6 switches in the owner's black
+#   Black Ops run). The game stays at 1x until it quits; the hold then puts the
+#   desktop's mode back.
+unset SIL_HIDE_ON_DEACTIVATE SIL_DISPLAYMODE_RECORD
+clear_vars=
+if [ "${HIDE_ON_CMDTAB:-1}" != 0 ]; then
+  export SIL_HIDE_ON_DEACTIVATE=1
+  set_env __CX_UNIX_SIL_HIDE_ON_DEACTIVATE 1
+  if [ "${CMDTAB_DESKTOP_MODE:-0}" = 1 ]; then
+    export SIL_DISPLAYMODE_RECORD="$home/cache/displaymode-desktop"
+    set_env __CX_UNIX_SIL_DISPLAYMODE_RECORD "$home/cache/displaymode-desktop"
+  else clear_vars=__CX_UNIX_SIL_DISPLAYMODE_RECORD; fi
+else
+  clear_vars="__CX_UNIX_SIL_HIDE_ON_DEACTIVATE __CX_UNIX_SIL_DISPLAYMODE_RECORD"
+fi
+for v in $clear_vars; do
+  if [ -n "${!v:-}" ] || grep -q "^\"$v\"=" "$WINEPREFIX/user.reg" 2>/dev/null; then clear_env "$v"; fi
+done
 
 if [ "${X87:-1}" = 1 ] && [ -x "$engine/bin/x87sidecar" ]; then
   # Through payload/x87/x87-bundle (tools/x87-bundle.c) when the Game Mode
@@ -1087,18 +1214,22 @@ fi
 reg add "$bootstrapper\\Direct3D" /v renderer /d no3d /f
 if on BO1_VIDMEM; then reg add "$bootstrapper\\Direct3D" /v VideoMemorySize /d 4096 /f
 else reg delete "$bootstrapper\\Direct3D" /v VideoMemorySize /f; fi
-# Fullscreen: Wine captures the display, macOS shows the frames directly.
-if on CAPTURE_DISPLAY; then reg add "$bootstrapper\\Mac Driver" /v CaptureDisplaysForFullscreen /d y /f
+# Fullscreen without capturing the display (owner's choice, 2026-11-24): a
+# captured display could not be recorded, showed black behind a windowed game
+# and made Cmd-Tab slower. The games still start in real fullscreen (their
+# configs below) at the held mode, through the window compositor.
+# (CAPTURE_DISPLAY=2: capture as before, kept for A/B tests only)
+if [ "${CAPTURE_DISPLAY:-0}" = 2 ]; then reg add "$bootstrapper\\Mac Driver" /v CaptureDisplaysForFullscreen /d y /f
 else reg add "$bootstrapper\\Mac Driver" /v CaptureDisplaysForFullscreen /d n /f; fi
 if [ "$t" = iw5 ]; then
   for exe in iw5mp.exe iw5sp.exe; do
-    if on CAPTURE_DISPLAY; then reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d y /f
+    if [ "${CAPTURE_DISPLAY:-0}" = 2 ]; then reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d y /f
     else reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d n /f; fi
   done
 fi
 if [ "$t" = iw4 ]; then
   for exe in iw4x.exe iw4x-sp.exe iw4sp.exe; do
-    if on CAPTURE_DISPLAY; then reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d y /f
+    if [ "${CAPTURE_DISPLAY:-0}" = 2 ]; then reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d y /f
     else reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d n /f; fi
   done
 fi
@@ -1149,7 +1280,11 @@ if [ "$t" = steam ]; then
   case "$s_kind" in
     iw6) capture=n ;;            # borderless
     t6)  capture=n ;;            # BO2 keeps the desktop's mode
-    *)   if on CAPTURE_DISPLAY; then capture=y; else capture=n; fi ;;
+    # Black Ops III as its Mod Tools' map test (bo3-modtools.sh): fullscreen
+    # through the window compositor (held at the desktop's size, below, so no
+    # mode switch): a captured display could not be recorded (2026-11-23)
+    t7)  capture=n ;;
+    *)   if [ "${CAPTURE_DISPLAY:-0}" = 2 ]; then capture=y; else capture=n; fi ;;
   esac
   reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d "$capture" /f
   if [ "$s_api" = d3d9x64 ]; then
@@ -1371,6 +1506,9 @@ if [ "$t" = steam ]; then
     mkdir -p "$dir/players"
     cp "$kit/payload/bo2/hardware.chp" "$dir/players/hardware.chp" && : > "$dir/players/.sil-defaults-hardware"
   fi
+  # (fullscreen at the desktop's size every start, as the Steam Library's
+  # other games: STEAM_SCREEN=0 leaves BO2's own choice)
+  [ "$s_kind" = t6 ] && [ "${STEAM_SCREEN:-1}" != 0 ] && bo2_hw_screen "$dir/players" - "$dir"/players/hardware*.chp
   # Controller aim as on the consoles, in the games with controller support
   case "$s_kind" in
     t6)  for c in "$dir"/players/*.cfg; do console_aim "$c"; done ;;
@@ -1669,13 +1807,14 @@ fi
 # the game, checking its license; Siliconium's patches are in the engine and the
 # environment, the game's files are Steam's own.
 if [ "$t" = t6s ]; then
-  if on CAPTURE_DISPLAY; then reg add 'HKCU\Software\Wine\AppDefaults\t6sp.exe\Mac Driver' /v CaptureDisplaysForFullscreen /d y /f
+  if [ "${CAPTURE_DISPLAY:-0}" = 2 ]; then reg add 'HKCU\Software\Wine\AppDefaults\t6sp.exe\Mac Driver' /v CaptureDisplaysForFullscreen /d y /f
   else reg add 'HKCU\Software\Wine\AppDefaults\t6sp.exe\Mac Driver' /v CaptureDisplaysForFullscreen /d n /f; fi
   # a hardware profile made on an Apple GPU (fullscreen 1920x1080), once, as for BO2
   if on BO2_HW_PROFILE && [ ! -f "$dir/players/.sil-defaults-hardware" ]; then
     mkdir -p "$dir/players"
     cp "$kit/payload/bo2/hardware.chp" "$dir/players/hardware.chp" && : > "$dir/players/.sil-defaults-hardware"
   fi
+  [ "${STEAM_SCREEN:-1}" != 0 ] && bo2_hw_screen "$dir/players" - "$dir"/players/hardware*.chp
   bs="$kit/bo2-steam.sh"
   clog="$WINEPREFIX/drive_c/Program Files (x86)/Steam/logs/connection_log.txt"
   seen=$(wc -l < "$clog" 2>/dev/null | tr -d ' '); seen=${seen:-0}
@@ -1724,7 +1863,7 @@ fi
 # working directory), on DXMT (Direct3D 11 -> Metal, 64-bit).
 if [ "$t" = t7 ]; then
   for exe in boiii.exe boiii-beta.exe BlackOps3.exe; do
-    if on CAPTURE_DISPLAY; then reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d y /f
+    if [ "${CAPTURE_DISPLAY:-0}" = 2 ]; then reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d y /f
     else reg add "HKCU\\Software\\Wine\\AppDefaults\\$exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d n /f; fi
   done
   # Shaders shared with the Steam Library's Black Ops III. DXMT keeps its
@@ -1930,7 +2069,7 @@ PY
   if on DISPLAY_MODE && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
     stop_displaymode
     log_cap "$home/logs/displaymode.log"
-    keep=0; on KEEP_HIDPI && keep=1   # (see hold_1x_size)
+    keep=$(keep_hidpi)   # (see hold_1x_size)
     SIL_KEEP_UNSCALED=$keep "$kit/tools/displaymode" "$dw" "$dh" $$ >> "$home/logs/displaymode.log" 2>&1 &
     sleep 2   # the switch first: Wine reads the desktop mode as the game starts
   fi
@@ -1986,16 +2125,18 @@ common_cvars() {
   if [ -n "$desktop" ]; then
     local rmode
     rmode=$(sed -n -E 's/^seta r_mode "([0-9]+)x[0-9]+"/\1/p' "$1")
-    # A resolution larger than the desktop (one saved before the desktop was
-    # made smaller, or the game's own pick of the panel's pixels) comes back
-    # to the desktop's size: the display is held at the game's resolution, and
-    # a larger one changed the Mac's resolution while the game ran (Black Ops
-    # II's profiles kept 2560x1440 on a 1920x1080 desktop, 2026-11-23). BO2
-    # on another monitor (r_monitor 2 and up), whose size can differ, is left
-    # as it is.
-    local mon
+    # Fullscreen at the desktop's own resolution, every start (the player's
+    # choice, 2026-11-24: change the Mac's resolution and the games follow): a
+    # saved resolution other than the desktop's (one from before the desktop
+    # changed, or the game's own pick of the panel's pixels) made Wine switch
+    # the display's mode (Black Ops II's profiles kept 2560x1440 on a
+    # 1920x1080 desktop, 2026-11-23). A windowed game (r_fullscreen "0") and
+    # BO2 on another monitor (r_monitor 2 and up) are left as they are.
+    local mon cur
     mon=$(sed -n -E 's/^seta r_monitor "([0-9]+)"/\1/p' "$1" | tail -1)
-    if [ "$rmode" = 800 ] || { { [ "$t" != t6 ] || [ "${mon:-0}" -le 1 ]; } && [ -n "$rmode" ] && [ "$rmode" -gt "${desktop%x*}" ]; }; then
+    cur=$(sed -n -E 's/^seta r_mode "([0-9]+x[0-9]+)".*/\1/p' "$1" | tail -1)
+    if [ "$rmode" = 800 ] || { { [ "$t" != t6 ] || [ "${mon:-0}" -le 1 ]; } && [ -n "$cur" ] && [ "$cur" != "$desktop" ] &&
+                               ! grep -q '^seta r_fullscreen "0"' "$1"; }; then
       set_cvar "$1" r_mode "$desktop"
     fi
   fi
@@ -2208,8 +2349,8 @@ elif [ "$t" = iw5 ]; then
   # decodes on one CPU thread under Rosetta (85-95 % busy, GPU idle) and only
   # reached ~27 of its 30 FPS, so the movie skipped frames.
   if on SKIP_INTRO; then set_or_add "$cfg" intro 0; fi
-  # Direct fullscreen: a borderless window becomes real fullscreen (Wine
-  # captures the display). A windowed mode the player picked is left alone.
+  # Real fullscreen: a borderless window becomes real fullscreen (no display
+  # capture: see the Wine settings). A windowed mode the player picked is left alone.
   on CAPTURE_DISPLAY && sed -i '' -E 's/^seta r_displayMode "windowed \(no border\)"/seta r_displayMode "fullscreen"/' "$cfg"
   # The app's frame-rate cap (the game's default is 300)
   set_or_add "$cfg" com_maxfps "${maxfps:-0}"
@@ -2274,6 +2415,8 @@ else
     set_or_add "$players/$c" fix_mouse_lag "$mouse_lag_fix"
     set_cvar "$players/$c" com_maxfps 0
   done
+  bo2_hw_screen "$players" "$players/plutonium_zm.cfg" "$players/hardware_zm.chp"
+  bo2_hw_screen "$players" "$players/plutonium_mp.cfg" "$players/hardware_mp.chp"
   gamecfg="$players/plutonium_zm.cfg"; [ "$mode" = mp ] && gamecfg="$players/plutonium_mp.cfg"
   # Black Ops II creates XAudio2 2.7 like Black Ops (the same COM class), and
   # Wine's builtin left its gunfire and most weapon sounds silent on some Macs
@@ -2298,23 +2441,34 @@ else
   fi
 fi
 
-if [ "$t:$mode" = iw5:mp ]; then
+if [ "$t" = iw5 ]; then
+  # Fullscreen at the desktop's own resolution, every start, as the other
+  # games (common_cvars; IW5_SCREEN=0 keeps the profile's): only the first
+  # start set it, so a desktop changed since (2560x1440 -> 1920x1080) kept the
+  # old size, its 1x mode was held for the whole game and the refresh setting
+  # below (which needs r_mode = the desktop's) was never corrected. (Here,
+  # after a borderless profile has been made fullscreen above.)
+  if on IW5_SCREEN && [ -n "$desktop" ] && grep -Fxq 'seta r_displayMode "fullscreen"' "$gamecfg" &&
+     ! grep -Fxq "seta r_mode \"$desktop\"" "$gamecfg"; then
+    set_or_add "$gamecfg" r_mode "$desktop"
+  fi
   # With VSync, IW5's saved 60 Hz caps fullscreen at 60 FPS even when
   # com_maxfps and DXVK are set to 160. At the desktop's size its refresh
-  # is already known to be available. Leave other resolutions to the game.
+  # is already known to be available: the game asks for exactly the rate
+  # the display runs at, every start, lower too (a 160 Hz saved from an
+  # earlier display setting, with the display at 144 Hz, ran at 160 FPS
+  # against a 144 Hz vsync, 2026-11-24). Leave other resolutions to the game.
+  # (Both modes: online and LAN run the same game and profile.)
   if on DISPLAY_MODE && [[ ${hz:-} =~ ^[1-9][0-9]*$ ]] &&
      grep -Fxq 'seta r_displayMode "fullscreen"' "$gamecfg" &&
      grep -Fxq "seta r_mode \"$desktop\"" "$gamecfg"; then
-    saved_hz=$(sed -n -E 's/^seta r_displayRefresh "([0-9]+) Hz"/\1/p' "$gamecfg" | tail -1)
-    if [ "${saved_hz:-0}" -lt "$hz" ]; then
-      set_or_add "$gamecfg" r_displayRefresh "$hz Hz"
-    fi
+    set_or_add "$gamecfg" r_displayRefresh "$hz Hz"
   fi
 fi
 if [ "$t" = iw5 ]; then
   # A 1x display mode of the resolution Modern Warfare 3 runs at, while it is
-  # fullscreen (as for BO1/BO2), so a HiDPI desktop is not scaled every frame;
-  # an unscaled HiDPI desktop is kept (hold_1x_size). Both modes: the
+  # fullscreen (as for BO1/BO2), so a HiDPI desktop is not scaled every frame
+  # (hold_1x_size). Both modes: the
   # multiplayer had none, and the other mode passed "1920x1080" as one
   # argument, which displaymode refused (it takes width and height), so it
   # never held either (found by a code audit, 2026-11-23).

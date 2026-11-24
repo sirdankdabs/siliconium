@@ -181,7 +181,8 @@ bnet_title() {
 bnet_play() {
   local log="$home/logs/battlenet-$b_id.log" capture game_pid cpu pid
   log_cap "$log"
-  if on CAPTURE_DISPLAY; then capture=y; else capture=n; fi
+  # no display capture (launch.sh, Wine settings; CAPTURE_DISPLAY=2: as before)
+  if [ "${CAPTURE_DISPLAY:-0}" = 2 ]; then capture=y; else capture=n; fi
   reg add "HKCU\\Software\\Wine\\AppDefaults\\$b_exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d "$capture" /f
   reg_flush
   # Wine's mouse look as for the Steam Library's Black Ops III (the game draws

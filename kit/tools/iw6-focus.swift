@@ -119,59 +119,109 @@ let resident: Process? = {
     DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: work)
 }
 
+// The game has been the active app at least once (its first frames drawn)
+var wasFront = false
 let updateVisibility: @MainActor @Sendable () -> Void = {
     if workspace.frontmostApplication?.processIdentifier == gamePID {
+        wasFront = true
         restoreOnActivation()
     } else {
         pending?.cancel()
-        // Ghosts can leave its black fullscreen window above the desktop
-        // while another app is active. Hide just the game in that case.
-        // Ghosts only: hiding Call of Duty 2 while it started (Siliconium
-        // still in front) froze it before its first frame.
-        if isGhosts, let game = NSRunningApplication(processIdentifier: gamePID), !game.isActive, !game.isHidden {
+        // As Windows does with a fullscreen game on Alt-Tab: the game goes
+        // out of the way when the player switches to another app. Left on
+        // screen, its fullscreen window stayed above the desktop, black,
+        // behind the other app (Ghosts; and every game once the display was
+        // no longer captured, 2026-11-24). Cmd-Tab back shows it again (macOS
+        // unhides an app it activates) and the window is restored above.
+        // Ghosts at any time; the others only once they have been in front:
+        // hiding Call of Duty 2 while it started (Siliconium still in front)
+        // froze it before its first frame.
+        // (A fallback since 2026-11-24: winemac hides the game itself,
+        // SIL_HIDE_ON_DEACTIVATE in launch.sh. This hide is asynchronous and
+        // came too late or not at all in a BO2 run: this helper sits at
+        // priority 4 while Game Mode is on.)
+        if isGhosts || wasFront, let game = NSRunningApplication(processIdentifier: gamePID), !game.isActive, !game.isHidden {
             _ = game.hide()
         }
     }
 }
 
-// SIL_FOCUS_FROM=<name>[:<name>…] (Battle.net's games): a game that another
-// program starts (Battle.net) is not brought forward by macOS, so the keys went
-// to the app that was in front and macOS Game Mode stayed off until a click.
-// Once the game's window is on screen it is made the active app, but only if
-// the app in front then is one of these (a bundle identifier, or the Windows
-// program a Wine process runs): Siliconium after Play, or Battle.net. Another
-// app in front (the player went elsewhere) is never interrupted. Once only.
-func gameWindowOnScreen() -> Bool {
-    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
-    return list.contains { info in
+// SIL_FOCUS_FROM=<name>[:<name>…] (set by every Siliconium launcher): a game
+// that another program starts (a launcher, Plutonium's bootstrapper, Steam,
+// Battle.net) is not brought forward by macOS, so the keys went to the app that
+// was in front and macOS Game Mode stayed off until a click. Once the game's
+// window is on screen it is made the active app, ONCE per start (the first
+// 5 minutes after its window was found), whichever app is in front then: the
+// player started it from Siliconium (owner, 2026-11-24: "No pasaba en la
+// 1.0.0"). Until then a player who went to another app while the game loaded
+// got it left behind ("game left behind claude"): Black Ops' exclusive
+// fullscreen draws nothing while it is not the active app, so the intro and
+// menu stayed black until a click (1.0.0's captured display had kept the game
+// above everything). The names only say, in the log, where it came from.
+// Never again after that first time: Cmd-Tab away later is the player's.
+//
+// macOS 14+ activation is cooperative: a request from a helper may be
+// ignored when the app in front has not yielded. So: the documented request
+// first; if the game is still not in front half a second later, WindowServer
+// is asked to make it the front process (SkyLight's
+// _SLPSSetFrontProcessWithOptions, as macOS's own app switchers do; looked up
+// at run time, skipped if missing); the log says which one worked.
+/// The game's screen window (not one of its message boxes), if it is on screen.
+func gameWindowOnScreen() -> CGWindowID? {
+    guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
+    for info in list {
         guard (info[kCGWindowOwnerPID as String] as? Int32) == gamePID,
               let bounds = info[kCGWindowBounds as String] as? [String: Any],
-              let width = bounds["Width"] as? Double, let height = bounds["Height"] as? Double else { return false }
-        return width >= 640 && height >= 480   // the game's screen, not one of its message boxes
+              let width = bounds["Width"] as? Double, let height = bounds["Height"] as? Double,
+              width >= 640 && height >= 480 else { continue }
+        return (info[kCGWindowNumber as String] as? UInt32) ?? 0
     }
+    return nil
 }
 func say(_ text: String) { FileHandle.standardOutput.write(Data("Siliconium: \(text)\n".utf8)) }
+/// WindowServer's own "make this the front process" (what a click on the
+/// game's window does); answers nil when the private functions are not there.
+let setFrontProcess: (pid_t, CGWindowID) -> Int32? = {
+    typealias PSNForPID = @convention(c) (pid_t, UnsafeMutablePointer<UInt32>) -> Int32
+    typealias SetFront = @convention(c) (UnsafeMutablePointer<UInt32>, UInt32, UInt32) -> Int32
+    let sky = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY)
+    guard let p = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "GetProcessForPID"),   // RTLD_DEFAULT
+          let f = sky.flatMap({ dlsym($0, "_SLPSSetFrontProcessWithOptions") }) else { return { _, _ in nil } }
+    let psnForPID = unsafeBitCast(p, to: PSNForPID.self), setFront = unsafeBitCast(f, to: SetFront.self)
+    return { pid, window in
+        var psn: [UInt32] = [0, 0]   // ProcessSerialNumber (high, low)
+        guard psnForPID(pid, &psn) == 0 else { return nil }
+        return setFront(&psn, window, 0x200)   // kCPSUserGenerated
+    }
+}()
 let frontFrom = (ProcessInfo.processInfo.environment["SIL_FOCUS_FROM"] ?? "").split(separator: ":").map { $0.lowercased() }
 var frontTries = 0
+var frontFirstFrom = ""
 let frontSince = Date()
 let bringFront: Timer? = frontFrom.isEmpty ? nil : Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
     MainActor.assumeIsolated {
         if Date().timeIntervalSince(frontSince) > 300 { timer.invalidate(); return }
-        guard gameWindowOnScreen(), let game = NSRunningApplication(processIdentifier: gamePID),
+        guard let window = gameWindowOnScreen(), let game = NSRunningApplication(processIdentifier: gamePID),
               let front = workspace.frontmostApplication else { return }
         if front.processIdentifier == gamePID {
-            if frontTries > 0 { say("the game is in front") }
+            if frontTries > 0 {
+                say("the game is in front (from \(frontFirstFrom), \(frontTries == 1 ? "macOS request" : "WindowServer"))")
+            }
             timer.invalidate(); return
         }
         let names = [front.bundleIdentifier, windowsProgram(front.processIdentifier)].compactMap { $0?.lowercased() }
-        guard names.contains(where: frontFrom.contains) else {
-            say("game left behind \(names.last ?? "another app") (not Siliconium or the launcher)")
-            timer.invalidate(); return
-        }
-        // as if the app in front handed over (macOS's cooperative activation)
-        let asked = game.activate(from: front, options: [.activateAllWindows]) || game.activate(options: [.activateAllWindows])
+        let from = names.last ?? "another app"
         frontTries += 1
-        if frontTries == 1 { say("bringing the game to the front from \(names.last ?? "?") (\(asked ? "asked" : "refused"))") }
+        if frontTries == 1 {
+            frontFirstFrom = from
+            // as if the app in front handed over (macOS's cooperative activation)
+            let asked = game.activate(from: front, options: [.activateAllWindows]) || game.activate(options: [.activateAllWindows])
+            say("bringing the game to the front from \(from)\(names.contains(where: frontFrom.contains) ? "" : " (another app)") (\(asked ? "asked" : "refused"))")
+        } else if let result = setFrontProcess(gamePID, window) {
+            if frontTries == 2 { say("macOS did not bring it; asking WindowServer (\(result == 0 ? "ok" : "error \(result)"))") }
+        } else {
+            _ = game.activate(options: [.activateAllWindows])
+        }
         if frontTries >= 10 { say("the game did not come to the front"); timer.invalidate() }
     }
 }

@@ -106,8 +106,18 @@ static struct { void *data; size_t size, saved; } shard[MAX_SHARDS];
 static volatile uint32_t shard_dirty[MAX_SHARDS];   /* pipelines created since its last save */
 static int logging, disabled, fps_log;
 
-/* each device's caches, one per shard */
-static struct { VkDevice dev; VkPipelineCache pc[MAX_SHARDS]; } devs[MAX_DEVS];
+/* each device's caches, one per shard; ready[i]: shard i's saved data has
+   been read (its cache can be used), started[i]: a thread is reading it */
+static struct {
+    VkDevice dev;
+    VkPipelineCache pc[MAX_SHARDS];
+    volatile int ready[MAX_SHARDS];
+    int started[MAX_SHARDS];
+    pthread_t th[MAX_SHARDS];
+    volatile int finished;
+    uint64_t t0;
+    double slowest;
+} devs[MAX_DEVS];
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;   /* devs[] and saving */
 static volatile uint64_t created, last_create_ns, create_ns;
 static uint64_t saved_count = (uint64_t)-1, last_save_ns;
@@ -222,7 +232,8 @@ static void save_all_locked(void)
     for (int d = 0; d < MAX_DEVS; d++)
         if (devs[d].dev)
             for (int i = 0; i < nshards; i++)
-                if (devs[d].pc[i] && __atomic_exchange_n(&shard_dirty[i], 0, __ATOMIC_ACQ_REL))
+                if (__atomic_load_n(&devs[d].ready[i], __ATOMIC_ACQUIRE) && devs[d].pc[i] &&
+                    __atomic_exchange_n(&shard_dirty[i], 0, __ATOMIC_ACQ_REL))
                     save_shard_locked(i, devs[d].dev, devs[d].pc[i]);
 }
 
@@ -267,10 +278,66 @@ static int resolve_cache_fns(VkDevice dev)
    pipeline creation never waits for a save. */
 static volatile int devs_ready[MAX_DEVS];
 
+/* One shard's cache for a device, filled with its saved data. MoltenVK
+   compiles every Metal library in that data while it reads it (Metal finds
+   most in its own shader cache: 0.5 s a shard). When Metal has not kept them
+   (a macOS update; libraries another game added with another Metal cache)
+   that took minutes, one library at a time: Black Ops (Plutonium Zombies,
+   2026-11-24) compiled 405 of them in 125 s, 372 ms each, and every pipeline
+   waited behind this file's lock (intro and menu black, sound playing; DXVK's
+   loading-screen wait gave up after 90 s). So the shards are read in the
+   background, side by side (one thread each: Metal compiled 7.9 libraries at
+   once), and the game never waits for them: until its shard is ready a
+   pipeline is created without a cache, as MoltenVK does on its own. */
+struct shard_job { int d, s; };
+static struct shard_job jobs[MAX_DEVS][MAX_SHARDS];
+static pthread_mutex_t jlock = PTHREAD_MUTEX_INITIALIZER;   /* devs[].finished / slowest */
+
+static void *create_shard_cache(void *arg)
+{
+    const struct shard_job *j = arg;
+    VkDevice dev = devs[j->d].dev;
+    uint64_t t = now_ns();
+    VkPipelineCache pc = 0;
+    VkPipelineCacheCreateInfo ci = { 17 /* VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO */, NULL, 0,
+                                     shard[j->s].size, shard[j->s].data };
+    VkResult r = shard[j->s].data ? real_create_pc(dev, &ci, NULL, &pc) : -1;
+    if (r != 0) {
+        ci.initialDataSize = 0; ci.pInitialData = NULL;
+        if (real_create_pc(dev, &ci, NULL, &pc) != 0) pc = 0;
+    }
+    double secs = (now_ns() - t) / 1e9;
+    devs[j->d].pc[j->s] = pc;
+    __atomic_store_n(&devs[j->d].ready[j->s], 1, __ATOMIC_RELEASE);
+    LOG("device %p: cache %d ready in %.2f s (%s)", dev, j->s, secs, r == 0 ? "saved data" : "empty");
+    pthread_mutex_lock(&jlock);
+    if (secs > devs[j->d].slowest) devs[j->d].slowest = secs;
+    int n = ++devs[j->d].finished;
+    double slowest = devs[j->d].slowest;
+    pthread_mutex_unlock(&jlock);
+    if (n == nshards) {
+        double all = (now_ns() - devs[j->d].t0) / 1e9;
+        if (all >= 1.0)   /* worth a line in the game's log: Metal compiled what it had not kept */
+            fprintf(stderr, "[mvkcache] saved caches read in %.1f s (%d side by side, slowest %.1f s; "
+                    "the game did not wait for them)\n", all, nshards, slowest);
+    }
+    return NULL;
+}
+
+/* The device's shard i cache, or 0 while its saved data is still being read
+   (the first call for a device starts reading every shard). Lock-free once
+   the device is known, so pipeline creation never waits for a save. */
+static volatile int devs_ready[MAX_DEVS];
+
+static VkPipelineCache shard_cache(int d, int i)
+{
+    return __atomic_load_n(&devs[d].ready[i], __ATOMIC_ACQUIRE) ? devs[d].pc[i] : 0;
+}
+
 static VkPipelineCache device_cache(VkDevice dev, int i)
 {
     for (int d = 0; d < MAX_DEVS; d++)
-        if (__atomic_load_n(&devs_ready[d], __ATOMIC_ACQUIRE) && devs[d].dev == dev) return devs[d].pc[i];
+        if (__atomic_load_n(&devs_ready[d], __ATOMIC_ACQUIRE) && devs[d].dev == dev) return shard_cache(d, i);
     pthread_mutex_lock(&lock);
     int d, free_slot = -1;
     for (d = 0; d < MAX_DEVS; d++) {
@@ -281,21 +348,29 @@ static VkPipelineCache device_cache(VkDevice dev, int i)
         if (free_slot < 0 || !resolve_cache_fns(dev)) { pthread_mutex_unlock(&lock); return 0; }
         d = free_slot;
         devs[d].dev = dev;
-        int loaded = 0;
-        for (int s = 0; s < nshards; s++) {
-            VkPipelineCacheCreateInfo ci = { 17 /* VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO */, NULL, 0,
-                                             shard[s].size, shard[s].data };
-            VkResult r = shard[s].data ? real_create_pc(dev, &ci, NULL, &devs[d].pc[s]) : -1;
-            if (r == 0) loaded++;
-            else {
-                ci.initialDataSize = 0; ci.pInitialData = NULL;
-                if (real_create_pc(dev, &ci, NULL, &devs[d].pc[s]) != 0) devs[d].pc[s] = 0;
-            }
+        devs[d].finished = 0;
+        devs[d].slowest = 0;
+        devs[d].t0 = now_ns();
+        pthread_attr_t attr;
+        int attr_ok = pthread_attr_init(&attr) == 0;
+        if (attr_ok) {
+            pthread_attr_setstacksize(&attr, 8u << 20);
+            /* below the game's own threads: Metal's compiles for it run at
+               the requesting thread's priority */
+            pthread_attr_set_qos_class_np(&attr, QOS_CLASS_UTILITY, 0);
         }
-        LOG("device %p: %d caches, %d with saved data", dev, nshards, loaded);
+        for (int s = 0; s < nshards; s++) {
+            jobs[d][s] = (struct shard_job){ d, s };
+            devs[d].ready[s] = 0;
+            devs[d].started[s] = attr_ok && pthread_create(&devs[d].th[s], &attr, create_shard_cache, &jobs[d][s]) == 0;
+        }
+        if (attr_ok) pthread_attr_destroy(&attr);
+        for (int s = 0; s < nshards; s++)
+            if (!devs[d].started[s]) create_shard_cache(&jobs[d][s]);   /* no thread: here, as before */
+        LOG("device %p: reading %d caches in the background", dev, nshards);
         __atomic_store_n(&devs_ready[d], 1, __ATOMIC_RELEASE);
     }
-    VkPipelineCache pc = devs[d].pc[i];
+    VkPipelineCache pc = shard_cache(d, i);
     pthread_mutex_unlock(&lock);
     return pc;
 }
@@ -306,12 +381,17 @@ static void my_destroy_dev(VkDevice dev, const void *alloc)
     for (int d = 0; d < MAX_DEVS; d++)
         if (devs[d].dev == dev) {
             __atomic_store_n(&devs_ready[d], 0, __ATOMIC_RELEASE);
+            /* a cache still being read must be complete before the device goes */
             for (int i = 0; i < nshards; i++)
+                if (devs[d].started[i]) { pthread_join(devs[d].th[i], NULL); devs[d].started[i] = 0; }
+            for (int i = 0; i < nshards; i++) {
+                devs[d].ready[i] = 0;
                 if (devs[d].pc[i]) {
                     save_shard_locked(i, dev, devs[d].pc[i]);
                     real_destroy_pc(dev, devs[d].pc[i], NULL);
                     devs[d].pc[i] = 0;
                 }
+            }
             devs[d].dev = NULL;
         }
     pthread_mutex_unlock(&lock);
@@ -331,8 +411,8 @@ static VkResult my_create_gfx(VkDevice dev, VkPipelineCache pc, uint32_t n, cons
     if (!pc && n) {
         const GfxInfoHead *g = ci;
         int s = shard_of(g->pStages, g->stageCount);
-        pc = device_cache(dev, s);
-        __atomic_store_n(&shard_dirty[s], 1, __ATOMIC_RELEASE);
+        pc = device_cache(dev, s);   /* 0 while the shard is still being read */
+        if (pc) __atomic_store_n(&shard_dirty[s], 1, __ATOMIC_RELEASE);
     }
     uint64_t t = now_ns();
     VkResult r = real_create_gfx(dev, pc, n, ci, alloc, out);
@@ -347,8 +427,8 @@ static VkResult my_create_cmp(VkDevice dev, VkPipelineCache pc, uint32_t n, cons
     if (!pc && n) {
         const CmpInfoHead *c = ci;
         int s = shard_of(&c->stage, 1);
-        pc = device_cache(dev, s);
-        __atomic_store_n(&shard_dirty[s], 1, __ATOMIC_RELEASE);
+        pc = device_cache(dev, s);   /* 0 while the shard is still being read */
+        if (pc) __atomic_store_n(&shard_dirty[s], 1, __ATOMIC_RELEASE);
     }
     VkResult r = real_create_cmp(dev, pc, n, ci, alloc, out);
     __atomic_add_fetch(&created, n, __ATOMIC_RELAXED);

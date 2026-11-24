@@ -1,0 +1,294 @@
+Every game (SIL_HIDE_ON_DEACTIVATE=1): a fullscreen game hides itself when the player
+switches to another (regular) app, as Wine does on Cmd-Tab with captured displays;
+with SIL_DISPLAYMODE_RECORD (launch.sh's display mode hold) the desktop's own mode
+(HiDPI) is back while the game is hidden, and the game's 1x mode when it returns.
+While the player is in another app the program neither activates nor unhides itself
+(Windows' foreground lock): no game pulls itself in front again after Cmd-Tab.
+When the player comes back, the window that had the foreground is restored (if the
+game minimized it) and gets the foreground back at once, in the game's own thread,
+as a taskbar click does on Windows: the game takes clicks and keys again.
+Apply after wine-winemac-reapply-gamma.patch.
+
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -134,6 +134,148 @@
+     NSApp.presentationOptions = NSApplicationPresentationHideDock |
+                                 NSApplicationPresentationHideMenuBar |
+                                 NSApplicationPresentationDisableCursorLocationAssistance;
++}
++
++/* Siliconium (SIL_HIDE_ON_DEACTIVATE=1): a fullscreen game hides itself when
++ * the player switches to another app, as Windows does on Alt-Tab and as Wine
++ * itself does on Cmd-Tab while the displays are captured (handleCommandTab:
++ * [NSApp hide:self]). Without display capture (so the screen can be recorded)
++ * the system handles Cmd-Tab, the game was only deactivated, and its black
++ * fullscreen window stayed on screen behind the other app. An outside helper
++ * cannot do it: NSRunningApplication -hide is refused for a UIElement app (the
++ * game bundle), while the app's own [NSApp hide:] works. macOS unhides the app
++ * when the player activates it again. Only when the app in front is a regular
++ * app (not Spotlight, Notification Center or a system prompt), only for a
++ * window that covers a screen, and not in the first seconds after the game
++ * came to the front (a game hidden while it starts can freeze). */
++static BOOL hide_on_deactivate(void)
++{
++    static dispatch_once_t once;
++    static BOOL enabled;
++
++    dispatch_once(&once, ^{
++        const char *value = getenv("SIL_HIDE_ON_DEACTIVATE");
++        enabled = value && !strcmp(value, "1");
++    });
++    return enabled;
++}
++
++static CFAbsoluteTime sil_active_since;
++
++/* Siliconium (SIL_HIDE_ON_DEACTIVATE=1): set when the player leaves the app
++ * for another one (Cmd-Tab, a click, the Dock) and cleared when the app is
++ * active again. Meanwhile the app neither activates itself
++ * (tryToActivateIgnoringOtherApps:) nor unhides itself (orderBelow:orAbove:
++ * activate:, cocoa_window.m): as Windows' foreground lock, a program the
++ * player left cannot take the foreground back; only the player (or macOS on
++ * their behalf) brings it back. Whatever the game does with its window when
++ * it loses the focus (fullscreen, fullscreen window or windowed; minimize,
++ * re-show, re-enter fullscreen) cannot pull it in front again. Black Ops II,
++ * 2026-11-24, after the player switched its display mode in its options:
++ * each Cmd-Tab out was followed 17-29 ms later by the game in front again
++ * (launchservicesd SETFRONT), and back from the next one it took no click
++ * until another Cmd-Tab. NSApp's unhide: also activates the app. */
++BOOL sil_left_by_player;
++
++/* Siliconium (SIL_DISPLAYMODE_RECORD = the record of launch.sh's display mode
++ * hold, tools/displaymode: the desktop's mode ID, then the 1x mode ID held
++ * while the game runs): while the game is hidden behind another app the
++ * desktop gets its own mode back (HiDPI), and the game's 1x mode returns when
++ * the game is active again. Only when the hold switched modes (the record is
++ * there), only after this process hid the game, and only from the mode we
++ * expect (a mode the player chose meanwhile is left alone). */
++static BOOL sil_switched_to_desktop;
++
++static CGDisplayModeRef sil_copy_mode_with_id(CGDirectDisplayID display, int32_t mode_id)
++{
++    const void *keys[] = { kCGDisplayShowDuplicateLowResolutionModes };
++    const void *values[] = { kCFBooleanTrue };
++    CFDictionaryRef options = CFDictionaryCreate(NULL, keys, values, 1, &kCFTypeDictionaryKeyCallBacks,
++                                                 &kCFTypeDictionaryValueCallBacks);
++    CFArrayRef modes = CGDisplayCopyAllDisplayModes(display, options);
++    CGDisplayModeRef found = NULL;
++    CFIndex i;
++
++    if (options) CFRelease(options);
++    if (!modes) return NULL;
++    for (i = 0; i < CFArrayGetCount(modes); i++)
++    {
++        CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
++        if (CGDisplayModeGetIODisplayModeID(mode) == mode_id)
++        {
++            found = CGDisplayModeRetain(mode);
++            break;
++        }
++    }
++    CFRelease(modes);
++    return found;
++}
++
++static void sil_desktop_mode_while_away(BOOL away)
++{
++    const char *path = getenv("SIL_DISPLAYMODE_RECORD");
++    CGDirectDisplayID display = CGMainDisplayID();
++    CGDisplayModeRef current, target;
++    int32_t desktop_id = 0, held_id = 0, from, to;
++    CGDisplayConfigRef config;
++    FILE *f;
++
++    if (!path || !*path) return;
++    if (!away && !sil_switched_to_desktop) return;
++    sil_switched_to_desktop = FALSE;
++    if (!(f = fopen(path, "r"))) return;   /* no hold (or it ended): nothing to do */
++    if (fscanf(f, "%d %d", &desktop_id, &held_id) != 2) desktop_id = held_id = 0;
++    fclose(f);
++    if (!desktop_id || !held_id || desktop_id == held_id) return;
++    from = away ? held_id : desktop_id;
++    to = away ? desktop_id : held_id;
++    if (!(current = CGDisplayCopyDisplayMode(display))) return;
++    if (CGDisplayModeGetIODisplayModeID(current) != from)
++    {
++        CGDisplayModeRelease(current);
++        return;
++    }
++    CGDisplayModeRelease(current);
++    if (!(target = sil_copy_mode_with_id(display, to))) return;
++    if (CGBeginDisplayConfiguration(&config) == kCGErrorSuccess)
++    {
++        CGConfigureDisplayWithDisplayMode(config, display, target, NULL);
++        if (CGCompleteDisplayConfiguration(config, kCGConfigureForSession) == kCGErrorSuccess && away)
++            sil_switched_to_desktop = TRUE;
++    }
++    CGDisplayModeRelease(target);
++}
++
++static void sil_hide_if_other_app_in_front(int tries)
++{
++    NSRunningApplication* front;
++    NSWindow* window;
++    BOOL fullscreen = FALSE;
++
++    if ([NSApp isActive] || [NSApp isHidden]) return;
++    front = [[NSWorkspace sharedWorkspace] frontmostApplication];
++    if (!front || [front isEqual:[NSRunningApplication currentApplication]])
++    {
++        /* the system has not named the new app yet */
++        if (tries > 0)
++            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
++                sil_hide_if_other_app_in_front(tries - 1);
++            });
++        return;
++    }
++    if (front.activationPolicy != NSApplicationActivationPolicyRegular) return;
++    for (window in [NSApp windows])
++    {
++        if ([window isKindOfClass:[WineWindow class]] && ((WineWindow*)window).fullscreen &&
++            [window isVisible] && ![window isMiniaturized])
++        {
++            fullscreen = TRUE;
++            break;
++        }
++    }
++    if (!fullscreen) return;
++    [NSApp hide:nil];
++    sil_desktop_mode_while_away(TRUE);
+ }
+ 
+ @implementation WineApplication
+@@ -2369,6 +2511,7 @@
+         NSDictionary *userInfo;
+ 
+         if ([NSApp isActive]) return;  /* Nothing to do. */
++        if (sil_left_by_player) return;  /* the player left it (see there) */
+ 
+         if (!ignore ||
+             ![NSApplication instancesRespondToSelector:@selector(yieldActivationToApplication:)])
+@@ -2659,6 +2802,9 @@
+ 
+         update_game_presentation();
+         macdrv_reapply_gamma();
++        sil_active_since = CFAbsoluteTimeGetCurrent();
++        sil_left_by_player = FALSE;
++        sil_desktop_mode_while_away(FALSE);
+     }
+ 
+     - (void)applicationDidChangeScreenParameters:(NSNotification *)notification
+@@ -2695,6 +2841,12 @@
+         [self endMouseLook];
+         if (use_transparent_cursor()) [self updateCursor:FALSE];
+         [self releaseMouseCapture];
++
++        if (hide_on_deactivate() && !temporarilyIgnoreResignEventsForDialog)
++            sil_left_by_player = TRUE;
++        if (hide_on_deactivate() && !temporarilyIgnoreResignEventsForDialog && sil_active_since &&
++            CFAbsoluteTimeGetCurrent() - sil_active_since >= 3.0)
++            sil_hide_if_other_app_in_front(5);
+     }
+ 
+     - (void) applicationDidUnhide:(NSNotification*)aNotification
+@@ -2771,7 +2923,11 @@
+ 
+     - (void)applicationWillBecomeActive:(NSNotification *)notification
+     {
+-        macdrv_event* event = macdrv_create_event(APP_ACTIVATED, nil);
++        macdrv_event* event;
++
++        /* (before the event: the game's thread restores its window at once) */
++        sil_left_by_player = FALSE;
++        event = macdrv_create_event(APP_ACTIVATED, nil);
+         event->deliver = 1;
+ 
+         [eventQueuesLock lock];
+--- a/dlls/winemac.drv/cocoa_window.m
++++ b/dlls/winemac.drv/cocoa_window.m
+@@ -28,6 +28,9 @@
+ 
+ #import "cocoa_window.h"
+ 
++/* Siliconium: cocoa_app.m */
++extern BOOL sil_left_by_player;
++
+ #include "macdrv_cocoa.h"
+ #import "cocoa_app.h"
+ #import "cocoa_event.h"
+@@ -1741,7 +1744,9 @@
+             WineWindow* child;
+ 
+             [controller transformProcessToForeground:!self.preventsAppActivation];
+-            if ([NSApp isHidden])
++            /* (not while the player is in another app: unhide: activates;
++               sil_left_by_player, cocoa_app.m) */
++            if ([NSApp isHidden] && !sil_left_by_player)
+                 [NSApp unhide:nil];
+             wasVisible = [self isVisible];
+ 
+--- a/dlls/winemac.drv/window.c
++++ b/dlls/winemac.drv/window.c
+@@ -1883,10 +1883,54 @@
+  *
+  * Handler for APP_ACTIVATED events.
+  */
++/* Siliconium (SIL_HIDE_ON_DEACTIVATE=1, every game Siliconium starts): the
++ * window that had the foreground when the player left the app. Wine gives the
++ * foreground to the desktop window then (below) and, until now, never gave it
++ * back when the player returned: a window the game had minimized on losing
++ * the focus (exclusive fullscreen: Black Ops, Black Ops II) came back on
++ * screen through an outside helper, 0.25-0.35 s later and from another
++ * process, and the game, still told it was in the background, took no click
++ * or key (Black Ops II, 2026-11-24: back from the second Cmd-Tab). Now, as
++ * Windows does when the player clicks a game's taskbar button: the window is
++ * restored through its own window procedure (SC_RESTORE, as
++ * macdrv_window_did_unminimize does) and given the foreground at once, in
++ * the game's own thread. */
++static HWND sil_left_foreground;
++
++static BOOL sil_restore_foreground(void)
++{
++    static int enabled = -1;
++    if (enabled < 0)
++    {
++        const char *value = getenv("SIL_HIDE_ON_DEACTIVATE");
++        enabled = value && !strcmp(value, "1");
++    }
++    return enabled;
++}
++
+ void macdrv_app_activated(void)
+ {
++    HWND hwnd = sil_left_foreground, fg;
++
+     TRACE("\n");
+     macdrv_UpdateClipboard();
++
++    if (!hwnd || !sil_restore_foreground()) return;
++    if (!NtUserIsWindow(hwnd) || NtUserGetWindowThread(hwnd, NULL) != GetCurrentThreadId()) return;
++    sil_left_foreground = 0;
++    fg = NtUserGetForegroundWindow();
++    if (fg && fg != NtUserGetDesktopWindow()) return;   /* the player clicked one already */
++    if (!(NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_VISIBLE)) return;
++    if (NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_MINIMIZE)
++    {
++        TRACE("restoring %p left minimized\n", hwnd);
++        send_message(hwnd, WM_SYSCOMMAND, SC_RESTORE, 0);
++    }
++    if (NtUserIsWindow(hwnd) && NtUserGetForegroundWindow() != hwnd)
++    {
++        TRACE("giving the foreground back to %p\n", hwnd);
++        NtUserSetForegroundWindowInternal(hwnd);
++    }
+ }
+ 
+ 
+@@ -1901,6 +1945,7 @@
+ 
+     if (get_active_window() == NtUserGetForegroundWindow())
+     {
++        if (sil_restore_foreground()) sil_left_foreground = NtUserGetForegroundWindow();
+         TRACE("setting fg to desktop\n");
+         NtUserSetForegroundWindowInternal(NtUserGetDesktopWindow());
+     }

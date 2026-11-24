@@ -147,7 +147,26 @@ start)
   # the map (2026-11-22). No spaces, and short paths (MAX_PATH) for deep assets
   if letter=$(sil_drive_for "$ws"); then root="$(printf '%s' "$letter" | tr '[:lower:]' '[:upper:]'):\\"
   else root="$(sil_winpath "$ws")\\"; fi
-  read -r _ _ hz < <("$kit/tools/displaymode" current 2>/dev/null || true)
+  # (a hold a killed game left behind is undone first, as launch.sh does)
+  "$kit/tools/displaymode" restore >> "$home/logs/displaymode.log" 2>&1 || true
+  read -r dw dh hz < <("$kit/tools/displaymode" current 2>/dev/null || true)
+  # A map test's screen as the Steam Library's Black Ops III (launch.sh,
+  # tools/steam-games.sh BOIII_SCREEN): the desktop's size at the rate of the
+  # mode the map test's hold (mt_watch) will use, as launch.sh: displaymode
+  # plan, the hold's own rule (a scaled 2560x1440 HiDPI desktop at 154 Hz:
+  # its 1x mode's 160 Hz; an unscaled HiDPI desktop kept: its own rate)
+  [ -n "${DISPLAY_MODE+x}" ] ||
+    DISPLAY_MODE=$(sed -n 's/^[[:space:]]*DISPLAY_MODE[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+                   "$home/settings.conf" 2> /dev/null | head -n 1)
+  # (KEEP_HIDPI, 1 by default as in launch.sh: an unscaled HiDPI desktop stays)
+  [ -n "${KEEP_HIDPI+x}" ] ||
+    KEEP_HIDPI=$(sed -n 's/^[[:space:]]*KEEP_HIDPI[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+                 "$home/settings.conf" 2> /dev/null | head -n 1)
+  if [ "${DISPLAY_MODE:-1}" != 0 ] && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
+    case "${KEEP_HIDPI:-1}" in 0) mt_keep=0 ;; 2) mt_keep=2 ;; *) mt_keep=1 ;; esac
+    read -r _ _ plan_hz _ < <(SIL_KEEP_UNSCALED=$mt_keep "$kit/tools/displaymode" plan "$dw" "$dh" 2> /dev/null || true)
+    [[ ${plan_hz:-} =~ ^[1-9][0-9]*$ ]] && hz=$plan_hz
+  fi
   dxmt="d3d11.asyncPipelineCompile=True;"
   case "${hz:-}" in [1-9][0-9]*) dxmt="d3d11.preferredMaxFrameRate=$hz;$dxmt" ;; esac
   # The tools' database of assets (gdtdb/gdt.db, the player's own file) keeps
@@ -344,12 +363,30 @@ start)
   # destroyed one heap twice when Radiant's lighting threads used it at once)
   # and with its own Direct3D 11 (above; the other tools: the engine's); the
   # tray program with our 32-bit runtime (above), under each name it runs as
+  # A map test's fullscreen through the window compositor, not by capturing
+  # the display (the Steam Library's Play sets its own before each start): a
+  # captured display left everything black behind a windowed game and the
+  # player could not record the screen (2026-11-23)
+  # A map test hides on Cmd-Tab like the Steam Library's games (launch.sh
+  # SIL_HIDE_ON_DEACTIVATE: only a window that covers the screen, so the
+  # tools' own windows never hide); HIDE_ON_CMDTAB=0: off
+  # (the desktop's HiDPI mode while it is hidden, SIL_DISPLAYMODE_RECORD: only
+  # with CMDTAB_DESKTOP_MODE=1, as in launch.sh; the game stays at 1x)
+  unset SIL_HIDE_ON_DEACTIVATE SIL_DISPLAYMODE_RECORD
+  if [ "${HIDE_ON_CMDTAB:-1}" != 0 ] && [ "${CMDTAB_DESKTOP_MODE:-0}" = 1 ]; then
+    hide_env=(__CX_UNIX_SIL_HIDE_ON_DEACTIVATE=1 "__CX_UNIX_SIL_DISPLAYMODE_RECORD=$home/cache/displaymode-desktop")
+    export SIL_HIDE_ON_DEACTIVATE=1 SIL_DISPLAYMODE_RECORD="$home/cache/displaymode-desktop"
+  elif [ "${HIDE_ON_CMDTAB:-1}" != 0 ]; then
+    hide_env=(__CX_UNIX_SIL_HIDE_ON_DEACTIVATE=1 -__CX_UNIX_SIL_DISPLAYMODE_RECORD)
+    export SIL_HIDE_ON_DEACTIVATE=1
+  else hide_env=(-__CX_UNIX_SIL_HIDE_ON_DEACTIVATE -__CX_UNIX_SIL_DISPLAYMODE_RECORD); fi
   ov='HKEY_CURRENT_USER\Software\Wine\AppDefaults'
   tray=("[$ov\\GdtDBTray.exe\\DllOverrides]" msvcr110=native,builtin)
   for n in 0 1 2 3 4 5 6 7 8 9; do tray+=("[$ov\\GdtDBTray.$n.tmp\\DllOverrides]" msvcr110=native,builtin); done
   reg_import "${tray[@]}" '[HKEY_CURRENT_USER\Environment]' \
              "TA_GAME_PATH=$root" "TA_TOOLS_PATH=$root" "TA_LOCAL_ASSET_CACHE=${root}share\\assetconvert\\" \
              CX_GRAPHICS_BACKEND=dxmt "DXMT_CONFIG=$dxmt" -__CX_UNIX_SIL_BO2_TRANSPARENT_CURSOR \
+             "${hide_env[@]}" \
              "[$ov\\Radiant_modtools.exe\\DllOverrides]" msvcr110=native,builtin msvcp110=native,builtin \
                windowscodecs=native,builtin dbghelp=native,builtin d3d11=native,builtin \
              "[$ov\\asseteditor_modtools.exe\\DllOverrides]" msvcr110=native,builtin msvcp110=native,builtin \
@@ -358,6 +395,7 @@ start)
                windowscodecs=native,builtin d3d11=builtin \
              "[$ov\\linker_modtools.exe\\DllOverrides]" msvcr110=native,builtin msvcp110=native,builtin d3d11=builtin \
              "[$ov\\umbraconvert.exe\\DllOverrides]" windowscodecs=native,builtin \
+             "[$ov\\BlackOps3.exe\\Mac Driver]" CaptureDisplaysForFullscreen=n \
              ${reg_pending[@]+"${reg_pending[@]}"}
   unset SIL_BO2_TRANSPARENT_CURSOR __CX_UNIX_SIL_BO2_TRANSPARENT_CURSOR
   # The linker hung for good after its first image with all 10 cores of an
@@ -387,19 +425,78 @@ start)
                 "$home/settings.conf" 2> /dev/null | head -n 1)
   . "$kit/tools/game-bundle.sh"
   mt_wine=$wine gm_env=(-u WINELOADER -u X87_SIDECAR_PATH -u X87_SIDECAR_PROGRAMS)
-  # The map test's hook is opt-in for now (MODTOOLS_GAME_MODE=1 in
-  # settings.conf): tested in an isolated prefix only, never seen in a real
-  # map test yet; the launcher on the Game Mode loader is tested (2026-11-23)
+  # The map test's hook is on (the player's choice, 2026-11-24: the map test
+  # runs as "Siliconium Game", in Game Mode, as the Steam Library's games);
+  # MODTOOLS_GAME_MODE=0 in settings.conf: the game on Wine's own loader
   [ -n "${MODTOOLS_GAME_MODE+x}" ] ||
     MODTOOLS_GAME_MODE=$(sed -n 's/^[[:space:]]*MODTOOLS_GAME_MODE[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
                          "$home/settings.conf" 2> /dev/null | head -n 1)
   if [ "${GAME_MODE:-1}" != 0 ] && gb=$(game_bundle "$wine"); then
     mt_wine=$gb
     gm_env=(-u X87_SIDECAR_PATH -u X87_SIDECAR_PROGRAMS WINELOADER="$gb")
-    if [ "${MODTOOLS_GAME_MODE:-0}" = 1 ] && [ -x "$kit/payload/bo3-modtools/bundle-exec" ]; then
+    if [ "${MODTOOLS_GAME_MODE:-1}" != 0 ] && [ -x "$kit/payload/bo3-modtools/bundle-exec" ]; then
       gm_env=(WINELOADER="$gb" X87_SIDECAR_PATH="$kit/payload/bo3-modtools/bundle-exec" X87_SIDECAR_PROGRAMS=BlackOps3.exe)
     fi
   fi
+  # A map test's screen as the Steam Library's Black Ops III (BOIII_SCREEN):
+  # fullscreen at the desktop's size and rate, written before each start, in
+  # the workspace's own settings (players/config.ini, Key = "value" // range).
+  # A map test at another size (1920x1080 on a 2560x1440 desktop) made Wine
+  # switch the display's mode: seconds of black screen at each Cmd-Tab
+  mt_ini() {   # <key> <value>
+    local f="$ws/players/config.ini" tmp
+    [ -f "$f" ] && tmp=$(mktemp "$f.XXXXXX") || return 0
+    K="$1" V="$2" awk '
+      BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"] }
+      !done && index($0, k " = \"") == 1 {
+        rest = substr($0, length(k) + 5); q = index(rest, "\"")
+        if (q) { print k " = \"" v "\"" substr(rest, q + 1); done = 1; next }
+      }
+      { print }
+      END { if (!done) printf "%s = \"%s\"\r\n", k, v }
+    ' "$f" > "$tmp" && mv -f "$tmp" "$f" || rm -f "$tmp"
+  }
+  [ -n "${BOIII_SCREEN+x}" ] ||
+    BOIII_SCREEN=$(sed -n 's/^[[:space:]]*BOIII_SCREEN[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+                   "$home/settings.conf" 2> /dev/null | head -n 1)
+  if [ "${BOIII_SCREEN:-1}" != 0 ] && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
+    mt_ini FullScreenMode 1
+    mt_ini WindowSize "${dw}x$dh"
+    [ -n "${hz:-}" ] && { mt_ini RefreshRate "$hz"; mt_ini MaxFPS "$hz"; }
+  fi
+  # While a map test runs, as for the Steam Library's games (launch.sh): the
+  # display held as for the Steam Library's games (launch.sh hold_1x_size: an
+  # unscaled HiDPI desktop kept, a scaled one at 1x), and the focus helper
+  # (payload/iw6/iw6-focus), which restores the game's window at once after
+  # Cmd-Tab. Each map test gets its own; they end with it
+  [ -n "${KEEP_HIDPI+x}" ] ||
+    KEEP_HIDPI=$(sed -n 's/^[[:space:]]*KEEP_HIDPI[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' \
+                 "$home/settings.conf" 2> /dev/null | head -n 1)
+  mt_watch() {
+    local g keep
+    # (as launch.sh's hold_1x_size: a scaled desktop held at 1x; KEEP_HIDPI=2 keeps it)
+    case "${KEEP_HIDPI:-1}" in 0) keep=0 ;; 2) keep=2 ;; *) keep=1 ;; esac
+    while :; do
+      g=$(pgrep -f '\\BlackOps3\.exe' | head -n 1)
+      if [ -z "$g" ]; then
+        pgrep -f "$tools_re" > /dev/null || return 0
+        sleep 1; continue
+      fi
+      ( while pgrep -qf '\\BlackOps3\.exe'; do sleep 2; done ) > /dev/null 2>&1 &
+      local waiter=$!
+      if [ "${DISPLAY_MODE:-1}" != 0 ] && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
+        SIL_KEEP_UNSCALED=$keep "$kit/tools/displaymode" "$dw" "$dh" "$waiter" >> "$home/logs/displaymode.log" 2>&1 &
+      fi
+      if [ -x "$kit/payload/iw6/iw6-focus" ] && [ -f "$kit/payload/iw6/iw6-restore.exe" ]; then
+        SIL_FOCUS_FROM="io.github.siliconium:Steam.exe:modlauncher.exe" \
+          "$kit/payload/iw6/iw6-focus" 0 "$wine" "$kit/payload/iw6/iw6-restore.exe" BlackOps3.exe >> "$log" 2>&1 &
+        local fp=$!
+      fi
+      wait "$waiter"
+      [ -n "${fp:-}" ] && kill "$fp" 2> /dev/null
+      fp=
+    done
+  }
   printf '%s\n' "--- $(date) Mod Tools: $ws ($root)${gb:+ [Game Mode loader]}" >> "$log"
   step "Opening the Mod Tools"
   # Started directly with Steam's app ID (the tools', or a fix's: above), as
@@ -412,7 +509,19 @@ start)
   tools_re=$(sil_copy_exe bo3-modtools)
   for _ in $(seq 1 60); do pgrep -f "$tools_re" > /dev/null && break; sleep 1; done
   pgrep -f "$tools_re" > /dev/null || die "the Mod Tools did not start (see logs/bo3-modtools.log)"
+  # (mt_watch matches the game by its process name, "P:\\BlackOps3.exe": the helpers name it without a folder)
+  mt_watch &
+  # The launcher's own window as a game's (launch.sh focus_helper): in front
+  # when it appears (if Siliconium or Steam still is) and restored at once
+  # after Cmd-Tab; it ends with the launcher
+  lfp=
+  if [ -x "$kit/payload/iw6/iw6-focus" ] && [ -f "$kit/payload/iw6/iw6-restore.exe" ]; then
+    SIL_FOCUS_FROM="io.github.siliconium:Steam.exe" \
+      "$kit/payload/iw6/iw6-focus" 0 "$wine" "$kit/payload/iw6/iw6-restore.exe" modlauncher.exe >> "$log" 2>&1 &
+    lfp=$!
+  fi
   while pgrep -f "$tools_re" > /dev/null; do sleep 2; done
+  [ -n "$lfp" ] && kill "$lfp" 2> /dev/null
   # The tray program stays on after the tools (on Windows it sits in the
   # notification area; the next start of the tools ends it and starts a new
   # one): ended with them, as Windows ends a program (TerminateProcess)

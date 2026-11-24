@@ -63,13 +63,14 @@ static BOOL CALLBACK restore_game(HWND window, LPARAM restored)
             return TRUE;
     }
     else if (!ShowWindowAsync(window, SW_RESTORE)) return TRUE;
-    /* WWII (s2_*): its restored window stayed out of the foreground, so keys
-       went nowhere until a click; make it the foreground window too */
-    if (!_wcsnicmp(target, L"s2_", 3))
-    {
-        Sleep(100);
-        SetForegroundWindow(window);
-    }
+    /* Then make it the foreground window too. WWII (s2_*) first: its restored
+       window stayed out of the foreground, so keys went nowhere until a click.
+       Every game since 2026-11-24: Black Ops (Plutonium), back from Cmd-Tab
+       with its window minimized by the game when it lost the focus, came back
+       on screen but took no click (nor keys) until a second Cmd-Tab, when the
+       window was no longer minimized and Wine activated it itself. */
+    Sleep(100);
+    SetForegroundWindow(window);
 
     *(BOOL *)restored = TRUE;
     return FALSE;

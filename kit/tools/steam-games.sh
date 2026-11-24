@@ -241,7 +241,7 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
         [ "${STEAM_SCREEN:-1}" != 0 ] && steam_cfg_set "$f" r_fullscreen 1
         if [ -n "$w" ] && [ -n "$h" ]; then
           cur=$(sed -n -E 's/^seta r_mode "([0-9]+)x([0-9]+)".*/\1 \2/p' "$f" | tail -1)
-          if [ -n "$cur" ] && { [ "${cur% *}" -gt "$w" ] || [ "${cur#* }" -gt "$h" ]; }; then steam_cfg_set "$f" r_mode "${w}x$h"; fi
+          if [ "${STEAM_SCREEN:-1}" != 0 ] && [ -n "$cur" ] && [ "$cur" != "$w $h" ]; then steam_cfg_set "$f" r_mode "${w}x$h"; fi
         fi
         [ -n "$hz" ] && { steam_cfg_set "$f" r_displayRefresh "$hz Hz"; steam_cfg_set "$f" com_maxfps "$hz"; }
         steam_cfg_set "$f" r_swapInterval 0
@@ -443,8 +443,10 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
     if [ -n "$w" ] && [ -n "$h" ]; then
       local cur
       cur=$(sed -n -E 's/^seta r_mode "([0-9]+)x([0-9]+)".*/\1 \2/p' "$f" | tail -1)
-      # a mode larger than the display (the game's detection) comes back to the display's
-      if [ -n "$cur" ] && { [ "${cur% *}" -gt "$w" ] || [ "${cur#* }" -gt "$h" ]; }; then steam_cfg_set "$f" r_mode "${w}x$h"; fi
+      # the desktop's own resolution, every start (the player's choice,
+      # 2026-11-24: the games follow the Mac's resolution; another one made
+      # Wine switch the display's mode)
+      if [ "${STEAM_SCREEN:-1}" != 0 ] && [ -n "$cur" ] && [ "$cur" != "$w $h" ]; then steam_cfg_set "$f" r_mode "${w}x$h"; fi
     fi
     # the frame-rate cap at the refresh rate (MW2's 64-bit update defaults to 60)
     [ -n "$hz" ] && { steam_cfg_set "$f" r_displayRefresh "$hz Hz"; steam_cfg_set "$f" com_maxfps "$(steam_maxfps "$hz")"; }

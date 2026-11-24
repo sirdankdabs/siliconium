@@ -30,7 +30,7 @@ same version), `settings.conf` (`NAME=value`, written by the app, every key expo
 | Direct3D 11 | DXMT 0.80 (`kit/payload/dxmt`, 4 patches) → Metal | BO2, Ghosts, BO3 (Ezz); Steam BO2, Ghosts. Steam AW: same + upstream ab984cf (`payload/steam/aw-d3d11.dll`, native for AW's exes from `prefix-steam/drive_c/windows/system32`) and its own translator (`payload/steam/aw-winemetal.so`, tessellation fixes, run from a clone of the engine's `lib/wine`; DXMT cache `dxmt/<exe>/airconv-aw5`). Steam Infinite Warfare (`iw7_ship.exe`, `IW7_DXMT_FIX`): the same two AW files and clone |
 | OpenGL | Wine's opengl32 → macOS OpenGL (Apple's GL on Metal) | Steam CoD1 |
 
-- MoltenVK 1.4.1 on macOS < 26, 1.4.2 on 26+ (`kit/tools/moltenvk.sh`; 1.4.0 broke 32-bit buffers under WoW64). Wrapped by our shader-cache shim `kit/payload/lib64/libMoltenVK.dylib` (`kit/tools/mvkcache.c`, 8 shards; `MVKCACHE_FPS=1` prints FPS lines to the game log).
+- MoltenVK 1.4.1 on macOS < 26, 1.4.2 on 26+ (`kit/tools/moltenvk.sh`; 1.4.0 broke 32-bit buffers under WoW64). Wrapped by our shader-cache shim `kit/payload/lib64/libMoltenVK.dylib` (`kit/tools/mvkcache.c`, 8 shards; `MVKCACHE_FPS=1` prints FPS lines to the game log). MoltenVK compiles every Metal library of a saved cache while it reads it (fast when Metal's shader cache has them, minutes when not: after a macOS update, or libraries another game added): since 1.3.2 the shards are read in the background, one thread each, and a pipeline whose shard is not ready yet is created without a cache, so the game never waits (before: one library at a time behind one lock, and no pipeline until all 8 were read). `launch.sh` (`install_own_moltenvk`) updates the engine's copy from earlier builds.
 - x87sidecar (athei, installed v1.9.1) for 32-bit x87 maths under Rosetta, per process (`X87_SIDECAR_PROGRAMS`).
 - DXVK async levels (our patches): 0 sync, 1 async, 2 everything in the background (incl. render targets first bound this frame).
 
@@ -42,7 +42,10 @@ when the installed sha is in the accepted list) → MoltenVK ensure → DS4 mapp
 fullscreen games, an unscaled HiDPI desktop of the game's size (the panel's own pixels, `SIL_KEEP_UNSCALED=1`,
 `KEEP_HIDPI=0` turns it off) is kept as it is; otherwise the 1x best-refresh mode of that size is held as the
 login session's mode while the game runs, so a Cmd-Tab release of Wine's display capture keeps it; the desktop's
-mode and the held one are recorded in `cache/displaymode-desktop` under a lock until it is put back) → environment + registry queued
+mode and the held one are recorded in `cache/displaymode-desktop` under a lock until it is put back; one rule,
+`decide()`, serves the hold and `displaymode plan` (1x | kept | already | none, with the final mode's rate), from
+which launch.sh and the Mod Tools take every refresh setting and frame cap, and `displaymode info`, which the app's
+Display sheet shows; an earlier launch's hold is stopped before the desktop's mode is read) → environment + registry queued
 and written in one `regedit` pass (`reg_flush`) → per-game cvars → start.
 
 Modes: `waw|bo1|bo2|iw5 …` (Plutonium), `iw4` (IW4X), `iw6` (Ghosts), `boiii` (Ezz BO3),
@@ -67,9 +70,12 @@ Every game, every launch path (Plutonium, IW4X, BOIII, Ghosts offline, Steam Lib
   and the game's) once it shows a window of at least 640x480 (it waits up to 15 minutes: launchers,
   Steam's relay); the restore target is that process's program name. With `SIL_FOCUS_FROM`
   (`io.github.siliconium`, `Steam.exe`, `Battle.net.exe`, Plutonium's and IW4X's launchers) it makes the
-  game the active app once, only if one of those is in front (never over another app; macOS does not
-  bring forward a program a background process starts, so the menu bar stayed over the game until a
-  click). It keeps `iw6-restore.exe --wait` resident from the start, on the plain loader (not the
+  game the active app once per start (within 5 minutes of its window appearing), whichever app is in
+  front then (since 1.3.2: a player who switched apps while the game loaded got Black Ops' exclusive
+  fullscreen left behind, black, until a click); the names only label the log line. macOS does not
+  bring forward a program a background process starts, and macOS 14+ may ignore a helper's request,
+  so if the game is not in front 0.5 s after `activate(from:)` it asks WindowServer
+  (`_SLPSSetFrontProcessWithOptions`, looked up at run time); the log says which one did it. It keeps `iw6-restore.exe --wait` resident from the start, on the plain loader (not the
   bundle's copy: 3.9 s to start instead of 1.2 s): each activation writes one line and the helper
   restores the window (answers 1/0; exits at end of input), so the picture is back 0.4-1 s after
   Cmd-Tab instead of 6-8.6 s (the time a Wine program took to start while the game ran).
@@ -84,7 +90,7 @@ best refresh, controller support, achievements/playtime through Steam.
 - `kit/tools/steam-games.sh`: the table (exe, appid, API, `s_own`, `s_kind` q3|iw|t6|iw6, `s_async`, `s_pad` map|native), command line (`steam_args`), config writers (`steam_config`, `steam_q3_config` for CoD1, a `cod2` branch for CoD2 profiles), controller binds (`steam_pad_binds`).
 - `launch.sh steam:*`: everything gated on `t=steam` (Plutonium paths untouched). Steam is killed and restarted so it inherits the environment; then the game exe is started **directly** with `SteamAppId`/`SteamGameId` (`s_own=0`, all parts): Steam-started games (`-applaunch`) open behind other apps (Windows foreground rule) and MW2 ignored `-applaunch` arguments. `STEAM_APPLAUNCH=1` in settings.conf forces `-applaunch` for tests. CoD1/CoD2 get `WINEPATH=C:\Program Files (x86)\Steam` (they load `steam.dll` by name).
 - Per game: DXVK cache/config in `cache/steam-<id>/`, `WINE_LARGE_ADDRESS_AWARE=1` for 32-bit, x87 sidecar, display capture setting per exe, `WINE_MAC_MOUSELOOK=2` (all but Ghosts/AW: 0), dialog guard (`payload/steam/dialog-guard.exe` answers No to "Set Optimal Settings?"/"Safe Mode"), pad mapper (`payload/steam/pad-mapper.exe`: XInput → numpad keys bound to exact commands, for games without PC pad support), per-exe native DLLs from `prefix-steam/drive_c/windows/syswow64` with `AppDefaults\<exe>\DllOverrides` (BO1 MP: Plutonium's `mp-d3d9.dll` with the builtin mark replaced; CoD2: `payload/steam/cod2-d3d9.dll`; XAudio2 for BO1/WaW from the game's own redist cab). Every other 32-bit D3D9 exe gets an explicit `d3d9=builtin`.
-- Ghosts: borderless (no display capture). AW: exclusive fullscreen at the desktop's size, display held as above (`d3d11x64:s1`: the 1x mode, or the unscaled HiDPI desktop kept), display capture per `CAPTURE_DISPLAY`, its profile written by `steam_config aw`.
+- No game captures the display (2026-11-24; `CAPTURE_DISPLAY=2`: as before). Ghosts: borderless. AW: exclusive fullscreen at the desktop's size, display held as above (`d3d11x64:s1`: the 1x mode, or the unscaled HiDPI desktop kept), its profile written by `steam_config aw`.
 - Ghosts: `kit/payload/iw6/iw6-focus` + `iw6-restore.exe` restore the minimized window when the game's Mac app is activated (hide-on-deactivate only for Ghosts, both parts: no executable name or an `iw6…` one; every other game gets restore only, through `focus_helper`, section 3).
 - Community clients on the Steam Library's setup (`s_client`, `t=steam`; started without Steam, except CoD4X, which starts Steam for Windows in the background when it is set up: `COD4X_STEAM`): `launch.sh cod4x play` (`kit/tools/cod4x.sh`, Steam's CoD4 MP setup from a clone copy) and `launch.sh iw7mod play` and `launch.sh steam iw-sp` with `STEAM_MOD_IW=iw7mod` (`kit/tools/iw7mod.sh`: CBServers' iw7-mod.exe (fork of AuroraMod's) from CBServers/updater at a pinned commit, SHA-256 pinned, a non-CBServers exe replaced; a Steam download is played from an APFS-clone copy in `Siliconium/iw7mod/` (Steam's folder never changed itself); no clone possible → refused, never a full copy; `s_exe=iw7-mod.exe` because the game runs inside it; `-nosteam`; its own switches `IW7MOD_*` mapped onto `IW7_*`/`DISPLAY_MODE`; profile `iw7-mod/players2/config_mp.cfg` with `seta r_mode` / `seta r_refreshRate` by name; DXMT database and Metal folder shared with Steam's `iw7_ship.exe` through `DXMT_SHADER_CACHE_PATH` + a `com.apple.metal` link, `iw7_shared_metal`). The AlterWare section is an explanation page only (`GameTab.alterware` / `Game.alterware` → `AlterWareInfoView`; nothing in the kit): AlterWare's Ghosts client cannot sign in online under Rosetta 2 and its Advanced Warfare client was discontinued.
 - Clients' copies of Steam games (`kit/tools/steam-copy.sh`, sourced by cod4x.sh/iw7mod.sh): `sil_copy_make` clones Steam's folder whole (`cp -cRp`, ~0.3-0.7 s for IW's 1753 files; the old per-file re-sync took 8.5 s), lists Steam's files in `.siliconium-steam-files` (`f <path>` / `d <folder>`), carries the client's files over from the previous copy (its skip list: CoD4X `iw3mp.exe mss32.dll miles32.dll players/ __* *.log`, IW7-Mod `iw7-mod.exe(.old) iw7-mod/ players2/ minidumps/ *.log`, plus anything not from Steam; a path in Steam's folder is Steam's current file, as the old re-sync did), marks it in use (`.siliconium-in-use` = launch.sh's PID) and excluded from Time Machine (sticky xattr `com_apple_backup_excludeItem`, as `tmutil addexclusion` writes it; tmutil itself took 11 s), then swaps it in (`.part`/`.old`, recovered after an interruption; one change at a time: `<copy>.lock` with the holder's PID). launch.sh's EXIT trap (`copy_release`, also on Stop's SIGTERM) runs `steam-copy.sh release <client> <copy> <generation> 60`: a minute later, unless the copy was made again (list inode changed) or is in use (in-use PID alive or the client's exe running), Steam's listed files and empty folders are removed, the list emptied and the TM exclusion dropped. `steam-copy.sh tidy` (each launch.sh start, in the background; the app at launch) does the same for every copy nobody uses, and empties copies made before the list existed by reading Steam's folder (settings or the default library). No clones (another volume): CoD4X keeps a real copy (`.siliconium-full-copy`), synced in place, emptied only once the game is gone from Steam; IW7-Mod refuses. `uninstall.sh cod4x|iw7mod` releases before trashing.
@@ -142,8 +148,8 @@ Steam Library in the sidebar (`GameTab.battlenet` / `Game.battlenet`, `BattleNet
   replaces them) and logs each answer with the box text; Ghosts'
   `iw6-focus` + `iw6-restore.exe` (restore-only mode) bring the fullscreen window back after Cmd-Tab
   or minimizing (it stayed minimized on a black screen); with `SIL_FOCUS_FROM=io.github.siliconium:Battle.net.exe:…`
-  `iw6-focus` also makes the game the active app once its window is on screen (≥ 640x480), only if the app in
-  front is one of those (bundle id, or the Windows program of a Wine process: argv[0] via `KERN_PROCARGS2`), once.
+  `iw6-focus` also makes the game the active app once its window is on screen (≥ 640x480), once per start,
+  whichever app is in front (section 3).
 - Installed state: Battle.net's own "playable" flag is not used. Under Wine its Agent clears it at
   every start after an install ("Permissions check failure (2123)": its helper service, which checks
   and fixes the folder's permissions, cannot run), while the game is complete and Battle.net still

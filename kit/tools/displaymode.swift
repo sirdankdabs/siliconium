@@ -30,6 +30,7 @@
 // it back when its processes are killed (a crash, "Close BO1"), which left a
 // 320 Hz monitor at 60 Hz: the restore at the end covers that.
 import CoreGraphics
+import CoreVideo
 import Foundation
 import IOKit.graphics
 
@@ -46,8 +47,76 @@ func apply(_ mode: CGDisplayMode, _ option: CGConfigureOption) -> Bool {
   CGConfigureDisplayWithDisplayMode(config, display, mode, nil)
   return CGCompleteDisplayConfiguration(config, option) == .success
 }
+// Wait (up to 3 s) until the display reports that mode: launch.sh reads the
+// desktop's size and rate right after a restore, and read during the switch
+// it got the old mode's 160 Hz for a desktop at 144 Hz (Modern Warfare 3 then
+// ran capped at 160 against a 144 Hz vsync, 2026-11-24).
+func settled(on mode: CGDisplayMode) -> Bool {
+  for _ in 0..<30 {
+    if let now = CGDisplayCopyDisplayMode(display), now.ioDisplayModeID == mode.ioDisplayModeID { return true }
+    usleep(100_000)
+  }
+  return true   // switched; the display just has not said so yet
+}
 func oneX(_ w: Int, _ h: Int) -> [CGDisplayMode] {
   allModes.filter { $0.width == w && $0.height == h && $0.pixelWidth == w && $0.pixelHeight == h }
+}
+// The 1x modes of that size a hold may use: the ones macOS offers for the
+// desktop (all of them if it offers none).
+func usableOneX(_ w: Int, _ h: Int) -> [CGDisplayMode] {
+  let modes = oneX(w, h)
+  let usable = modes.filter { $0.isUsableForDesktopGUI() }
+  return usable.isEmpty ? modes : usable
+}
+// A mode's refresh rate in Hz. Some panels (older Mac laptops' built-in
+// displays) report 0 for every mode: then the display's own nominal rate,
+// else 60. Never 0: launch.sh writes it into the games ("0 Hz").
+func hz(_ mode: CGDisplayMode) -> Int {
+  if mode.refreshRate >= 1 { return Int(mode.refreshRate.rounded()) }
+  var link: CVDisplayLink?
+  if CVDisplayLinkCreateWithCGDisplay(display, &link) == kCVReturnSuccess, let link = link {
+    let period = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(link)
+    if period.timeValue > 0 && period.timeScale > 0 {
+      let rate = Double(period.timeScale) / Double(period.timeValue)
+      if rate >= 1 { return Int(rate.rounded()) }
+    }
+  }
+  return 60
+}
+// What a hold of <w>x<h> does on the display as it is now (one rule for the
+// hold itself, for "plan" and so for launch.sh's frame caps and refresh
+// settings, and for the app's display view):
+//   "1x"      switch to the 1x mode of that size with the highest refresh
+//             rate: a scaled HiDPI desktop ("looks like 2560x1440" on a 4K
+//             panel, drawn at 5K, every frame cost a 5K composition: BO1 ~75
+//             FPS, Black Ops 4 52), an unscaled HiDPI one when a 1x mode of
+//             its size is faster, or a 1x desktop at a lower rate than its
+//             size's best (the games ask for the best rate anyway);
+//   "kept"    the desktop's HiDPI mode stays (SIL_KEEP_UNSCALED, below);
+//   "already" the desktop is that 1x mode at its best rate;
+//   "none"    no 1x mode of that size: the desktop's mode stays.
+// SIL_KEEP_UNSCALED=1 (launch.sh's default, KEEP_HIDPI=1): a desktop of that
+// size whose pixels are the panel's own ("looks like 1920x1080" on a 4K
+// panel: not scaled) and no 1x mode of its size with a higher refresh rate
+// stays as it is (HiDPI on, no mode switch, a sharp desktop after Cmd-Tab;
+// Black Ops 159.0 FPS held at 1x, 158.9 kept, 2026-11-23).
+// SIL_KEEP_UNSCALED=2 (KEEP_HIDPI=2): any HiDPI desktop of that size stays,
+// scaled too. 0: every HiDPI desktop at 1x.
+func decide(_ w: Int, _ h: Int) -> (mode: CGDisplayMode, kind: String) {
+  let best = usableOneX(w, h).max(by: { $0.refreshRate < $1.refreshRate })
+  let faster = best.map { $0.refreshRate > original.refreshRate + 0.5 } ?? false
+  if original.width == w && original.height == h && original.pixelWidth == w && original.pixelHeight == h {
+    if faster, let best = best { return (best, "1x") }
+    return (original, "already")
+  }
+  let keepMode = ProcessInfo.processInfo.environment["SIL_KEEP_UNSCALED"] ?? ""
+  if original.width == w && original.height == h
+      && (keepMode == "2"
+          || (keepMode == "1" && original.ioFlags & UInt32(kDisplayModeNativeFlag) != 0 && !faster)) {
+    return (original, "kept")
+  }
+  if let best = best { return (best, "1x") }
+  return (original, "none")
 }
 
 let home = ProcessInfo.processInfo.environment["SIL_HOME"] ??
@@ -75,7 +144,7 @@ func takeLock(tries: Int) -> Bool {
 }
 
 if args.count == 2 && args[1] == "current" {
-  print("\(original.width) \(original.height) \(Int(original.refreshRate.rounded()))")
+  print("\(original.width) \(original.height) \(hz(original))")
   exit(0)
 }
 if args.count == 2 && args[1] == "restore" {
@@ -88,7 +157,7 @@ if args.count == 2 && args[1] == "restore" {
     let held = record.count > 1 ? original.ioDisplayModeID == record[1]
                                 : original.pixelWidth == original.width && original.pixelHeight == original.height
     if held {
-      let ok = apply(saved, .forSession)
+      let ok = apply(saved, .forSession) && settled(on: saved)
       say("restored \(saved.width)x\(saved.height) \(Int(saved.refreshRate)) Hz (left by a hold that did not end normally)"
           + (ok ? "" : " FAILED"))
       if !ok { exit(1) }   // (the record stays: the next restore tries again)
@@ -108,6 +177,39 @@ if args.count == 4 && args[1] == "best", let w = Int(args[2]), let h = Int(args[
   }
   exit(0)
 }
+// displaymode plan [<width> <height>]: what a hold of that size (the
+// desktop's own size by default) would do now, as decide() says, in one line:
+// "<width> <height> <Hz> <1x|kept|already|none> <pixel width> <pixel height>".
+// launch.sh takes the games' refresh rate and frame caps from it (the rate of
+// the mode the display ends up in); the hold itself runs the same decide().
+// displaymode info: the desktop and that plan as key=value lines (the app).
+if (args.count == 2 || args.count == 4) && args[1] == "plan" {
+  let w = args.count == 4 ? Int(args[2]) ?? original.width : original.width
+  let h = args.count == 4 ? Int(args[3]) ?? original.height : original.height
+  let (mode, kind) = decide(w, h)
+  print("\(mode.width) \(mode.height) \(hz(mode)) \(kind) \(mode.pixelWidth) \(mode.pixelHeight)")
+  exit(0)
+}
+if args.count == 2 && args[1] == "info" {
+  let (mode, kind) = decide(original.width, original.height)
+  let hidpi = original.pixelWidth != original.width || original.pixelHeight != original.height
+  let native = original.ioFlags & UInt32(kDisplayModeNativeFlag) != 0
+  print("""
+    desktop_width=\(original.width)
+    desktop_height=\(original.height)
+    desktop_pixel_width=\(original.pixelWidth)
+    desktop_pixel_height=\(original.pixelHeight)
+    desktop_hz=\(hz(original))
+    desktop_kind=\(hidpi ? (native ? "hidpi" : "hidpi-scaled") : "1x")
+    game_width=\(mode.width)
+    game_height=\(mode.height)
+    game_pixel_width=\(mode.pixelWidth)
+    game_pixel_height=\(mode.pixelHeight)
+    game_hz=\(hz(mode))
+    plan=\(kind)
+    """)
+  exit(0)
+}
 if args.count == 5 && args[1] == "set", let w = Int(args[2]), let h = Int(args[3]), let hz = Double(args[4]) {
   guard let mode = oneX(w, h).min(by: { abs($0.refreshRate - hz) < abs($1.refreshRate - hz) }) else {
     say("no 1x \(w)x\(h) mode"); exit(1)
@@ -117,7 +219,7 @@ if args.count == 5 && args[1] == "set", let w = Int(args[2]), let h = Int(args[3
 }
 guard args.count == 4, let w = Int(args[1]), let h = Int(args[2]), let pid = Int32(args[3]) else {
   FileHandle.standardError.write(
-    "usage: displaymode <width> <height> <pid> | current | restore | best <width> <height> | set <width> <height> <hz>\n"
+    "usage: displaymode <width> <height> <pid> | current | restore | plan [<width> <height>] | info | best <width> <height> | set <width> <height> <hz>\n"
       .data(using: .utf8)!)
   exit(2)
 }
@@ -135,12 +237,29 @@ if original.pixelWidth == w && original.pixelHeight == h && original.width == w 
   desktop = saved
 }
 
+// What decide() chose for this hold (set below; restore() needs it).
+var holdKind = ""
 // Put the desktop's mode back if the game (Wine) left another one.
+// When this hold did not switch the mode (kept, already, none) and the display
+// now has the desktop's size and pixels at another refresh rate, that rate is
+// the player's (System Settings or BetterDisplay while the game ran): left as
+// it is. Modern Warfare 3, 2026-11-24: the player set 160 Hz during the game
+// and the hold put the 144 Hz it had started with back when the game ended.
+// (A game's own size change is still undone: Black Ops II switched a
+// 1920x1080 desktop to 2560x1440 the same night.)
 func restore() {
   guard let now = CGDisplayCopyDisplayMode(display) else { return }
+  if holdKind != "1x" && now.ioDisplayModeID != desktop.ioDisplayModeID
+      && now.width == desktop.width && now.height == desktop.height
+      && now.pixelWidth == desktop.pixelWidth && now.pixelHeight == desktop.pixelHeight {
+    say("left \(now.width)x\(now.height) at \(hz(now)) Hz: the refresh rate was changed during the game")
+    try? FileManager.default.removeItem(atPath: stateFile)
+    return
+  }
   if now.ioDisplayModeID != desktop.ioDisplayModeID || now.refreshRate != desktop.refreshRate {
-    let ok = apply(desktop, .forSession)
-    say("restored \(desktop.width)x\(desktop.height) \(Int(desktop.refreshRate)) Hz" + (ok ? "" : " FAILED"))
+    // (settled: launch.sh stops an earlier hold, then reads the desktop's mode)
+    let ok = apply(desktop, .forSession) && settled(on: desktop)
+    say("restored \(desktop.width)x\(desktop.height) \(hz(desktop)) Hz" + (ok ? "" : " FAILED"))
   }
   try? FileManager.default.removeItem(atPath: stateFile)
 }
@@ -153,31 +272,24 @@ for sig in [SIGTERM, SIGINT] {
   sources.append(s)
 }
 
-// SIL_KEEP_UNSCALED=1 (launch.sh, for the games measured to run the same in
-// both): a desktop of that size whose pixels are the panel's own ("looks like
-// 1920x1080" on a 4K panel: not scaled) and no 1x mode of that size with a
-// higher refresh rate: the desktop's mode stays (HiDPI on, no mode switch, a
-// sharp desktop after Cmd-Tab); the hold only watches. A scaled desktop
-// ("looks like 2560x1440" on a 4K panel, drawn at 5K) is still held at 1x:
-// there every frame cost a 5K composition (BO1 ~75 FPS, Black Ops 4 52).
-let keepUnscaled = ProcessInfo.processInfo.environment["SIL_KEEP_UNSCALED"] == "1"
-  && original.width == w && original.height == h
-  && original.ioFlags & UInt32(kDisplayModeNativeFlag) != 0
-  && !oneX(w, h).contains(where: { $0.refreshRate > original.refreshRate + 0.5 })
-
-if original.pixelWidth == w && original.pixelHeight == h {
-  say("already \(w)x\(h) at 1x (\(Int(original.refreshRate)) Hz); watching pid \(pid)")
-} else if keepUnscaled {
-  say("kept the desktop's \(w)x\(h) mode (HiDPI at the panel's own \(original.pixelWidth)x\(original.pixelHeight), "
-      + "\(Int(original.refreshRate)) Hz); watching pid \(pid)")
-} else if let mode = oneX(w, h).max(by: { $0.refreshRate < $1.refreshRate }) {
-  try? "\(desktop.ioDisplayModeID)\n\(mode.ioDisplayModeID)\n".write(toFile: stateFile, atomically: true, encoding: .utf8)
-  if apply(mode, .forSession) {
-    say("\(w)x\(h) at 1x, \(Int(mode.refreshRate)) Hz, until pid \(pid) ends")
+// What to do: decide() (see there), the same rule "plan" reports.
+let (target, kind) = decide(w, h)
+holdKind = kind
+switch kind {
+case "already":
+  say("already \(w)x\(h) at 1x (\(hz(original)) Hz); watching pid \(pid)")
+case "kept":
+  say("kept the desktop's \(w)x\(h) mode (HiDPI at \(original.pixelWidth)x\(original.pixelHeight), "
+      + "\(hz(original)) Hz); watching pid \(pid)")
+case "1x":
+  try? "\(desktop.ioDisplayModeID)\n\(target.ioDisplayModeID)\n".write(toFile: stateFile, atomically: true, encoding: .utf8)
+  if apply(target, .forSession) {
+    _ = settled(on: target)
+    say("\(w)x\(h) at 1x, \(hz(target)) Hz, until pid \(pid) ends")
   } else {
     say("could not switch mode")
   }
-} else {
+default:
   say("no 1x \(w)x\(h) mode; watching pid \(pid)")
 }
 // Watch on a timer so the signal sources on the main queue still run.

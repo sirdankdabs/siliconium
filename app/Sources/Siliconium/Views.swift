@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 @main
 struct SiliconiumApp: App {
@@ -56,6 +57,23 @@ struct RootView: View {
             .sheet(isPresented: Binding(get: { state.whatsNew != nil }, set: { if !$0 { state.whatsNew = nil } })) {
                 WhatsNewView(version: state.appVersion, notes: state.whatsNew ?? "") { state.whatsNew = nil }
             }
+            // The display's settings changed (or are new): what the games get
+            // on it, shown once; the sidebar's Display line shows it again.
+            .sheet(isPresented: Binding(get: { state.showDisplayInfo && state.whatsNew == nil && state.display != nil },
+                                        set: { if !$0 { state.showDisplayInfo = false } })) {
+                if let info = state.display { DisplayInfoView(info: info) { state.showDisplayInfo = false } }
+            }
+            // Resolution, refresh rate, HiDPI or a display connected: read it
+            // again once the change has settled (macOS sends several of these)
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+                .debounce(for: .seconds(1.5), scheduler: RunLoop.main)) { _ in
+                state.refreshDisplay()
+            }
+            // A game ended: its display hold puts the desktop's mode back ~2 s later
+            .onChange(of: state.running) {
+                guard state.running == nil else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { state.refreshDisplay() }
+            }
             .onAppear {
                 state.showWhatsNewAfterUpdate()
                 state.warnOldMacOS()
@@ -65,6 +83,7 @@ struct RootView: View {
                 state.checkForAppUpdate(manual: false)
                 state.checkBluetoothController()
                 state.confirmBluetoothPermissionAfterRelaunch()
+                state.askMicrophoneOnce()
                 // The window is created around the first layout pass: set its
                 // appearance once it exists (see DarkWindowAppearance).
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
@@ -1368,6 +1387,16 @@ struct EngineFooter: View {
                     }
                 }
             }
+            if let info = state.display {
+                Button {
+                    state.showDisplayInfo = true
+                } label: {
+                    Label("\(info.runWidth)×\(info.runHeight) · \(info.runHz) Hz" + (info.runIs1x ? " · 1x" : " · HiDPI"),
+                          systemImage: "display")
+                }
+                .font(.system(size: 10)).buttonStyle(.link)
+                .help("What the games use on this display")
+            }
             HStack(spacing: 10) {
                 Button("Show log") { showLog = true }
                 Text("·").foregroundStyle(.tertiary)
@@ -1378,6 +1407,50 @@ struct EngineFooter: View {
             .font(.system(size: 10)).buttonStyle(.link)
         }
         .padding(.horizontal, 12).padding(.bottom, 10)
+    }
+}
+
+/// The main display and what a fullscreen game gets on it (DisplayInfo).
+/// launch.sh decides it again at every start with the same rule, so this view
+/// explains and confirms what will happen; it changes nothing itself.
+struct DisplayInfoView: View {
+    let info: DisplayInfo
+    var close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "display").font(.system(size: 24))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Display").font(.system(size: 17, weight: .bold))
+                    if !info.name.isEmpty { Text(info.name).font(.system(size: 11)).foregroundStyle(.secondary) }
+                }
+            }
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                GridRow {
+                    Text("Desktop").foregroundStyle(.secondary)
+                    Text(info.desktopText)
+                }
+                GridRow {
+                    Text("Games").foregroundStyle(.secondary)
+                    Text(info.gameText).bold()
+                }
+                GridRow {
+                    Text("Frame cap").foregroundStyle(.secondary)
+                    Text(info.maxfps != nil ? "\(info.cap) FPS (your FPS setting)" : "\(info.cap) FPS (the refresh rate)")
+                }
+            }
+            .font(.system(size: 12))
+            Text(info.whyText).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+            Text("Every game follows this at each start: its resolution, refresh setting and frame cap come from the mode the display will be in. Change the resolution or refresh rate in System Settings (or BetterDisplay) between games, and the next game follows. Ghosts runs borderless in the desktop's own mode.")
+                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("OK", action: close).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 460)
     }
 }
 

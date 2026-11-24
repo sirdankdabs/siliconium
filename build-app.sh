@@ -50,7 +50,7 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Siliconium uses the microphone for in-game voice chat in Black Ops and Black Ops II.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Asked once for all your games: their voice chat (multiplayer, zombies) uses the microphone. Siliconium will not ask again.</string>
 </dict>
 </plist>
 EOF
@@ -100,9 +100,18 @@ if [ -n "$leaks" ]; then
   exit 1
 fi
 xattr -cr "$app"   # Finder info and other extended attributes stop codesign
-# Ad-hoc by default. macOS ties the folder permissions the user grants (TCC) to
-# the app's signature, so every ad-hoc rebuild asks again; set SIL_SIGN_IDENTITY
-# (e.g. "Developer ID Application: …") to sign with a stable identity and keep
-# them across updates.
+# Ad-hoc by default; SIL_SIGN_IDENTITY (e.g. "Developer ID Application: …")
+# signs with a real identity. macOS ties the permissions the player grants
+# (TCC: the microphone, which every game asks for through Siliconium) to the
+# app's designated requirement: an ad-hoc one is the build's own hash, so every
+# new build (and an older copy still running Steam) asked again, game after
+# game ("Failed to match existing code requirement", 2026-11-24). The ad-hoc
+# app names its identifier as its designated requirement instead: the answer
+# holds across builds and updates.
 codesign -fs "${SIL_SIGN_IDENTITY:--}" --deep "$app" 2>/dev/null
+if [ -z "${SIL_SIGN_IDENTITY:-}" ]; then
+  codesign -fs - -r='designated => identifier "io.github.siliconium"' "$app" 2>/dev/null
+  codesign -dr - "$app" 2>&1 | grep -q 'designated => identifier "io.github.siliconium"' ||
+    { echo "the app's designated requirement was not set" >&2; exit 1; }
+fi
 echo "==> Built $app ($(du -sh "$app" | cut -f1))"
