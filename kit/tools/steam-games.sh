@@ -128,11 +128,27 @@ steam_args() {   # <width> <height> <hz> <first run: 1|0>
         [ -n "$hz" ] && s_argv+=(+set r_displayRefresh "$hz" +set com_maxfps "$hz")
       fi ;;
     iw)
-      s_argv+=(+set com_recommendedSet 1 +set com_introPlayed 1 +set com_startupIntroPlayed 1 +set r_fullscreen 1)
+      s_argv+=(+set com_recommendedSet 1 +set r_fullscreen 1)
+      if [ "$s_id" = bo1 ]; then
+        if [ "${BO1_SKIP_INTRO:-0}" = 1 ]; then s_argv+=(+set com_introPlayed 1 +set com_startupIntroPlayed 1)
+        else s_argv+=(+set com_introPlayed 0 +set com_startupIntroPlayed 0); fi
+      elif [ "${SKIP_INTRO:-1}" != 0 ]; then
+        s_argv+=(+set com_introPlayed 1 +set com_startupIntroPlayed 1)
+      else
+        s_argv+=(+set com_introPlayed 0 +set com_startupIntroPlayed 0)
+      fi
       [ -n "$w" ] && [ -n "$h" ] && s_argv+=(+set r_mode "${w}x$h")
-      # the frame-rate cap at the refresh rate (the games' own cap is 85-120)
-      [ -n "$hz" ] && s_argv+=(+set r_displayRefresh "$hz Hz" +set com_maxfps "$(steam_maxfps "$hz")")
-      case "$s_exe" in iw4sp.exe|iw4mp.exe|iw5sp.exe|iw5mp.exe) s_argv+=(+set intro 0) ;; esac ;;
+      # the frame-rate cap at the refresh rate (under mtld3d, let present.maxFps
+      # pace at sub-ms precision instead of the engine's integer-ms com_maxfps)
+      if [ -n "$hz" ]; then
+        if [ "${mtld3d_active:-0}" = 1 ] && [ "${maxfps:-0}" != 0 ]; then
+          s_argv+=(+set r_displayRefresh "$hz Hz" +set com_maxfps 0)
+        else
+          s_argv+=(+set r_displayRefresh "$hz Hz" +set com_maxfps "$(steam_maxfps "$hz")")
+        fi
+      fi
+      case "$s_exe" in iw4sp.exe|iw4mp.exe|iw5sp.exe|iw5mp.exe)
+        if [ "${SKIP_INTRO:-1}" != 0 ]; then s_argv+=(+set intro 0); else s_argv+=(+set intro 1); fi ;; esac ;;
     t6) s_argv+=(+set com_recommendedSet 1 +set com_introPlayed 1) ;;
     iw6)
       # As for Ghosts' campaign (launch.sh, IW6_TUNE): borderless at the
@@ -144,11 +160,15 @@ steam_args() {   # <width> <height> <hz> <first run: 1|0>
       [ -n "$hz" ] && s_argv+=(+set r_displayRefresh "$hz Hz")
       # Ghosts' enum values as its own path writes them ("0_Off"); Advanced
       # Warfare keeps 0 until it is tested
-      local off=0; [ "$s_id" = ghosts ] && off=0_Off
-      s_argv+=(+set cl_loadHBAODLL 0 +set cl_loadTXAADLL 0 +set r_apex_turbulence 0 +set r_ssao "$off"
-               +set r_subdiv 0 +set r_adaptiveSubdiv 0 +set r_subdivLimit 0)
-      [ "$first" = 1 ] && s_argv+=(+set r_tessellation "$off" +set r_mbEnable 0 +set r_picmip_manual 1
-                                   +set r_picmip 0 +set r_picmip_bump 0 +set r_picmip_spec 0) ;;
+      if on IW6_TUNE; then
+        local off=0 g_picmip=0
+        [ "$s_id" = ghosts ] && off=0_Off
+        [ "${SIL_RAM_GB:-16}" -le 8 ] && g_picmip=1
+        s_argv+=(+set cl_loadHBAODLL 0 +set cl_loadTXAADLL 0 +set r_apex_turbulence 0 +set r_ssao "$off"
+                 +set r_subdiv 0 +set r_adaptiveSubdiv 0 +set r_subdivLimit 0)
+        [ "$first" = 1 ] && s_argv+=(+set r_tessellation "$off" +set r_mbEnable 0 +set r_picmip_manual 1
+                                     +set r_picmip "$g_picmip" +set r_picmip_bump "$g_picmip" +set r_picmip_spec "$g_picmip")
+      fi ;;
     s2)
       # WWII: its multiplayer executable took the resolution from its
       # encrypted system_config_mp.cfg, not from the profile (it went back to
@@ -226,29 +246,26 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
       mkdir -p "$marks"
       for f in "${files[@]}"; do
         [ -f "$f" ] || continue
-        local m="$marks/.config-cod2-$p-$(basename "$f")" cur
+        local m="$marks/.config-cod2-$p-$(basename "$f")" cur cod2_pairs=()
         if [ ! -f "$m" ]; then
-          steam_cfg_set "$f" r_fullscreen 1
-          [ -n "$w" ] && [ -n "$h" ] && steam_cfg_set "$f" r_mode "${w}x$h"
-          # trilinear filtering: the first-start detection picks bilinear on
-          # Apple GPUs, and textures then visibly switch detail as the player
-          # moves closer/away (owner, 2026-11-20: better with trilinear)
-          steam_cfg_set "$f" r_textureMode trilinear
+          cod2_pairs+=(r_fullscreen=1 r_textureMode=trilinear r_aaSamples=4)
+          [ -n "$w" ] && [ -n "$h" ] && cod2_pairs+=("r_mode=${w}x$h")
           : > "$m"
         fi
         # fullscreen every start, as the other Steam games (its profile loads
         # after the command line); STEAM_SCREEN=0 keeps a window
-        [ "${STEAM_SCREEN:-1}" != 0 ] && steam_cfg_set "$f" r_fullscreen 1
+        [ "${STEAM_SCREEN:-1}" != 0 ] && cod2_pairs+=(r_fullscreen=1)
         if [ -n "$w" ] && [ -n "$h" ]; then
           cur=$(sed -n -E 's/^seta r_mode "([0-9]+)x([0-9]+)".*/\1 \2/p' "$f" | tail -1)
-          if [ "${STEAM_SCREEN:-1}" != 0 ] && [ -n "$cur" ] && [ "$cur" != "$w $h" ]; then steam_cfg_set "$f" r_mode "${w}x$h"; fi
+          if [ "${STEAM_SCREEN:-1}" != 0 ] && [ -n "$cur" ] && [ "$cur" != "$w $h" ]; then cod2_pairs+=("r_mode=${w}x$h"); fi
         fi
-        [ -n "$hz" ] && { steam_cfg_set "$f" r_displayRefresh "$hz Hz"; steam_cfg_set "$f" com_maxfps "$hz"; }
-        steam_cfg_set "$f" r_swapInterval 0
+        [ -n "$hz" ] && cod2_pairs+=("r_displayRefresh=$hz Hz" "com_maxfps=$hz")
+        cod2_pairs+=(r_swapInterval=0 m_filter=0 cl_mouseAccel=0)
         # Straight to the menu, as with Plutonium (SKIP_INTRO): the logo and
         # intro movies (cinematic IW_logo / cod_intro) froze the game at
         # random right after the menu loaded (console.log: nextmap cinematic)
-        [ "${SKIP_INTRO:-1}" != 0 ] && steam_cfg_set "$f" com_introPlayed 1
+        if [ "${SKIP_INTRO:-1}" != 0 ]; then cod2_pairs+=(com_introPlayed=1); else cod2_pairs+=(com_introPlayed=0); fi
+        steam_cfg_batch "$f" "${cod2_pairs[@]}"
       done
       return 0 ;;
     ghosts)
@@ -256,74 +273,65 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
       # profile it reads before opening its swap chain: borderless at the
       # desktop's size and rate unless the player chose a window, and
       # (IW6_TUNE) no NVIDIA libraries, SSAO or tessellation (both page-faulted
-      # the GPU under DXMT) or subdivision every start; motion blur, fur and
-      # automatic texture sizing off the first time only. The multiplayer
+      # the GPU under DXMT) or subdivision every start; motion blur, fur, vsync
+      # and automatic texture sizing off the first time only. The multiplayer
       # (iw6mp64_ship.exe: same renderer and setting names) keeps its own in
       # players2/config_mp.cfg (its strings: players2, config_mp.cfg)
       case "$s_part" in sp) f="$dir/players2/config.cfg" ;; mp) f="$dir/players2/config_mp.cfg" ;; *) return 0 ;; esac
       mkdir -p "$dir/players2" "$marks" && { [ -f "$f" ] || : > "$f"; } || return 0
+      local ghosts_pairs=()
       if ! grep -Eiq '^[[:space:]]*seta[[:space:]]+r_displayMode[[:space:]]+"windowed( \(no border\))?"' "$f"; then
-        steam_cfg_set "$f" com_recommendedSet 1
-        steam_cfg_set "$f" r_displayMode "windowed (no border)"
-        steam_cfg_set "$f" r_monitor 0
-        [ -n "$w" ] && [ -n "$h" ] && steam_cfg_set "$f" r_mode "${w}x$h"
-        [ -n "$hz" ] && steam_cfg_set "$f" r_displayRefresh "$hz Hz"
+        ghosts_pairs+=(com_recommendedSet=1 "r_displayMode=windowed (no border)" r_monitor=0)
+        [ -n "$w" ] && [ -n "$h" ] && ghosts_pairs+=("r_mode=${w}x$h")
+        [ -n "$hz" ] && ghosts_pairs+=("r_displayRefresh=$hz Hz")
       fi
       if on IW6_TUNE; then
         # SSAO and tessellation every start: both page-faulted the GPU on Steam's
         # Ghosts (2026-11-20: SSAO High after ~3.5 min, tessellation Near after
         # ~45 s; with both, Apple's shader compiler crashed), even when the
         # player turned them on in the game's options
-        for p in cl_loadHBAODLL=0 cl_loadTXAADLL=0 r_apex_turbulence=0 r_ssao=0_Off r_tessellation=0_Off r_subdivLimit=0; do
-          steam_cfg_set "$f" "${p%%=*}" "${p#*=}"
-        done
+        ghosts_pairs+=(cl_loadHBAODLL=0 cl_loadTXAADLL=0 r_apex_turbulence=0 r_ssao=0_Off r_tessellation=0_Off r_subdivLimit=0)
         if [ ! -f "$marks/.defaults-ghosts-$s_part" ]; then
-          for p in r_mbEnable=0 r_mbEnableA=0 r_fur_shader=0 r_picmip_manual=1 \
-                   r_picmip=0 r_picmip_bump=0 r_picmip_spec=0 r_picmip_water=0; do
-            steam_cfg_set "$f" "${p%%=*}" "${p#*=}"
-          done
+          local g_picmip=0
+          [ "${SIL_RAM_GB:-16}" -le 8 ] && g_picmip=1
+          ghosts_pairs+=(r_vsync=0 r_mbEnable=0 r_mbEnableA=0 r_fur_shader=0 r_picmip_manual=1
+                         "r_picmip=$g_picmip" "r_picmip_bump=$g_picmip" "r_picmip_spec=$g_picmip" r_picmip_water=0)
           : > "$marks/.defaults-ghosts-$s_part"
         fi
       fi
+      steam_cfg_batch "$f" "${ghosts_pairs[@]}"
       return 0 ;;
     aw)
-      # Advanced Warfare's campaign (its own names, read from the profile it
-      # made on its first start): left alone it chose exclusive fullscreen at
-      # the panel's 3840x2160 and 60 Hz (r_refreshRate "60.00 Hz"), over the
-      # 1x mode launch.sh holds. Every start: the desktop's size and the held
-      # mode's rate; once: fullscreen (not a window) and 16x anisotropic
-      # filtering (it picked 4x on the Apple GPU)
-      # Multiplayer / Exo Zombies (s1_mp64_ship.exe): the same settings in its
-      # own profile, players2/config_mp.cfg as in the other IW engines (not yet
-      # confirmed against the file it makes on its first start)
+      # Advanced Warfare (Sledgehammer s1 engine): left alone it chose exclusive
+      # fullscreen at 3840x2160/60 Hz over the held 1x mode. Every start: the
+      # desktop's size and held rate; once: fullscreen, 16x anisotropy, VSync off,
+      # Apple-tuned AO/SSS/motion-blur defaults (same Sledgehammer family verified
+      # on WWII), and safe video-memory budget to avoid swap thrashing on 8-16 GB Macs.
       case "$s_part" in sp) f="$dir/players2/config.cfg" ;; mp) f="$dir/players2/config_mp.cfg" ;; *) return 0 ;; esac
       mkdir -p "$dir/players2" "$marks" && { [ -f "$f" ] || : > "$f"; } || return 0
-      [ -n "$w" ] && [ -n "$h" ] && steam_cfg_set "$f" r_mode "${w}x$h"
-      [ -n "$hz" ] && steam_cfg_set "$f" r_refreshRate "$hz.00 Hz"
+      local aw_pairs=()
+      [ -n "$w" ] && [ -n "$h" ] && aw_pairs+=("r_mode=${w}x$h")
+      [ -n "$hz" ] && aw_pairs+=("r_refreshRate=$hz.00 Hz")
       if [ "${STEAM_SCREEN:-1}" != 0 ]; then   # fullscreen every start (as the other games)
-        steam_cfg_set "$f" r_fullscreen 1; steam_cfg_set "$f" r_fullscreenWindow 0
+        aw_pairs+=(r_fullscreen=1 r_fullscreenWindow=0)
       fi
       if [ ! -f "$marks/.defaults-aw-$s_part" ]; then
-        steam_cfg_set "$f" r_fullscreen 1
-        steam_cfg_set "$f" r_fullscreenWindow 0
-        steam_cfg_set "$f" r_texFilterAnisoMax 16
+        local aw_vmem=0.85
+        [ "${SIL_RAM_GB:-16}" -le 8 ] && aw_vmem=0.75
+        aw_pairs+=(r_fullscreen=1 r_fullscreenWindow=0 r_texFilterAnisoMax=16
+                   r_vsync=0 r_ssaoLimit=1 r_mdaoLimit=0 r_sssLimit=0 r_mbLimit=0
+                   "r_videoMemoryScale=$aw_vmem")
         : > "$marks/.defaults-aw-$s_part"
       fi
-      # WWII's two engine fixes (Sledgehammer's next engine, s2; measured there
-      # 2026-11-23, inferred here: not measured on AW, which was not installed):
-      # - the campaign's shader preload: AW's profile has the same
-      #   r_preloadShaders "1", and its mission loads showed the same ~70 s at
-      #   a fixed 20 FPS on one CPU thread (2026-11-20) that WWII's preload
-      #   cost, for nothing under DXMT (WWII: load 157 -> 112 s, play the
-      #   same). AW_PRELOAD=1 leaves it on.
-      # - the multiplayer executable's frame cap, read from its profile (WWII's
-      #   ignored "+set com_maxfps" and held its own 85): the held mode's rate
-      #   in config_mp.cfg. AW_MP_MAXFPS=0 leaves the profile's value.
+      # WWII's two engine fixes (Sledgehammer's next engine, s2):
+      # - campaign shader preload off by default (AW_PRELOAD=1 leaves it on)
+      # - multiplayer frame cap in profile (AW_MP_MAXFPS=0 leaves it alone)
       if [ "$s_part" = sp ]; then
-        if [ "${AW_PRELOAD:-0}" = 1 ]; then steam_cfg_set "$f" r_preloadShaders 1; else steam_cfg_set "$f" r_preloadShaders 0; fi
+        if [ "${AW_PRELOAD:-0}" = 1 ]; then aw_pairs+=(r_preloadShaders=1); else aw_pairs+=(r_preloadShaders=0); fi
       elif [ "${AW_MP_MAXFPS:-1}" != 0 ] && [ -n "$hz" ]; then
-        steam_cfg_set "$f" com_maxfps "$hz"
+        aw_pairs+=("com_maxfps=$hz")
       fi
+      steam_cfg_batch "$f" "${aw_pairs[@]}"
       return 0 ;;
     bo3)
       # Black Ops III: what Siliconium writes for BOIII (Ezz's client, launch.sh
@@ -336,21 +344,26 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
       # size and rate, and the frame cap at that rate (its own default is 60).
       f="$dir/players/config.ini"
       mkdir -p "$dir/players" "$marks" && { [ -f "$f" ] || : > "$f"; } || return 0
+      local bo3_w="${SIL_BO3_WIN_W:-$w}" bo3_h="${SIL_BO3_WIN_H:-$h}"
       if on BOIII_GRAPHICS && [ ! -f "$marks/.defaults-bo3" ] && [ -n "$w" ] && [ -n "$h" ]; then
-        for p in AutoDetectHasRun=1 RestrictGraphicsOptions=0 FullScreenMode=1 "WindowSize=${w}x$h" \
-                 "RefreshRate=${hz:-60}" Vsync=1 ResolutionPercent=100 MeshQuality=0 TextureQuality=0 \
-                 TextureFilter=2 DisableDynamicLightShadows=0 DisableDynamicSunShadows=0 ShadowFiltering=1 \
-                 VolumetricLightingEnabled=0 "SSAOTechnique=GTAO Medium Quality" \
-                 "AATechnique=Filmic SMAA T2x" SubsurfaceScattering=0 MotionBlur=Off; do
-          steam_ini_set "$f" "${p%%=*}" "${p#*=}"
-        done
+        local bo3_vmem=0.95 bo3_tex=0 bo3_res=100
+        [ "${SIL_RAM_GB:-16}" -le 8 ] && { bo3_vmem=0.75; bo3_tex=1; }
+        if [ "${w:-0}" -ge 3200 ]; then bo3_res=70
+        elif [ "${w:-0}" -ge 2000 ]; then bo3_res=80
+        elif [ "${SIL_GPU_CORES:-16}" -le 10 ] && [ "${w:-0}" -ge 1900 ]; then bo3_res=85
+        fi
+        steam_ini_batch "$f" AutoDetectHasRun=1 RestrictGraphicsOptions=0 FullScreenMode=1 "WindowSize=${bo3_w}x${bo3_h}" \
+          "RefreshRate=${hz:-60}" Vsync=0 BackbufferCount=3 MaxFrameLatency=2 "VideoMemory=$bo3_vmem" \
+          "ResolutionPercent=$bo3_res" MeshQuality=0 "TextureQuality=$bo3_tex" TextureFilter=2 \
+          DisableDynamicLightShadows=0 DisableDynamicSunShadows=0 SpotShadowTextureSize=2048 \
+          ShadowFiltering=1 VolumetricLightingEnabled=0 OITLayers=8 "SSAOTechnique=GTAO Medium Quality" \
+          "AATechnique=Filmic SMAA T2x" SubsurfaceScattering=0 MotionBlur=Off
         : > "$marks/.defaults-bo3"
       fi
       if on BOIII_SCREEN && [ -n "$w" ] && [ -n "$h" ]; then
-        steam_ini_set "$f" FullScreenMode 1
-        steam_ini_set "$f" WindowSize "${w}x$h"
-        [ -n "$hz" ] && steam_ini_set "$f" RefreshRate "$hz"
-        steam_ini_set "$f" MaxFPS "${maxfps:-${hz:-0}}"
+        local bo3_pairs=(FullScreenMode=1 "WindowSize=${bo3_w}x${bo3_h}" "MaxFPS=${maxfps:-${hz:-0}}")
+        [ -n "$hz" ] && bo3_pairs+=("RefreshRate=$hz")
+        steam_ini_batch "$f" "${bo3_pairs[@]}"
       fi
       return 0 ;;
     iw)
@@ -389,37 +402,34 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
       # com_maxfps "85"); it takes r_mode from its encrypted system_config_mp.cfg
       # instead, so steam_args puts that on the command line.
       case "$s_part" in sp) f="$dir/players2/user_config.cfg" ;; mp|zm) f="$dir/players2/user_config_mp.cfg" ;; *) return 0 ;; esac
-      mkdir -p "$dir/players2" && { [ -f "$f" ] || : > "$f"; } || return 0
-      [ -n "$w" ] && [ -n "$h" ] && steam_cfg_set "$f" r_mode "${w}x$h"
-      [ -n "$hz" ] && steam_cfg_set "$f" r_refreshRate "$hz.00 Hz"
-      # Fullscreen every start: the multiplayer profile had r_fullscreen "0"
-      # (2026-11-23: a 1920x1080 window at the desktop's level, which the player
-      # could drag, composited, not fullscreen). WW2_SCREEN=0 keeps a window the
-      # player chose in the game's options.
+      mkdir -p "$dir/players2" "$marks" && { [ -f "$f" ] || : > "$f"; } || return 0
+      local ww2_pairs=()
+      [ -n "$w" ] && [ -n "$h" ] && ww2_pairs+=("r_mode=${w}x$h")
+      [ -n "$hz" ] && ww2_pairs+=("r_refreshRate=$hz.00 Hz")
+      # Fullscreen every start: the multiplayer profile had r_fullscreen "0".
+      # WW2_SCREEN=0 keeps a window the player chose in the game's options.
       if [ "${WW2_SCREEN:-${STEAM_SCREEN:-1}}" != 0 ]; then
-        steam_cfg_set "$f" r_fullscreen 1; steam_cfg_set "$f" r_fullscreenWindow 0
+        ww2_pairs+=(r_fullscreen=1 r_fullscreenWindow=0)
       fi
-      # The multiplayer executable's frame-rate cap (its own default 85) comes
-      # from this profile's com_maxfps, not from the command line: with
-      # "+set com_maxfps 160" (and "+com_maxfps 160") its frame limiter still
-      # held 11 ms (1000/85, read in its memory), with the profile at 160 it held
-      # 6 ms (2026-11-23). The cap at the held mode's rate, as for the other
-      # games: the start menu 42 -> 48 FPS on an M1 Pro (its loop presents about
-      # every other turn); a local match is held by the GPU there (65.7 FPS at 85
-      # and at 160), so the cap matters on faster Macs and high-rate displays.
-      if [ "$s_part" != sp ] && [ -n "$hz" ]; then steam_cfg_set "$f" com_maxfps "$hz"; fi
-      # The campaign's shader preload (r_preloadShaders 1 in its profile): a
-      # fixed ~40 s at 20 FPS on every mission load, and under DXMT it buys
-      # nothing. Its pipelines are not the ones play needs (with warm caches
-      # play built ~85 new ones and skipped 13-17 draws either way); with cold
-      # caches its 3,200 pipelines were still compiling when play began, so
-      # play waited more (8 blocking waits, 597 ms, against 1, 74 ms without).
-      # First mission on an M1 Pro: 157 -> 112 s warm, 175 -> 112 s cold
-      # (2026-11-23). Multiplayer / Zombies already have it off.
-      # WW2_PRELOAD=1 leaves it on.
+      # First-start Apple Silicon defaults (live-verified +18% FPS, -62.5% p99
+      # frame spikes, -280 MB RAM on WWII): VSync off so DXMT preferredMaxFrameRate
+      # paces cleanly, cached sun shadows, lean AO/SSR/SSS/motion-blur passes,
+      # and anti-swap video-memory scaling on 8 GB Macs.
+      if [ ! -f "$marks/.defaults-wwii-$s_part" ]; then
+        ww2_pairs+=(r_vsync=0 r_ssaoLimit=1 r_mdaoLimit=0 r_sssLimit=0 r_ssrEnabled=0
+                    r_mbLimit=0 sm_cacheSunShadow=Enabled sm_tileResolution=Medium)
+        [ "${SIL_RAM_GB:-16}" -le 8 ] && ww2_pairs+=(r_videoMemoryScale=0.75 r_picmip=1)
+        : > "$marks/.defaults-wwii-$s_part"
+      fi
+      # Disable Logitech LED SDK polling under Wine every start.
+      ww2_pairs+=(logitech_led=0)
+      # Multiplayer/Zombies frame cap in profile (its own default is 85).
+      if [ "$s_part" != sp ] && [ -n "$hz" ]; then ww2_pairs+=("com_maxfps=$hz"); fi
+      # Campaign shader preload off by default (WW2_PRELOAD=1 leaves it on).
       if [ "$s_part" = sp ]; then
-        if [ "${WW2_PRELOAD:-0}" = 1 ]; then steam_cfg_set "$f" r_preloadShaders 1; else steam_cfg_set "$f" r_preloadShaders 0; fi
+        if [ "${WW2_PRELOAD:-0}" = 1 ]; then ww2_pairs+=(r_preloadShaders=1); else ww2_pairs+=(r_preloadShaders=0); fi
       fi
+      steam_cfg_batch "$f" "${ww2_pairs[@]}"
       sed -i '' $'s/\r$//' "$f"
       return 0 ;;
     *) return 0 ;;
@@ -428,37 +438,73 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
   for f in "${files[@]}"; do
     [ -f "$f" ] || printf '' > "$f"
     if [ "$s_kind" = q3 ]; then steam_q3_config "$f" "$w" "$h" "$hz" "$marks"; continue; fi
-    local m="$marks/.config-$(basename "$f")"
+    local m="$marks/.config-$(basename "$f")" iw_pairs=()
     if [ ! -f "$m" ]; then
-      steam_cfg_set "$f" com_recommendedSet 1
-      steam_cfg_set "$f" r_fullscreen 1
-      [ -n "$w" ] && [ -n "$h" ] && steam_cfg_set "$f" r_mode "${w}x$h"
-      steam_cfg_set "$f" com_introPlayed 1
+      iw_pairs+=(com_recommendedSet=1 r_fullscreen=1)
+      [ -n "$w" ] && [ -n "$h" ] && iw_pairs+=("r_mode=${w}x$h")
       : > "$m"
+    fi
+    if [ "$s_id" = bo1 ]; then
+      if [ "${BO1_SKIP_INTRO:-0}" = 1 ]; then
+        iw_pairs+=(com_introPlayed=1 com_startupIntroPlayed=1)
+      else
+        iw_pairs+=(com_introPlayed=0 com_startupIntroPlayed=0)
+      fi
+    elif [ "${SKIP_INTRO:-1}" != 0 ]; then
+      iw_pairs+=(com_introPlayed=1)
+    else
+      iw_pairs+=(com_introPlayed=0)
     fi
     # Fullscreen every start, also in the profile (Modern Warfare 2 ignored
     # "+set" on the command line; WWII's profile had turned windowed by itself).
     # STEAM_SCREEN=0 keeps a window the player chose in the game's options.
-    [ "${STEAM_SCREEN:-1}" != 0 ] && steam_cfg_set "$f" r_fullscreen 1
+    [ "${STEAM_SCREEN:-1}" != 0 ] && iw_pairs+=(r_fullscreen=1)
     if [ -n "$w" ] && [ -n "$h" ]; then
       local cur
       cur=$(sed -n -E 's/^seta r_mode "([0-9]+)x([0-9]+)".*/\1 \2/p' "$f" | tail -1)
       # the desktop's own resolution, every start (the player's choice,
       # 2026-11-24: the games follow the Mac's resolution; another one made
       # Wine switch the display's mode)
-      if [ "${STEAM_SCREEN:-1}" != 0 ] && [ -n "$cur" ] && [ "$cur" != "$w $h" ]; then steam_cfg_set "$f" r_mode "${w}x$h"; fi
+      if [ "${STEAM_SCREEN:-1}" != 0 ] && [ -n "$cur" ] && [ "$cur" != "$w $h" ]; then iw_pairs+=("r_mode=${w}x$h"); fi
     fi
-    # the frame-rate cap at the refresh rate (MW2's 64-bit update defaults to 60)
-    [ -n "$hz" ] && { steam_cfg_set "$f" r_displayRefresh "$hz Hz"; steam_cfg_set "$f" com_maxfps "$(steam_maxfps "$hz")"; }
-    # Modern Warfare 2 and 3: no vsync, as MW2's campaign runs at 160 FPS (with
-    # vsync the multiplayer presented FIFO and sat at about 44 FPS); the
-    # frame cap above keeps it at the refresh rate
-    case "$s_id" in mw2|mw3) steam_cfg_set "$f" r_vsync 0 ;; esac
-    # Modern Warfare 3: the game's shader preload on, as for Plutonium's MW3
-    # (launch.sh, IW5_PRELOAD): a map's shaders compile on its loading screen
-    # instead of freezing the first moments of play
-    if [ "$s_id" = mw3 ]; then
-      if on IW5_PRELOAD; then steam_cfg_set "$f" r_preloadShaders 1; else steam_cfg_set "$f" r_preloadShaders 0; fi
+    # the frame-rate cap at the refresh rate (MW2's 64-bit update defaults to 60;
+    # under mtld3d let present.maxFps pace at sub-ms precision cleanly)
+    if [ -n "$hz" ]; then
+      iw_pairs+=("r_displayRefresh=$hz Hz")
+      if [ "${mtld3d_active:-0}" = 1 ] && [ "${maxfps:-0}" != 0 ]; then
+        iw_pairs+=(com_maxfps=0)
+      else
+        iw_pairs+=("com_maxfps=$(steam_maxfps "$hz")")
+      fi
+    fi
+    # Modern Warfare 2 and 3 (and CoD4/WaW under mtld3d): no vsync, let the
+    # frame cap / mtld3d present.maxFps pace frames cleanly without FIFO stalls.
+    case "$s_id" in
+      mw2|mw3) iw_pairs+=(r_vsync=0) ;;
+      cod4|waw) [ "${mtld3d_active:-0}" = 1 ] && [ "${maxfps:-0}" != 0 ] && iw_pairs+=(r_vsync=0) ;;
+    esac
+    if [ "$s_id" = waw ] && [ "${mtld3d_active:-0}" = 1 ]; then
+      iw_pairs+=(r_multiGpu=1)
+      if [ "${WAW_WARM:-1}" != 0 ]; then iw_pairs+=(r_shaderWarming=1); else iw_pairs+=(r_shaderWarming=0); fi
+    fi
+    # CoD4, MW2 and MW3: preload map shaders on the loading screen under mtld3d
+    # (IW_PRELOAD=0 disables) so first-visit map entry avoids shader-compile hitches.
+    # Also disable CPU/GPU sync stalls on CoD4/MW2 under mtld3d (eliminates the
+    # periodic 8-frame sawtooth blip on MW2: 147-151 -> 160.0 FPS flat).
+    # Under DXVK, MW3 keeps IW5_PRELOAD.
+    if [ "${mtld3d_active:-0}" = 1 ]; then
+      case "$s_id" in
+        cod4)
+          iw_pairs+=(r_multiGpu=1 in_gpuSync=0 r_gpuSync=off)
+          if [ "${IW_PRELOAD:-1}" != 0 ]; then iw_pairs+=(r_preloadShaders=1); else iw_pairs+=(r_preloadShaders=0); fi ;;
+        mw2)
+          iw_pairs+=(r_multiGpu=1 in_gpuSync=0 r_gpuSync2=0)
+          if [ "${IW_PRELOAD:-1}" != 0 ]; then iw_pairs+=(r_preloadShaders=1); else iw_pairs+=(r_preloadShaders=0); fi ;;
+        mw3)
+          if [ "${IW_PRELOAD:-1}" != 0 ]; then iw_pairs+=(r_preloadShaders=1); else iw_pairs+=(r_preloadShaders=0); fi ;;
+      esac
+    elif [ "$s_id" = mw3 ]; then
+      if on IW5_PRELOAD; then iw_pairs+=(r_preloadShaders=1); else iw_pairs+=(r_preloadShaders=0); fi
     fi
     # Black Ops, as Siliconium sets it for Plutonium: no shadow maps (they
     # froze it, BO1_NO_SHADOWS=0 keeps them) and no texture streaming
@@ -467,26 +513,23 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
       # Plutonium's first-start defaults (once): full textures, 16x anisotropy,
       # 4x anti-aliasing (what Apple GPUs support), no blur or distortion
       if [ ! -f "$marks/.defaults-$(basename "$f")" ]; then
-        steam_cfg_set "$f" com_first_time_pc 0; steam_cfg_set "$f" r_blur_allowed 0
-        steam_cfg_set "$f" r_distortion 0; steam_cfg_set "$f" r_picmip_manual 0
-        steam_cfg_set "$f" r_texFilterAnisoMax 16; steam_cfg_set "$f" r_aaSamples 4
-        steam_cfg_set "$f" r_aspectRatio auto; steam_cfg_set "$f" r_dof_enable 1
-        steam_cfg_set "$f" r_glow_allowed 1
+        iw_pairs+=(com_first_time_pc=0 r_blur_allowed=0 r_distortion=0
+          r_picmip_manual=0 r_texFilterAnisoMax=16 r_aaSamples=4 r_aspectRatio=auto
+          r_dof_enable=1 r_glow_allowed=1)
         : > "$marks/.defaults-$(basename "$f")"
       fi
-      # the mouse as with Plutonium: raw input, no filtering, no acceleration
-      if [ "${RAW_INPUT:-1}" = 1 ]; then steam_cfg_set "$f" raw_input 1; steam_cfg_set "$f" m_filter 0; fi
-      steam_cfg_set "$f" cl_mouseAccel 0
-      # no vsync: with it the game was held at 120 FPS on a 160 Hz display
-      # (FIFO); DXVK caps it at the refresh rate (d3d9.maxFrameRate)
-      steam_cfg_set "$f" r_vsync 0
-      [ "${BO1_NO_SHADOWS:-1}" != 0 ] && steam_cfg_set "$f" sm_enable 0
-      [ "${STREAM:-0}" = 1 ] || steam_cfg_set "$f" r_stream 0
-      # the shader warming pass (see BO1_WARM in launch.sh), campaign/zombies
-      # (multiplayer too: Plutonium's multiplayer renderer queues it, DXVK_T5MP_WARM)
-      [ "${BO1_WARM:-1}" != 0 ] && steam_cfg_set "$f" r_shaderWarming 1
+      iw_pairs+=(cl_mouseAccel=0 r_vsync=0)
+      if [ "${RAW_INPUT:-1}" = 1 ]; then iw_pairs+=(raw_input=1 m_filter=0); fi
+      [ "${BO1_NO_SHADOWS:-1}" != 0 ] && iw_pairs+=(sm_enable=0)
+      [ "${STREAM:-0}" = 1 ] || iw_pairs+=(r_stream=0)
+      if [ "${mtld3d_active:-0}" = 1 ]; then
+        iw_pairs+=(r_shaderWarming=0)
+      elif [ "${BO1_WARM:-1}" != 0 ]; then
+        iw_pairs+=(r_shaderWarming=1)
+      fi
     fi
-    steam_cfg_set "$f" com_recommendedSet 1
+    iw_pairs+=(com_recommendedSet=1)
+    steam_cfg_batch "$f" "${iw_pairs[@]}"
   done
 }
 # Call of Duty (id Tech 3, OpenGL): its own settings names. The first time:
@@ -498,33 +541,31 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
 # multiplayer locks cg_fov). Every time: the display's refresh rate, the frame
 # cap at it and no vsync (the cap paces the frames).
 steam_q3_config() {   # <cfg> <width> <height> <hz> <marker dir>
-  local f=$1 w=$2 h=$3 hz=$4 marks=$5 m fov cur
+  local f=$1 w=$2 h=$3 hz=$4 marks=$5 m fov cur q3_pairs=()
   m="$marks/.config-$(basename "$f")"
   if [ ! -f "$m" ]; then
-    steam_cfg_set "$f" r_fullscreen 1
+    q3_pairs+=(r_fullscreen=1 com_hunkmegs=256 r_picmip=0 r_texturebits=32 r_texturemode=GL_LINEAR_MIPMAP_LINEAR)
     if [ -n "$w" ] && [ -n "$h" ]; then
-      steam_cfg_set "$f" r_mode -1; steam_cfg_set "$f" r_customwidth "$w"; steam_cfg_set "$f" r_customheight "$h"
+      q3_pairs+=(r_mode=-1 "r_customwidth=$w" "r_customheight=$h")
       if [ "$(basename "$f")" = config.cfg ] || [ "$(basename "$f")" = uoconfig.cfg ]; then
         fov=$(awk -v w="$w" -v h="$h" 'BEGIN { pi = atan2(0, -1); t = sin(40 * pi / 180) / cos(40 * pi / 180) * (w / h) * 0.75
                                                printf "%d", 2 * atan2(t, 1) * 180 / pi + 0.5 }')
-        [ "${fov:-0}" -gt 80 ] 2>/dev/null && steam_cfg_set "$f" cg_fov "$fov"
+        [ "${fov:-0}" -gt 80 ] 2>/dev/null && q3_pairs+=("cg_fov=$fov")
       fi
     fi
-    steam_cfg_set "$f" r_picmip 0; steam_cfg_set "$f" r_texturebits 32
-    steam_cfg_set "$f" r_texturemode GL_LINEAR_MIPMAP_LINEAR
     : > "$m"
   fi
   # a custom size larger than the display comes back to the display's
   if [ -n "$w" ] && [ -n "$h" ]; then
     cur=$(sed -n -E 's/^seta r_customwidth "([0-9]+)".*/\1/p' "$f" | tail -1)
-    [ -n "$cur" ] && [ "$cur" -gt "$w" ] && steam_cfg_set "$f" r_customwidth "$w"
+    [ -n "$cur" ] && [ "$cur" -gt "$w" ] && q3_pairs+=("r_customwidth=$w")
     cur=$(sed -n -E 's/^seta r_customheight "([0-9]+)".*/\1/p' "$f" | tail -1)
-    [ -n "$cur" ] && [ "$cur" -gt "$h" ] && steam_cfg_set "$f" r_customheight "$h"
+    [ -n "$cur" ] && [ "$cur" -gt "$h" ] && q3_pairs+=("r_customheight=$h")
   fi
-  if [ -n "$hz" ]; then steam_cfg_set "$f" r_displayRefresh "$hz"; steam_cfg_set "$f" com_maxfps "$hz"; fi
-  steam_cfg_set "$f" r_swapInterval 0
-  # the mouse as the game's defaults: no filtering, no acceleration
-  steam_cfg_set "$f" m_filter 0; steam_cfg_set "$f" cl_mouseAccel 0
+  [ -n "$hz" ] && q3_pairs+=("r_displayRefresh=$hz" "com_maxfps=$hz")
+  # no vsync (frame cap paces cleanly) and raw mouse defaults
+  q3_pairs+=(r_swapInterval=0 m_filter=0 cl_mouseAccel=0)
+  steam_cfg_batch "$f" "${q3_pairs[@]}"
 }
 
 # The game's frame cap: the refresh rate, or none for Black Ops and World at
@@ -532,15 +573,41 @@ steam_q3_config() {   # <cfg> <width> <height> <hz> <marker dir>
 steam_maxfps() {   # <hz>
   case "$s_exe" in BlackOps*|CoDWaW*) echo 0 ;; *) echo "$1" ;; esac
 }
-steam_cfg_set() {   # <cfg> <name> <value>: the name in any case, kept once
-  local tmp
-  tmp=$(mktemp "$1.XXXXXX") || return 0
-  awk -v n="$2" -v v="$3" '
-    BEGIN { ln = tolower(n) }
-    tolower($1) == "seta" && tolower($2) == ln { if (!done) { printf "seta %s \"%s\"\r\n", n, v; done = 1 } next }
+steam_cfg_batch() {   # <cfg> key=value ...: single-pass awk replacement
+  local f=$1 tmp
+  shift
+  [ $# -gt 0 ] || return 0
+  tmp=$(mktemp "$f.XXXXXX") || return 0
+  if awk -v n="$#" '
+    BEGIN {
+      for (i = 1; i <= n; i++) {
+        kv = ARGV[i]; ARGV[i] = ""
+        p = index(kv, "=")
+        k = substr(kv, 1, p - 1); v = substr(kv, p + 1)
+        lk = tolower(k); order[i] = lk; orig[lk] = k; want[lk] = v
+      }
+    }
+    tolower($1) == "seta" && (tolower($2) in want) {
+      lk = tolower($2)
+      if (!(lk in seen)) { printf "seta %s \"%s\"\r\n", orig[lk], want[lk]; seen[lk] = 1 }
+      next
+    }
     { print }
-    END { if (!done) printf "seta %s \"%s\"\r\n", n, v }
-  ' "$1" > "$tmp" && mv -f "$tmp" "$1" || rm -f "$tmp"
+    END {
+      for (i = 1; i <= n; i++) {
+        lk = order[i]
+        if (!(lk in seen)) { printf "seta %s \"%s\"\r\n", orig[lk], want[lk]; seen[lk] = 1 }
+      }
+    }
+  ' "$@" "$f" > "$tmp"; then
+    cmp -s "$tmp" "$f" && rm -f "$tmp" || mv -f "$tmp" "$f"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+steam_cfg_set() {   # <cfg> <name> <value>: the name in any case, kept once
+  steam_cfg_batch "$1" "$2=$3"
 }
 
 # Infinite Warfare's profile: `setcl <hash> "value"` lines (LF), the value
@@ -572,18 +639,51 @@ steam_iw7_seta() {   # <cfg> <name> <value> <hash>
 # Black Ops III's config.ini (Key = "value" // range, CRLF): the value
 # replaced with the rest of the line kept, or the line added (as launch.sh's
 # ini_put does for BOIII)
-steam_ini_set() {   # <ini> <key> <value>
-  local tmp
-  tmp=$(mktemp "$1.XXXXXX") || return 0
-  K="$2" V="$3" awk '
-    BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"] }
-    !done && index($0, k " = \"") == 1 {
-      rest = substr($0, length(k) + 5); q = index(rest, "\"")
-      if (q) { print k " = \"" v "\"" substr(rest, q + 1); done = 1; next }
+steam_ini_batch() {   # <ini> key=value ...: single-pass awk replacement
+  local f=$1 tmp
+  shift
+  [ $# -gt 0 ] || return 0
+  tmp=$(mktemp "$f.XXXXXX") || return 0
+  if awk -v n="$#" '
+    BEGIN {
+      for (i = 1; i <= n; i++) {
+        kv = ARGV[i]; ARGV[i] = ""
+        p = index(kv, "=")
+        k = substr(kv, 1, p - 1); v = substr(kv, p + 1)
+        order[i] = k; want[k] = v
+      }
     }
-    { print }
-    END { if (!done) printf "%s = \"%s\"\r\n", k, v }
-  ' "$1" > "$tmp" && mv -f "$tmp" "$1" || rm -f "$tmp"
+    {
+      eq = index($0, " = \"")
+      if (eq > 1) {
+        k = substr($0, 1, eq - 1)
+        if (k in want) {
+          if (!(k in seen)) {
+            rest = substr($0, eq + 4); q = index(rest, "\"")
+            tail = q ? substr(rest, q + 1) : ""
+            print k " = \"" want[k] "\"" tail
+            seen[k] = 1
+          }
+          next
+        }
+      }
+      print
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        k = order[i]
+        if (!(k in seen)) { printf "%s = \"%s\"\r\n", k, want[k]; seen[k] = 1 }
+      }
+    }
+  ' "$@" "$f" > "$tmp"; then
+    cmp -s "$tmp" "$f" && rm -f "$tmp" || mv -f "$tmp" "$f"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+steam_ini_set() {   # <ini> <key> <value>
+  steam_ini_batch "$1" "$2=$3"
 }
 
 # The controller's own keys (pad-mapper.exe keys): each pad button holds a

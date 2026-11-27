@@ -32,6 +32,7 @@ home=${SIL_HOME:-"$HOME/Library/Application Support/Siliconium"}
 . "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/tools/migrate.sh"   # an install of the previous name
 engine="$home/engine"
 export WINEPREFIX="$home/prefix-steam" WINEMSYNC=1 WINEDEBUG=${WINEDEBUG:--all} CX_ROOT="$engine"
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml,winemenubuilder.exe=}"
 # Steam stays open in the background: its Wine server runs through a link
 # outside the engine folder, so the app doesn't count it as a game running
 mkdir -p "$home/campaign" "$home/logs"
@@ -207,11 +208,11 @@ ensure_running() {
   local seen
   seen=$(wc -l < "$steamdir/logs/connection_log.txt" 2>/dev/null | tr -d ' '); seen=${seen:-0}
   start_steam
-  for _ in $(seq 1 90); do
+  for _ in $(seq 1 360); do
     tail -n +$((seen + 1)) "$steamdir/logs/connection_log.txt" 2>/dev/null | grep -q '\[Logged On,' && break
-    sleep 2
+    sleep 0.5
   done
-  sleep 3
+  sleep 2
 }
 need_steam() { [ -f "$steamdir/Steam.exe" ] || die "Steam is not installed: press Install Steam first"; }
 
@@ -309,7 +310,7 @@ start)
   running || start_steam -silent
   ;;
 wait)
-  for _ in $(seq 1 90); do signed_in && exit 0; sleep 2; done
+  for _ in $(seq 1 360); do signed_in && exit 0; sleep 0.5; done
   die "Steam did not sign in: sign in in Steam's window (tick Remember me), then try again"
   ;;
 gamedir) gamedir "${2:?appid}" ;;

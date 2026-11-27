@@ -1,7 +1,7 @@
 DXMT v0.80 (589adb7) airconv: emulated tessellation (D3D11 hull/domain -> Metal
 object/mesh), three fixes in src/airconv/dxbc_converter_ts.cpp. Built into the
 unix half (winemetal.so, LLVM 15.0.7 with DXMT CI's flags, see TESTING.md) and
-shipped as payload/steam/aw-winemetal.so for Call of Duty: Advanced Warfare only.
+shipped unified as payload/dxmt/x86_64-unix/winemetal.so for all Direct3D 11 games.
 The three bugs are still present on upstream main (0df8610, 2026-11-10): not fixed upstream.
 
 1. get_max_potential_workload_count(QUAD) under-counted: the quad workload

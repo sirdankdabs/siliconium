@@ -60,8 +60,20 @@ fetch() { # url file sha256
   [ "$(sha "$2")" = "$3" ] || die "$(basename "$2"): SHA-256 does not match"
 }
 
-x87_install() { # into $1/bin: athei's latest x87sidecar release, else the pinned one
-  local dest=$1 tag sha url tmp json
+x87_is_newer() { # true if $1 > $2 numerically (ignoring leading 'v')
+  /usr/bin/python3 -I - "$1" "$2" <<'PY'
+import sys
+def parts(s): return [int(p) for p in s.lstrip("v").split(".") if p.isdigit()]
+a, b = parts(sys.argv[1]), parts(sys.argv[2])
+n = max(len(a), len(b))
+a += [0] * (n - len(a)); b += [0] * (n - len(b))
+sys.exit(0 if a > b else 1)
+PY
+}
+
+x87_install() { # into $1/bin: newest of bundled patched x87sidecar or athei's latest release
+  local dest=$1 tag sha url tmp json bundled="$kit/payload/x87/x87sidecar" bundled_ver=""
+  [ -x "$bundled" ] && [ -f "$kit/payload/x87/VERSION" ] && bundled_ver=$(tr -d '\r\n' < "$kit/payload/x87/VERSION")
   json=$(curl -fsSL https://api.github.com/repos/athei/x87sidecar/releases/latest 2>/dev/null || true)
   tag=$(printf '%s' "$json" | /usr/bin/python3 -I -c 'import json,sys
 try: print(json.load(sys.stdin)["tag_name"])
@@ -72,10 +84,13 @@ try:
     print(next(a["digest"].split(":")[1] for a in r["assets"] if a["name"] == "x87sidecar.tar.xz"))
 except Exception: pass' 2>/dev/null)
   tmp=$(mktemp -d)
-  # The installed engine's x87sidecar is that release already (or, when
-  # GitHub cannot be asked, the one there is): no download, nothing kept
-  if [ -x "$engine/bin/x87sidecar" ] && [ -f "$engine/x87sidecar.version" ] &&
-     { [ -z "$tag" ] || [ "$tag" = "$(cat "$engine/x87sidecar.version")" ]; }; then
+  # Prefer Siliconium's bundled patched build (PR #54/#57 fixes) unless upstream
+  # published a strictly newer official release.
+  if [ -n "$bundled_ver" ] && { [ -z "$tag" ] || ! x87_is_newer "$tag" "$bundled_ver"; }; then
+    tag=$bundled_ver
+    cp -p "$bundled" "$tmp/x87sidecar"
+  elif [ -x "$engine/bin/x87sidecar" ] && [ -f "$engine/x87sidecar.version" ] &&
+       { [ -z "$tag" ] || [ "$tag" = "$(cat "$engine/x87sidecar.version")" ]; }; then
     tag=$(cat "$engine/x87sidecar.version")
     cp -p "$engine/bin/x87sidecar" "$tmp/x87sidecar"
   else
@@ -114,11 +129,14 @@ new="$engine.new"
 rm -rf "$new"
 
 # --- Base: our engine ------------------------------------------------------------
+. "$kit/tools/dl-progress.sh"
 own=
 archive=${SIL_ENGINE_ARCHIVE:-"$downloads/siliconium-engine-$engine_version.tar.xz"}
 if [ ! -f "$archive" ] || [ "$(sha "$archive")" != "$engine_sha" ]; then
-  step "Downloading the Siliconium engine $engine_version (130 MB)"
-  if curl -fL --retry 3 -o "$archive.part" "$engine_url" 2>/dev/null; then mv -f "$archive.part" "$archive"; fi
+  step "Downloading the Siliconium engine $engine_version (~130 MB)"
+  if sil_curl_progress "Downloading Siliconium engine $engine_version" 130 "$archive.part" -fsSL --retry 3 "$engine_url"; then
+    mv -f "$archive.part" "$archive"
+  fi
   rm -f "$archive.part"
   # (the archive is not kept after an install: an update downloads it again)
   # An update that cannot download it keeps the installed engine of this
@@ -156,9 +174,9 @@ if ! cx_ok "$cx_app"; then
   if ! cx_ok "$cx_app"; then
     zip="$downloads/crossover-$cx_zip_version.zip"
     if [ ! -f "$zip" ] || [ "$(shasum -a 256 "$zip" | cut -d' ' -f1)" != "$cx_zip_sha256" ]; then
-      step "Downloading CrossOver $cx_zip_version's runtime from CodeWeavers (390 MB)"
-      curl -fL -C - --retry 3 -o "$zip.part" "$cx_zip_url" 2>/dev/null ||
-        curl -fL --retry 3 -o "$zip.part" "$cx_zip_url" || die "could not download CrossOver from codeweavers.com"
+      step "Downloading CrossOver $cx_zip_version's runtime from CodeWeavers (~390 MB)"
+      sil_curl_progress "Downloading CrossOver $cx_zip_version runtime" 390 "$zip.part" -fsSL -C - --retry 3 "$cx_zip_url" ||
+        sil_curl_progress "Downloading CrossOver $cx_zip_version runtime" 390 "$zip.part" -fsSL --retry 3 "$cx_zip_url" || die "could not download CrossOver from codeweavers.com"
       mv -f "$zip.part" "$zip"
     fi
     [ "$(shasum -a 256 "$zip" | cut -d' ' -f1)" = "$cx_zip_sha256" ] || { rm -f "$zip"; die "the CrossOver download is damaged; try again"; }
@@ -187,11 +205,22 @@ codesign -fs - "$L/x86_64-unix/ntdll.so" 2>/dev/null
 if [ -n "$own" ]; then
   cp "$kit/payload/x86_64-unix/winemac.so" "$L/x86_64-unix/winemac.so"
   codesign -fs - "$L/x86_64-unix/winemac.so" 2>/dev/null
+  if [ -f "$kit/payload/x86_64-unix/winecoreaudio.so" ]; then
+    cp "$kit/payload/x86_64-unix/winecoreaudio.so" "$L/x86_64-unix/winecoreaudio.so"
+    codesign -fs - "$L/x86_64-unix/winecoreaudio.so" 2>/dev/null
+  fi
 fi
 # ntdll.dll: WINE_HIDE_WINE_EXPORTS (boiii's Workshop downloads), same build as ntdll.so
 cp "$kit/payload/x86_64-windows/ntdll.dll" "$L/x86_64-windows/ntdll.dll"
 cp "$kit/payload/i386-windows/ntdll.dll" "$L/i386-windows/ntdll.dll"
 cp "$kit/payload/i386-windows/d3d9.dll" "$L/i386-windows/d3d9.dll"
+# dsound.dll (32-bit): SSE2 + SIMD FIR resampler (patches/wine-dsound-sse2-mixer.patch);
+# keep stock copy as .sil-original so DSOUND_SSE=0 can fall back cleanly.
+if [ -f "$kit/payload/i386-windows/dsound.dll" ]; then
+  [ -f "$L/i386-windows/dsound.dll" ] && [ ! -e "$L/i386-windows/dsound.dll.sil-original" ] &&
+    cp -p "$L/i386-windows/dsound.dll" "$L/i386-windows/dsound.dll.sil-original"
+  cp "$kit/payload/i386-windows/dsound.dll" "$L/i386-windows/dsound.dll"
+fi
 # xinput: ours and CrossOver's side by side, launch.sh picks one (RUMBLE_FIX)
 cp "$kit/payload/orig/xinput1_3.dll" "$L/i386-windows/xinput1_3.cx.dll"
 cp "$kit/payload/i386-windows/xinput1_3.dll" "$L/i386-windows/xinput1_3.sil.dll"
@@ -205,8 +234,8 @@ for a in i386-windows x86_64-windows; do
     cp "$kit/payload/dxmt/$a/$d.dll" "$L/$a/$d.dll"
   done
 done
-cp "$kit/payload/dxmt/x86_64-unix/winemetal.so" "$L/x86_64-unix/winemetal.so"
-codesign -fs - "$L/x86_64-unix/winemetal.so" 2>/dev/null
+cp -p "$kit/payload/dxmt/x86_64-unix/winemetal.so" "$L/x86_64-unix/winemetal.so"
+codesign -v "$L/x86_64-unix/winemetal.so" 2>/dev/null || codesign -fs - "$L/x86_64-unix/winemetal.so" 2>/dev/null
 # Media Foundation's video decoders (Black Ops III asks for them, "Windows
 # Media Feature Pack"): winegstreamer with GStreamer 1.24 (LGPL) and its
 # plugins, VideoToolbox's hardware decoder among them. CrossOver has its own.

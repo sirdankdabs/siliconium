@@ -1,0 +1,162 @@
+Fix mouse jumping during ADS + shoot (RMB + LMB) and high-polling-rate mouse
+input in mouse-look mode:
+- Route mouse button, drag and scroll events cleanly through handleEvent: during
+  mouseLook so AppKit [super sendEvent:] / contextual menus / didSendEvent:
+  updateCursor: never run on in-game clicks or drags.
+- Disable AppKit NSEvent mouse coalescing while mouseLook is active so 1000 Hz
+  mice deliver true 1 ms deltas instead of 40-170 ms coalesced spikes.
+- Skip synchronous WindowServer windowNumbersWithOptions: / grow-box IPC in
+  handleMouseButton: and per-move updateCursor: during mouseLook.
+- Suppress the initial CGWarpMouseCursorPosition delta leak when entering
+  mouseLook.
+
+--- a/dlls/winemac.drv/cocoa_app.h
++++ b/dlls/winemac.drv/cocoa_app.h
+@@ -86,6 +86,8 @@
+ 
+     NSTimeInterval lastSetCursorPositionTime;
+     BOOL        mouseLook;      /* mouse detached from the hidden cursor; moves sent as deltas */
++    BOOL        mouseLookPendingWarp;
++    CGFloat     mouseLookWarpDeltaX, mouseLookWarpDeltaY;
+ 
+     id<WineClipCursorHandler> clipCursorHandler;
+ 
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -1524,6 +1524,8 @@
+         if (mouseLook)
+         {
+             mouseLook = FALSE;
++            mouseLookPendingWarp = FALSE;
++            [NSEvent setMouseCoalescingEnabled:YES];
+             CGAssociateMouseAndMouseCursorPosition(true);
+             forceNextMouseMoveAbsolute = TRUE;
+         }
+@@ -1560,6 +1562,7 @@
+             // the local events suppression interval to 0 for the warp.  That's
+             // deprecated, but I'm not aware of any other way.  For good
+             // measure, we do both.
++            CGPoint preWarpPos = NSPointToCGPoint([self flippedMouseLocation:[NSEvent mouseLocation]]);
+             CGSetLocalEventsSuppressionInterval(0);
+             ret = (CGWarpMouseCursorPosition(pos) == kCGErrorSuccess);
+             CGSetLocalEventsSuppressionInterval(0.25);
+@@ -1572,6 +1575,12 @@
+                 {
+                     CGAssociateMouseAndMouseCursorPosition(false);
+                     mouseLook = TRUE;
++                    mouseMoveDeltaX = 0;
++                    mouseMoveDeltaY = 0;
++                    mouseLookWarpDeltaX = pos.x - preWarpPos.x;
++                    mouseLookWarpDeltaY = pos.y - preWarpPos.y;
++                    mouseLookPendingWarp = (hypot(mouseLookWarpDeltaX, mouseLookWarpDeltaY) >= 4.0);
++                    [NSEvent setMouseCoalescingEnabled:NO];
+                 }
+             }
+         }
+@@ -1881,11 +1890,29 @@
+             else
+             {
+                 double scale = retina_on ? 2 : 1;
++                double dx = [anEvent deltaX];
++                double dy = [anEvent deltaY];
++
++                if (mouseLook && mouseLookPendingWarp)
++                {
++                    mouseLookPendingWarp = FALSE;
++                    /* macOS can leak the initial CGWarpMouseCursorPosition offset into
++                       the first detached mouse move's delta. Cancel it only when the
++                       received delta matches the recorded warp vector. */
++                    double tolX = fmax(40.0, fabs(mouseLookWarpDeltaX) * 0.25);
++                    double tolY = fmax(40.0, fabs(mouseLookWarpDeltaY) * 0.25);
++                    if (fabs(dx - mouseLookWarpDeltaX) <= tolX &&
++                        fabs(dy - mouseLookWarpDeltaY) <= tolY)
++                    {
++                        dx -= mouseLookWarpDeltaX;
++                        dy -= mouseLookWarpDeltaY;
++                    }
++                }
+ 
+                 /* Add event delta to accumulated delta error */
+                 /* deltaY is already flipped */
+-                mouseMoveDeltaX += [anEvent deltaX];
+-                mouseMoveDeltaY += [anEvent deltaY];
++                mouseMoveDeltaX += dx;
++                mouseMoveDeltaY += dy;
+ 
+                 event = macdrv_create_event(MOUSE_MOVED_RELATIVE, targetWindow);
+                 event->mouse_moved.x = mouseMoveDeltaX * scale;
+@@ -1911,7 +1938,8 @@
+         else
+             lastTargetWindow = nil;
+ 
+-        [self updateCursor:FALSE];
++        if (!mouseLook || !cursorIsCurrent)
++            [self updateCursor:FALSE];
+     }
+ 
+     - (void) handleMouseButton:(NSEvent*)theEvent
+@@ -1921,7 +1949,7 @@
+         WineWindow* windowBroughtForward = nil;
+         BOOL process = FALSE;
+ 
+-        if ([window isKindOfClass:[WineWindow class]] &&
++        if (!mouseLook && [window isKindOfClass:[WineWindow class]] &&
+             type == NSEventTypeLeftMouseDown &&
+             ![theEvent wine_commandKeyDown])
+         {
+@@ -1952,6 +1980,8 @@
+             window = nil;
+         else if (mouseCaptureWindow)
+             window = mouseCaptureWindow;
++        else if (mouseLook && ![window isKindOfClass:[WineWindow class]] && lastTargetWindow)
++            window = lastTargetWindow;
+ 
+         if ([window isKindOfClass:[WineWindow class]])
+         {
+@@ -1965,7 +1995,7 @@
+ 
+             if (pressed)
+             {
+-                if (mouseCaptureWindow)
++                if (mouseCaptureWindow || mouseLook)
+                     process = TRUE;
+                 else
+                 {
+@@ -2019,9 +2049,11 @@
+                 event = macdrv_create_event(MOUSE_BUTTON, window);
+                 event->mouse_button.button = [theEvent buttonNumber];
+                 event->mouse_button.pressed = pressed;
+-                /* mouse look: the real cursor is detached, its position is not Wine's */
+-                event->mouse_button.x = mouseLook ? INT_MIN : floor(pt.x);
+-                event->mouse_button.y = mouseLook ? INT_MIN : floor(pt.y);
++                BOOL omitPos = mouseLook ||
++                    (lastSetCursorPositionTime && [theEvent timestamp] <= lastSetCursorPositionTime);
++                /* mouse look (or click queued before a warp): do not move Wine's cursor */
++                event->mouse_button.x = omitPos ? INT_MIN : floor(pt.x);
++                event->mouse_button.y = omitPos ? INT_MIN : floor(pt.y);
+                 event->mouse_button.time_ms = [self ticksForEventTime:[theEvent timestamp]];
+ 
+                 [window.queue postEvent:event];
+@@ -2234,19 +2266,19 @@
+                  type == NSEventTypeRightMouseDragged || type == NSEventTypeOtherMouseDragged)
+         {
+             [self handleMouseMove:anEvent];
+-            ret = mouseCaptureWindow && ![windowsBeingDragged count];
++            ret = (mouseCaptureWindow || mouseLook) && ![windowsBeingDragged count];
+         }
+         else if (type == NSEventTypeLeftMouseDown || type == NSEventTypeLeftMouseUp ||
+                  type == NSEventTypeRightMouseDown || type == NSEventTypeRightMouseUp ||
+                  type == NSEventTypeOtherMouseDown || type == NSEventTypeOtherMouseUp)
+         {
+             [self handleMouseButton:anEvent];
+-            ret = mouseCaptureWindow && ![windowsBeingDragged count];
++            ret = (mouseCaptureWindow || mouseLook) && ![windowsBeingDragged count];
+         }
+         else if (type == NSEventTypeScrollWheel)
+         {
+             [self handleScrollWheel:anEvent];
+-            ret = mouseCaptureWindow != nil;
++            ret = mouseCaptureWindow != nil || mouseLook;
+         }
+         else if (type == NSEventTypeKeyDown)
+         {

@@ -62,18 +62,19 @@ steam_mod_def() {
     t4me) md_game=waw md_parts=sp md_dlls=d3d9 md_keep=1
           md_zip=(https://github.com/JBShady/T4M-Enhanced/releases/download/r49/d3d9.7z
                   c635e1de283d36a71f91c1ebc7fc1ab74b8017b1544ea6df13a9145123f0ce50 .) ;;
-    # IW-Pad (GalvarinoDev, GPL-3.0): controller support with console aim
-    # assist, button prompts and menu navigation for the campaigns of Steam's
-    # 64-bit Modern Warfare 2 and 3 (it checks the executable's build and does
-    # nothing on another). iw-pad.exe starts the game with its arguments and
-    # loads iw-pad.dll into it; its flag file makes the game write
-    # steam_appid.txt, so it is not restarted through Steam; iw-pad.log is
-    # the DLL's own log. Its controller settings (gpad_* and BUTTON_* binds)
-    # stay in the player's config.cfg: the game without it never reads them.
+    # IW-Pad v0.1.3 (GalvarinoDev, GPL-3.0): controller support with console aim
+    # assist, button prompts and menu navigation for the campaigns of both
+    # 64-bit (iw-pad.dll) and 32-bit (iw-pad32.dll) Modern Warfare 2 and 3 (it
+    # checks the executable's build and does nothing on an unknown build).
+    # iw-pad.exe starts the game with its arguments and loads the matching DLL
+    # into it; its flag file makes the game write steam_appid.txt, so it is not
+    # restarted through Steam; iw-pad.log is the DLL's own log. Its controller
+    # settings (gpad_* and BUTTON_* binds) stay in the player's config.cfg: the
+    # game without it never reads them.
     iwpad) md_game="mw2 mw3" md_parts=sp md_start=iw-pad.exe md_pad=native
            md_extra="noship_create_steam_appid.txt steam_appid.txt iw-pad.log"
-           md_zip=(https://github.com/GalvarinoDev/IW-Pad/releases/download/v0.0.9/iw-pad-x64.zip
-                   ac6642becb0fc0c3fd6d026b24ff5b40a99f926e84b703a6f4673f6d54208ff3 .) ;;
+           md_zip=(https://github.com/GalvarinoDev/IW-Pad/releases/download/v0.1.3/iw-pad.zip
+                   85c420909d11e1ab0e1863eaa49b3e3f0b98e35376e1b34929fcd1431b28877e .) ;;
     # T6SP-Mod (Rattpak; closed source, no licence, so downloaded from its
     # GitHub release): Black Ops II's campaign with a developer console,
     # unlocked settings (field of view above 90), gamepad aim assist
@@ -171,7 +172,8 @@ steam_mod_def() {
 m_mod=none m_error= m_start=
 m_store="$home/mods"
 steam_mod_for() { case " $md_game " in *" $1 "*) return 0 ;; esac; return 1; }
-m_record="$home/cache/steam-${s_id:-x}/mod-installed.list"
+if [ "${s_client:-}" = own ]; then m_record="$home/cache/own-${s_id:-x}/mod-installed.list"
+else m_record="$home/cache/steam-${s_id:-x}/mod-installed.list"; fi
 
 # The Windows path Wine gives a Mac folder in Steam's prefix (Wine's own rule:
 # the drive whose folder is the deepest one holding it, the first letter on a
@@ -214,8 +216,17 @@ steam_mod_le() { od -An -t "u$2" -j "$3" -N "$2" "$1" 2> /dev/null | tr -d ' \n'
 steam_mod_prepare() {   # <game folder>
   local dir=$1 key want
   steam_mod_remove "$dir"   # what a crash left behind
-  key="STEAM_MOD_$(printf '%s' "$s_id" | tr '[:lower:]' '[:upper:]')"
-  want=${!key:-none}
+  if [ "${s_client:-}" = own ]; then
+    key="OWN_MOD_$(printf '%s' "$s_id" | tr '[:lower:]' '[:upper:]')"
+    if [ -z "${!key+x}" ] && [ "$s_id" = bo2 ] && [ "$s_part" = sp ]; then
+      want=t6spmod
+    else
+      want=${!key:-none}
+    fi
+  else
+    key="STEAM_MOD_$(printf '%s' "$s_id" | tr '[:lower:]' '[:upper:]')"
+    want=${!key:-none}
+  fi
   m_mod=none
   [ "$want" = none ] && return 0
   steam_mod_def "$want" && steam_mod_for "$s_id" || return 0   # unknown here: the plain game
@@ -281,14 +292,27 @@ steam_mod_args() {   # <game folder>
       fi ;;
     iw3spmod)
       # It reads its own settings file (players/profiles/<p>/iw3sp_mod_config.cfg,
-      # a copy of config.cfg the first time): the display's rate every start, as
-      # steam_config writes in config.cfg
-      local p f
+      # a copy of config.cfg the first time): the display's rate and Apple-tuned
+      # settings every start, as steam_config writes in config.cfg
+      local p f iw3_pairs=()
       p=$(tr -d '\r\n' 2>/dev/null < "$1/players/profiles/active.txt")
       f="$1/players/profiles/$p/iw3sp_mod_config.cfg"
-      if [ -n "$p" ] && [ -f "$f" ] && [ -n "${hz:-}" ]; then
-        steam_cfg_set "$f" r_displayRefresh "$hz Hz"
-        steam_cfg_set "$f" com_maxfps "$(steam_maxfps "$hz")"
+      if [ -n "$p" ] && [ -f "$f" ]; then
+        [ "${STEAM_SCREEN:-1}" != 0 ] && iw3_pairs+=(r_fullscreen=1)
+        [ "${STEAM_SCREEN:-1}" != 0 ] && [ -n "${dw:-}" ] && [ -n "${dh:-}" ] && iw3_pairs+=("r_mode=${dw}x${dh}")
+        if [ -n "${hz:-}" ]; then
+          iw3_pairs+=("r_displayRefresh=$hz Hz")
+          if [ "${mtld3d_active:-0}" = 1 ] && [ "${maxfps:-0}" != 0 ]; then
+            iw3_pairs+=(com_maxfps=0 r_vsync=0)
+          else
+            iw3_pairs+=("com_maxfps=$(steam_maxfps "$hz")")
+          fi
+        fi
+        if [ "${mtld3d_active:-0}" = 1 ]; then
+          iw3_pairs+=(r_multiGpu=1 in_gpuSync=0 r_gpuSync=off)
+          [ "${IW_PRELOAD:-1}" != 0 ] && iw3_pairs+=(r_preloadShaders=1)
+        fi
+        [ ${#iw3_pairs[@]} -gt 0 ] && steam_cfg_batch "$f" "${iw3_pairs[@]}"
       fi
       # The controller, the first time (no button layout chosen yet): what its
       # menu does when the player turns the controller on (gamepadFirstExecIfEnabled:
@@ -306,7 +330,7 @@ steam_mod_args() {   # <game folder>
         printf 'c %s\n' iw3sp_data/settings.json >> "$m_record"
       fi
       # DXVK's pipeline list is per executable: start from the game's own
-      local c="$home/cache/steam-$s_id"
+      local c="$home/cache/${steam_cache_tag:-steam-$s_id}"
       [ -f "$c/iw3sp_mod.dxvk-cache" ] || { [ -f "$c/iw3sp.dxvk-cache" ] && cp "$c/iw3sp.dxvk-cache" "$c/iw3sp_mod.dxvk-cache"; }
       ;;
   esac
@@ -316,13 +340,16 @@ steam_mod_args() {   # <game folder>
 # The fix's files in Siliconium's folder, each checked; missing or wrong ones
 # downloaded from its official source
 steam_mod_fetch() {   # <mod>
-  local mod=$1 list="$kit/payload/steam/mods/$1.files" sum size path f tmp got
+  local mod=$1 list="$kit/payload/steam/mods/$1.files" sum size path f tmp got idx=0 total
   [ -f "$list" ] || { m_error="Siliconium has no file list for $mod: reinstall Siliconium."; return 1; }
   if [ ${#md_zip[@]} -gt 0 ]; then steam_mod_fetch_zip "$mod" "$list"; return; fi
+  total=$(grep -cvE '^[[:space:]]*(#|$)' "$list" 2>/dev/null || echo 0)
   while read -r sum size path; do
     case "$sum" in ''|\#*) continue ;; esac
+    idx=$((idx + 1))
     f="$m_store/$mod/files/$path"
     [ -f "$f" ] && [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" = "$sum" ] && continue
+    printf '==> %s\n' "Downloading $mod ($idx/$total: ${path##*/})…"
     mkdir -p "$(dirname "$f")" || { m_error="Could not create $m_store/$mod."; return 1; }
     tmp="$f.download"
     if ! curl -fsSL --retry 2 -o "$tmp" "$md_base$path"; then
@@ -350,8 +377,14 @@ steam_mod_fetch_zip() {   # <mod> <file list>
     [ -f "$f" ] && [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" = "$sum" ] || { ok=; break; }
   done < "$list"
   [ -n "$ok" ] && return 0
+  printf '==> %s\n' "Downloading $mod…"
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/siliconium-mod.XXXXXX") || { m_error="Could not make a temporary folder."; return 1; }
-  if ! curl -fsSL --retry 2 -o "$tmp/a.zip" "${md_zip[0]}"; then
+  if [ -f "$kit/tools/dl-progress.sh" ]; then
+    . "$kit/tools/dl-progress.sh"
+    if ! sil_curl_progress "Downloading $mod" 0 "$tmp/a.zip" -fsSL --retry 2 "${md_zip[0]}"; then
+      rm -rf "$tmp"; m_error="Could not download $mod from ${md_zip[0]%/*}: check your internet connection and press Play again."; return 1
+    fi
+  elif ! curl -fsSL --retry 2 -o "$tmp/a.zip" "${md_zip[0]}"; then
     rm -rf "$tmp"; m_error="Could not download $mod from ${md_zip[0]%/*}: check your internet connection and press Play again."; return 1
   fi
   got=$(shasum -a 256 "$tmp/a.zip" | cut -d' ' -f1)

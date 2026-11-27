@@ -1,0 +1,58 @@
+Apply CoreAudio HAL render period to all render streams (not only Black Ops 1).
+On Bluetooth / 44.1 kHz / 512-frame devices (11.61 ms HAL block > Wine 10.0 ms
+default period), WaW (XAudio2_0), BO2 (XAudio2_7) and other games underran on
+every ~6th callback and crackled/fluttered. Devices with HAL blocks <= 10 ms
+keep Wine's 10 ms period unchanged. Opt-out: SIL_COREAUDIO_HAL_PERIOD=0.
+Apply after wine-coreaudio-bo1-period.patch and wine-coreaudio-bo1-steam.patch.
+
+--- a/dlls/winecoreaudio.drv/coreaudio.c
++++ b/dlls/winecoreaudio.drv/coreaudio.c
+@@ -1140,36 +1140,10 @@
+     return STATUS_SUCCESS;
+ }
+ 
+-static BOOL is_black_ops_audio_process(void)
++static BOOL use_hal_render_period(void)
+ {
+-    const RTL_USER_PROCESS_PARAMETERS *process = NtCurrentTeb()->Peb->ProcessParameters;
+-    const WCHAR *image = wcsrchr(process->ImagePathName.Buffer, '\\');
+-    const WCHAR *argument = process->CommandLine.Buffer;
+-    const WCHAR *end;
+-
+-    image = image ? image + 1 : process->ImagePathName.Buffer;
+-    /* Steam's own Black Ops executables (Siliconium's Steam Library) */
+-    if (!wcsicmp(image, u"BlackOps.exe") || !wcsicmp(image, u"BlackOpsMP.exe")) return TRUE;
+-    if (wcsicmp(image, u"plutonium-bootstrapper-win32.exe")) return FALSE;
+-
+-    /* The bootstrapper's first argument selects the game and mode. */
+-    if (*argument == '"')
+-    {
+-        if (!(argument = wcschr(argument + 1, '"'))) return FALSE;
+-        argument++;
+-    }
+-    else argument += wcscspn(argument, u" \t");
+-    argument += wcsspn(argument, u" \t");
+-
+-    if (*argument == '"')
+-    {
+-        argument++;
+-        if (!(end = wcschr(argument, '"'))) return FALSE;
+-    }
+-    else end = argument + wcscspn(argument, u" \t");
+-
+-    return end - argument == 4 &&
+-           (!wcsnicmp(argument, u"t5sp", 4) || !wcsnicmp(argument, u"t5mp", 4));
++    const char *env = getenv("SIL_COREAUDIO_HAL_PERIOD");
++    return !env || strcmp(env, "0") != 0;
+ }
+ 
+ static NTSTATUS unix_get_device_period(void *args)
+@@ -1177,7 +1151,7 @@
+     struct get_device_period_params *params = args;
+     REFERENCE_TIME render_period = def_period;
+ 
+-    if (params->def_period && params->flow == eRender && is_black_ops_audio_process())
++    if (params->def_period && params->flow == eRender && use_hal_render_period())
+     {
+         AudioDeviceID device = dev_id_from_device(params->device);
+         AudioObjectPropertyAddress address =

@@ -1,0 +1,54 @@
+diff --git a/windows/core/src/dxso/emit.rs b/windows/core/src/dxso/emit.rs
+index 1e759cb..e995863 100644
+--- a/windows/core/src/dxso/emit.rs
++++ b/windows/core/src/dxso/emit.rs
+@@ -1961,8 +1961,26 @@ fn translate_instruction(
+         // rendering relies on.
+         Opcode::Dp3 => format!("float4(dot(({}).xyz, ({}).xyz))", srcs[0], srcs[1]),
+         Opcode::Dp4 => format!("float4(dot({}, {}))", srcs[0], srcs[1]),
+-        Opcode::Rcp => format!("float4(1.0 / ({}).x)", srcs[0]),
+-        Opcode::Rsq => format!("float4(rsqrt(abs(({}).x)))", srcs[0]),
++        // D3D9 `rcp` / `rsq` / `exp` / `log` clamp out-of-range outputs to
++        // +-FLT_MAX instead of +-inf (matching DXVK's D3D9FloatEmulation).
++        // Without this, `normalize(float2)` (which FXC lowers to dp2add + rsq
++        // + mul instead of `nrm`, e.g. Black Ops Call of the Dead's IceMap
++        // shader) evaluates `0.0 * rsqrt(0.0) = 0.0 * inf = NaN`, then
++        // `saturate(NaN) = 0.0`, sampling (0, 0) across the entire screen.
++        Opcode::Rcp => {
++            let s = &srcs[0];
++            format!(
++                "float4((({s}).x == 0.0f) ? 3.402823466e+38f : \
++                 clamp(1.0f / ({s}).x, -3.402823466e+38f, 3.402823466e+38f))"
++            )
++        }
++        Opcode::Rsq => {
++            let s = &srcs[0];
++            format!(
++                "float4((({s}).x == 0.0f) ? 3.402823466e+38f : \
++                 rsqrt(max(abs(({s}).x), 1.17549435e-38f)))"
++            )
++        }
+         Opcode::Min => format!("min({}, {})", srcs[0], srcs[1]),
+         Opcode::Max => format!("max({}, {})", srcs[0], srcs[1]),
+         Opcode::Frc => format!("fract({})", srcs[0]),
+@@ -1991,9 +2009,18 @@ fn translate_instruction(
+             )
+         }
+         // SM2+ expp is the partial-precision twin of exp and broadcasts 2^x.
+-        Opcode::Exp | Opcode::ExpP => format!("float4(exp2(({}).x))", srcs[0]),
++        Opcode::Exp | Opcode::ExpP => {
++            let s = &srcs[0];
++            format!("float4(min(exp2(min(({s}).x, 128.0f)), 3.402823466e+38f))")
++        }
+         // Modern hardware runs the partial-precision logp at full precision.
+-        Opcode::Log | Opcode::LogP => format!("float4(log2(abs(({}).x)))", srcs[0]),
++        Opcode::Log | Opcode::LogP => {
++            let s = &srcs[0];
++            format!(
++                "float4((({s}).x == 0.0f) ? -3.402823466e+38f : \
++                 log2(max(abs(({s}).x), 1.17549435e-38f)))"
++            )
++        }
+         Opcode::Crs => format!("float4(cross(({}).xyz, ({}).xyz), 0.0)", srcs[0], srcs[1]),
+         Opcode::Sgn => format!("sign({})", srcs[0]),
+         // D3D9: dp2add dst, s0, s1, s2 — dst.* = (s0.x*s1.x + s0.y*s1.y) + s2.x.

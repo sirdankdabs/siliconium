@@ -108,18 +108,34 @@ bnet_exe() { if [ -f "$bnet_dir/Battle.net.exe" ]; then echo "$bnet_dir/Battle.n
 # started, so it always follows the engine. Only over our own engine build.
 bnet_engine="$home/battlenet/engine"
 bnet_engine_prepare() {
-  local new="$bnet_engine.new" entry
+  local new="$bnet_engine.new" entry stamp sig
   grep -Fxq 'base=own 0.2.3' "$engine/siliconium.version" 2> /dev/null || return 1
   [ -f "$kit/payload/battlenet/ntdll.so" ] && [ -f "$kit/payload/battlenet/win32u.so" ] || return 1
   # (a Battle.net still open keeps the clone it runs from)
   if bnet_running && [ -x "$bnet_engine/lib/wine/x86_64-unix/wine" ]; then return 0; fi
+  # Persistent stamped clone: avoids re-cloning lib/wine, re-signing, and
+  # invalidating macOS LaunchServices / Metal shader caches on every launch.
+  stamp="$bnet_engine/.sil-stamp"
+  sig=$(stat -f '%m:%z' \
+    "$engine/siliconium.version" \
+    "$engine/lib/wine/x86_64-unix/winemac.so" \
+    "$engine/lib/wine/x86_64-unix/winecoreaudio.so" \
+    "$engine/lib/wine/x86_64-unix/winebus.so" \
+    "$engine/lib/wine/x86_64-unix/winemetal.so" \
+    "$kit/payload/battlenet/ntdll.so" \
+    "$kit/payload/battlenet/win32u.so" 2>/dev/null | tr '\n' ';')
+  if [ -x "$bnet_engine/lib/wine/x86_64-unix/wine" ] && [ -f "$stamp" ] &&
+     [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ]; then
+    return 0
+  fi
   rm -rf "$new"; mkdir -p "$new/lib" || return 1
   for entry in "$engine"/*; do [ "${entry##*/}" = lib ] || ln -s "$entry" "$new/"; done
   for entry in "$engine/lib"/*; do [ "${entry##*/}" = wine ] || ln -s "$entry" "$new/lib/"; done
   if cp -cRp "$engine/lib/wine" "$new/lib/wine" &&
      cp "$kit/payload/battlenet/ntdll.so" "$new/lib/wine/x86_64-unix/ntdll.so" &&
      cp "$kit/payload/battlenet/win32u.so" "$new/lib/wine/x86_64-unix/win32u.so" &&
-     codesign -fs - "$new/lib/wine/x86_64-unix/ntdll.so" "$new/lib/wine/x86_64-unix/win32u.so" 2> /dev/null; then
+     codesign -fs - "$new/lib/wine/x86_64-unix/ntdll.so" "$new/lib/wine/x86_64-unix/win32u.so" 2> /dev/null &&
+     printf '%s' "$sig" > "$new/.sil-stamp"; then
     rm -rf "$bnet_engine" && mv "$new" "$bnet_engine"
   else
     rm -rf "$new"; return 1
@@ -158,8 +174,8 @@ bnet_ensure_running() {
   local mark="$home/cache/.battlenet-start"
   mkdir -p "$home/cache"; : > "$mark"
   bnet_start_client
-  for _ in $(seq 1 90); do bnet_signed_in "$mark" && break; sleep 2; done
-  sleep 3
+  for _ in $(seq 1 360); do bnet_signed_in "$mark" && break; sleep 0.5; done
+  sleep 2
 }
 
 # --- Playing (sourced by launch.sh: t=bnet) -----------------------------------
@@ -229,11 +245,11 @@ bnet_play() {
     bnet_start_client --autostarted
     # Battle.net hands a launch command over only once it is signed in (this start's log)
     local signed=0
-    for _ in $(seq 1 90); do bnet_signed_in "$mark" && { signed=1; break; }; sleep 2; done
+    for _ in $(seq 1 360); do bnet_signed_in "$mark" && { signed=1; break; }; sleep 0.5; done
     if [ "$signed" = 0 ]; then
       die "Battle.net is not signed in: sign in in its window (tick Keep me logged in), then press Play again"
     fi
-    sleep 3
+    sleep 2
   fi
   # The game's questions in Windows message boxes (tools/bnet-guard.c): "Yes"
   # to Black Ops 4's minimum-requirements warning (seen while Wine reported the
@@ -241,7 +257,7 @@ bnet_play() {
   # to Safe Mode; it ends with the game
   bnet_guard_pid=
   if [ -f "$kit/payload/battlenet/bnet-guard.exe" ]; then
-    "$wine" "$kit/payload/battlenet/bnet-guard.exe" 21600 >> "$log" 2> /dev/null &
+    env -u WINELOADER "${CX_ROOT:-$engine}/lib/wine/x86_64-unix/wine" "$kit/payload/battlenet/bnet-guard.exe" 21600 >> "$log" 2> /dev/null &
     bnet_guard_pid=$!
     trap '[ -n "${bnet_guard_pid:-}" ] && kill "$bnet_guard_pid" 2> /dev/null; pkill -f "bnet-guard\.exe" 2> /dev/null; true' EXIT
   fi
@@ -258,12 +274,12 @@ bnet_play() {
   # The game is running when its executable works the CPU. Battle.net may first
   # update it or ask something in its window (up to 10 minutes)
   game_pid=
-  for _ in $(seq 1 600); do
+  for _ in $(seq 1 2400); do
     for pid in $(bnet_game_pids); do
       cpu=$(ps -o %cpu= -p "$pid" 2> /dev/null | tr -d ' '); cpu=${cpu%%.*}
       [ "${cpu:-0}" -gt 20 ] && { game_pid=$pid; break 2; }
     done
-    sleep 1
+    sleep 0.25
   done
   if [ -z "$game_pid" ]; then
     if [ "$m_mod" = shield ]; then
@@ -310,57 +326,93 @@ bnet_game_pids() {
 bnet_prefix_settings() {
   local mark="$WINEPREFIX/.sil-battlenet-settings-1"
   [ -f "$mark" ] && return 0
-  "$wine" reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f > /dev/null 2>&1 &&
+  env -u WINELOADER "${CX_ROOT:-$engine}/lib/wine/x86_64-unix/wine" reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f > /dev/null 2>&1 &&
     : > "$mark"
 }
 
-# bnet_ini_set <file> <key> <value>: Black Ops 4's players/config.ini lines are
-# `key = "value" // comment`; the value is replaced (comment kept) or the line added
-bnet_ini_set() {
-  local f=$1 k=$2 v=$3
-  if grep -q "^$k = \"" "$f"; then
-    sed -i '' -E "s|^($k = \")[^\"]*(\".*)$|\\1$v\\2|" "$f"
+# bnet_ini_batch <file> key=value ...: single-pass awk update of Black Ops 4's
+# config.ini (`key = "value" // comment`), preserving trailing comments.
+bnet_ini_batch() {
+  local f=$1 tmp
+  shift
+  [ $# -gt 0 ] || return 0
+  tmp=$(mktemp "$f.XXXXXX") || return 0
+  if awk -v n="$#" '
+    BEGIN {
+      for (i = 1; i <= n; i++) {
+        kv = ARGV[i]; ARGV[i] = ""
+        p = index(kv, "=")
+        k = substr(kv, 1, p - 1); v = substr(kv, p + 1)
+        order[i] = k; want[k] = v
+      }
+    }
+    {
+      eq = index($0, " = \"")
+      if (eq > 1) {
+        k = substr($0, 1, eq - 1)
+        if (k in want) {
+          if (!(k in seen)) {
+            rest = substr($0, eq + 4); q = index(rest, "\"")
+            tail = q ? substr(rest, q + 1) : ""
+            print k " = \"" want[k] "\"" tail
+            seen[k] = 1
+          }
+          next
+        }
+      }
+      print
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        k = order[i]
+        if (!(k in seen)) { printf "%s = \"%s\"\n", k, want[k]; seen[k] = 1 }
+      }
+    }
+  ' "$@" "$f" > "$tmp"; then
+    cmp -s "$tmp" "$f" && rm -f "$tmp" || mv -f "$tmp" "$f"
   else
-    printf '%s = "%s"\n' "$k" "$v" >> "$f"
+    rm -f "$tmp"
   fi
 }
 # bnet_config <game folder> <width> <height> <Hz> <frame cap>: the game's
 # settings before every start (launch.sh's environment: on, home)
 bnet_config() {
-  local dir=$1 w=$2 h=$3 hz=$4 cap=$5 marks="$home/cache/battlenet-$b_id" f p
+  local dir=$1 w=$2 h=$3 hz=$4 cap=$5 marks="$home/cache/battlenet-$b_id" f pairs
   case "$b_id" in
     bo4)
-      # Black Ops 4: players/config.ini (made by its first start; the game
-      # also keeps one per signed-in profile, applied after its login: the same
-      # values go into every one found). Every start (BO4_SCREEN): exclusive
-      # fullscreen at the desktop's size and the refresh rate of the mode
-      # launch.sh holds, the frame cap at that rate (its own default: none).
-      # Once (BO4_GRAPHICS): its auto-detect saw no video memory (Wine reports
-      # 0 to WMI) and chose the lowest of everything with the scene drawn at
-      # half resolution; Black Ops III's choices for Apple GPUs instead (full
-      # resolution and detail, volumetric lighting and subsurface scattering
-      # off, motion blur off). SKIP_INTRO: no intro movies.
       mkdir -p "$marks"
       while IFS= read -r f; do
         [ -f "$f" ] || continue
-        if on BO4_GRAPHICS && [ ! -f "$marks/.defaults-$(printf '%s' "$f" | shasum | cut -c1-12)" ]; then
-          for p in resolution_percent=100 mesh_quality=0 texture_filter=2 texture_quality=0 texture_quality_fx=0 \
-                   texture_quality_probes=0 texture_quality_baked_sun_shadows=0 disable_dynamic_light_shadows=0 \
-                   disable_dynamic_sun_shadows=0 shadow_filtering=1 "ssao_technique=GTAO Medium Quality" \
-                   "aa_technique=Filmic SMAA T2x" motion_blur=Off subsurface_scattering=0 volumetric_light_quality=0 \
-                   local_ambient_lighting=0; do
-            bnet_ini_set "$f" "${p%%=*}" "${p#*=}"
-          done
-          : > "$marks/.defaults-$(printf '%s' "$f" | shasum | cut -c1-12)"
+        pairs=()
+        local mark="$marks/.defaults-$(printf '%s' "$f" | shasum | cut -c1-12)"
+        if on BO4_GRAPHICS && [ ! -f "$mark" ]; then
+          local bo4_vmem=0.95 bo4_tex=0 bo4_res=100 bo4_thr="${SIL_P_CORES:-8}"
+          [ "${SIL_RAM_GB:-16}" -le 8 ] && { bo4_vmem=0.75; bo4_tex=2; }
+          if [ "${w:-0}" -ge 3200 ] && [ "${SIL_GPU_CORES:-16}" -le 20 ]; then bo4_res=65
+          elif [ "${w:-0}" -ge 2000 ] && [ "${SIL_GPU_CORES:-16}" -le 20 ]; then bo4_res=75
+          elif [ "${w:-0}" -ge 1900 ] && [ "${SIL_GPU_CORES:-16}" -le 10 ]; then bo4_res=85
+          fi
+          [ "$bo4_thr" -lt 4 ] && bo4_thr=4
+          # Live-verified on Apple Silicon + DXMT: threaded_rendering must stay 0
+          # (+4.6 ms GPU regression if 1 due to TBDR deferred-context splits);
+          # backbuffer_count=3 + oit_layers=8 + SSS/viewmodel-shadow off save ~230 MB RAM.
+          pairs+=("resolution_percent=$bo4_res" "video_memory=$bo4_vmem" "worker_threads=$bo4_thr"
+                  threaded_rendering=0 backbuffer_count=3 oit_layers=8
+                  vsync=0 vsync_menu=0 mesh_quality=0 texture_filter=2 "texture_quality=$bo4_tex"
+                  texture_quality_fx=0 texture_quality_probes=0 texture_quality_baked_sun_shadows=0
+                  disable_dynamic_light_shadows=0 disable_dynamic_sun_shadows=0
+                  spot_shadow_texture_size=1024 shadow_viewmodel_self=Off shadow_filtering=1
+                  "ssao_technique=GTAO Medium Quality" "aa_technique=Filmic SMAA 1x" motion_blur=Off
+                  subsurface_scattering=0 volumetric_light_quality=0 local_ambient_lighting=0)
+          : > "$mark"
         fi
         if on BO4_SCREEN && [ -n "$w" ] && [ -n "$h" ]; then
-          bnet_ini_set "$f" fullscreen_mode 1
-          bnet_ini_set "$f" fullscreen_preferred_mode 1
-          bnet_ini_set "$f" fullscreen_resolution "${w}x$h"
-          [ -n "$hz" ] && bnet_ini_set "$f" refresh_rate "$hz"
-          [ -n "$cap" ] && bnet_ini_set "$f" max_fps "$cap"
+          pairs+=(fullscreen_mode=1 fullscreen_preferred_mode=1 "fullscreen_resolution=${w}x$h")
+          [ -n "$hz" ] && pairs+=("refresh_rate=$hz")
+          [ -n "$cap" ] && pairs+=("max_fps=$cap")
         fi
-        if on SKIP_INTRO; then bnet_ini_set "$f" play_intro_movies 0; else bnet_ini_set "$f" play_intro_movies 1; fi
+        if on SKIP_INTRO; then pairs+=(play_intro_movies=0); else pairs+=(play_intro_movies=1); fi
+        bnet_ini_batch "$f" "${pairs[@]}"
       done < <(find "$dir/players" -maxdepth 3 -name config.ini 2> /dev/null)
       ;;
   esac

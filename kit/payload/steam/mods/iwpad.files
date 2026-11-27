@@ -1,4 +1,5 @@
-# IW-Pad v0.0.9 (GalvarinoDev, GPL-3.0: github.com/GalvarinoDev/IW-Pad), x64 build for Steam's 64-bit MW2/MW3 campaigns
-# zip https://github.com/GalvarinoDev/IW-Pad/releases/download/v0.0.9/iw-pad-x64.zip sha256 ac6642becb0fc0c3fd6d026b24ff5b40a99f926e84b703a6f4673f6d54208ff3
-ac897241fde42a083df2116c28bc81dd6018738dec7d73ba24b18d6f96690868 238592 iw-pad.dll
-1c605941bfb82e89448951d1acf604fac4634686a45e03e6ff9e729162c4c503 330240 iw-pad.exe
+# IW-Pad v0.1.3 (GalvarinoDev, GPL-3.0: github.com/GalvarinoDev/IW-Pad), universal x64 + x86 build for 64-bit and 32-bit MW2/MW3 campaigns
+# zip https://github.com/GalvarinoDev/IW-Pad/releases/download/v0.1.3/iw-pad.zip sha256 85c420909d11e1ab0e1863eaa49b3e3f0b98e35376e1b34929fcd1431b28877e
+540c816edef51e0026be9b0a8b077fff76c4def73b08bd64e6f12ebcdcfe1b8a 243712 iw-pad.dll
+0607f3b4081b73a2da197658f6f6a03b4d2f5500ad549b4ceac6db9c24fa0730 274432 iw-pad32.dll
+a7fe70f84f5989b18059fcc0671e7c91676513552cf342662632be2e275e44fb 336896 iw-pad.exe

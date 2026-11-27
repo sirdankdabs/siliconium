@@ -1,0 +1,164 @@
+Wine (CrossOver 26.3) 32-bit DirectSound FIR resampler SSE2/SIMD optimization.
+Built into kit/payload/i386-windows/dsound.dll with:
+  i386_CFLAGS="-O2 -msse2 -mfpmath=sse -mstackrealign"
+(Wine's i386_EXTRACFLAGS already passes -mpreferred-stack-boundary=2; verified
+0 memory-operand movaps/movapd, identical PE exports/imports, "Wine builtin DLL"
+stub preserved).
+
+Session 12 x87sidecar profiling showed Wine's stock i386 dsound.dll FIR
+resampler (x87 float math) accounted for ~32.5% of all x87 ARM emissions in
+32-bit Call of Duty titles. Replacing x87 with SSE2 scalar/4-wide SIMD dot
+product, removing double-precision tap promotion, and fast-pathing 16-bit PCM
+unpack (avoiding per-sample i386 x87 st(0) float return ABI):
+  - Headless 24-voice FIR benchmark (11-44.1 -> 48 kHz):
+    100.4% CPU (saturated) -> 14.1% CPU (7.15x faster, -86% CPU; 18.2% even
+    without x87sidecar vs 100.3% with 92% audio dropouts).
+  - Numerical accuracy across all 12 rate pairs (11025-96000 -> 44100/48000):
+    max error <= 7.15e-7 (-123 to -129 dBFS), <= 1 LSB in 16-bit PCM.
+
+--- a/dlls/dsound/mixer.c
++++ b/dlls/dsound/mixer.c
+@@ -39,6 +39,9 @@
+ #include "ksmedia.h"
+ #include "dsound_private.h"
+ #include "fir.h"
++#ifdef __SSE__
++#include <xmmintrin.h>
++#endif
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dsound);
+ 
+@@ -355,39 +358,105 @@
+      * This is good for CPU cache effects, too.
+      */
+     itmp = intermediate;
+-    for (channel = 0; channel < channels; channel++) {
+-        for (i = 0; i < committed_samples; i++)
+-            *(itmp++) = get_current_sample(dsb, dsb->committedbuff,
+-                dsb->writelead, dsb->committed_mixpos + i * istride, channel);
+-        for (; i < required_input; i++)
+-            *(itmp++) = get_current_sample(dsb, dsb->buffer->memory,
+-                    dsb->buflen, dsb->sec_mixpos + i * istride, channel);
++    if (dsb->get == getbpp[1]) {
++        /* Fast path for 16-bit little-endian PCM: avoids per-sample indirect
++         * call + i386 x87 st(0) float return ABI on every input sample. */
++        const float inv32768 = 1.0f / 32768.0f;
++        const BOOL looping = (dsb->playflags & DSBPLAY_LOOPING) != 0;
++        const BYTE *cbuf = dsb->committedbuff;
++        const DWORD clen = dsb->writelead;
++        const DWORD cpos0 = dsb->committed_mixpos;
++        const BYTE *mbuf = dsb->buffer->memory;
++        const DWORD mlen = dsb->buflen;
++        const DWORD mpos0 = dsb->sec_mixpos;
++        for (channel = 0; channel < channels; channel++) {
++            const DWORD choff = channel * 2;
++            for (i = 0; i < committed_samples; i++) {
++                DWORD pos = cpos0 + i * istride;
++                if (pos >= clen && !looping)
++                    *(itmp++) = 0.0f;
++                else {
++                    SHORT s;
++                    memcpy(&s, cbuf + (pos % clen) + choff, sizeof(s));
++                    *(itmp++) = (float)s * inv32768;
++                }
++            }
++            for (; i < required_input; i++) {
++                DWORD pos = mpos0 + i * istride;
++                if (pos >= mlen && !looping)
++                    *(itmp++) = 0.0f;
++                else {
++                    SHORT s;
++                    memcpy(&s, mbuf + (pos % mlen) + choff, sizeof(s));
++                    *(itmp++) = (float)s * inv32768;
++                }
++            }
++        }
++    } else {
++        for (channel = 0; channel < channels; channel++) {
++            for (i = 0; i < committed_samples; i++)
++                *(itmp++) = get_current_sample(dsb, dsb->committedbuff,
++                    dsb->writelead, dsb->committed_mixpos + i * istride, channel);
++            for (; i < required_input; i++)
++                *(itmp++) = get_current_sample(dsb, dsb->buffer->memory,
++                        dsb->buflen, dsb->sec_mixpos + i * istride, channel);
++        }
+     }
+ 
+-    for(i = 0; i < count; ++i) {
+-        UINT int_fir_steps = (freqAcc_start + i * dsb->freqAdjustNum) * dsbfirstep / dsb->freqAdjustDen;
+-        float total_fir_steps = (freqAcc_start + i * dsb->freqAdjustNum) * dsbfirstep / (float)dsb->freqAdjustDen;
+-        UINT ipos = int_fir_steps / dsbfirstep;
+-
+-        UINT idx = (ipos + 1) * dsbfirstep - int_fir_steps - 1;
+-        float rem = int_fir_steps + 1.0 - total_fir_steps;
++    {
++        const LONG64 freqAdjustNum = dsb->freqAdjustNum;
++        const LONG64 freqAdjustDen = dsb->freqAdjustDen;
++        const float fFreqAdjustDen = (float)freqAdjustDen;
++        const float firgain = dsb->firgain;
++        const BOOL fast_put = (dsb->put == putieee32);
++        float *tmp_out = dsb->device->tmp_buffer;
++        const UINT out_chans = dsb->device->pwfx->nChannels;
+ 
+-        int fir_used = 0;
+-        while (idx < fir_len - 1) {
+-            fir_copy[fir_used++] = fir[idx] * (1.0 - rem) + fir[idx + 1] * rem;
+-            idx += dsb->firstep;
+-        }
++        for (i = 0; i < count; ++i) {
++            LONG64 scaled = (freqAcc_start + (LONG64)i * freqAdjustNum) * dsbfirstep;
++            UINT int_fir_steps = scaled / freqAdjustDen;
++            float total_fir_steps = (float)scaled / fFreqAdjustDen;
++            UINT ipos = int_fir_steps / dsbfirstep;
+ 
+-        assert(fir_used <= fir_cachesize);
+-        assert(ipos + fir_used <= required_input);
++            UINT idx = (ipos + 1) * dsbfirstep - int_fir_steps - 1;
++            float rem = (float)int_fir_steps + 1.0f - total_fir_steps;
++            float one_minus_rem = 1.0f - rem;
+ 
+-        for (channel = 0; channel < dsb->mix_channels; channel++) {
+-            int j;
+-            float sum = 0.0;
+-            float* cache = &intermediate[channel * required_input + ipos];
+-            for (j = 0; j < fir_used; j++)
+-                sum += fir_copy[j] * cache[j];
+-            dsb->put(dsb, i * ostride, channel, sum * dsb->firgain);
++            int fir_used = 0;
++            while (idx < fir_len - 1) {
++                fir_copy[fir_used++] = fir[idx] * one_minus_rem + fir[idx + 1] * rem;
++                idx += dsbfirstep;
++            }
++
++            assert(fir_used <= fir_cachesize);
++            assert(ipos + fir_used <= required_input);
++
++            for (channel = 0; channel < channels; channel++) {
++                int j = 0;
++                float sum = 0.0f;
++                const float *cache = &intermediate[channel * required_input + ipos];
++#ifdef __SSE__
++                __m128 acc = _mm_setzero_ps();
++                for (; j + 4 <= fir_used; j += 4) {
++                    __m128 vf = _mm_loadu_ps(&fir_copy[j]);
++                    __m128 vc = _mm_loadu_ps(&cache[j]);
++                    acc = _mm_add_ps(acc, _mm_mul_ps(vf, vc));
++                }
++                {
++                    __m128 shuf = _mm_shuffle_ps(acc, acc, _MM_SHUFFLE(2, 3, 0, 1));
++                    __m128 sums = _mm_add_ps(acc, shuf);
++                    shuf = _mm_movehl_ps(shuf, sums);
++                    sums = _mm_add_ss(sums, shuf);
++                    sum = _mm_cvtss_f32(sums);
++                }
++#endif
++                for (; j < fir_used; j++)
++                    sum += fir_copy[j] * cache[j];
++                if (fast_put)
++                    tmp_out[i * out_chans + channel] = sum * firgain;
++                else
++                    dsb->put(dsb, i * ostride, channel, sum * firgain);
++            }
+         }
+     }
+ 

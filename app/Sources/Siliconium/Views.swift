@@ -76,7 +76,6 @@ struct RootView: View {
             }
             .onAppear {
                 state.showWhatsNewAfterUpdate()
-                state.warnOldMacOS()
                 state.checkUpdates()
                 state.refreshInstalledFiles()
                 state.tidyCopies()
@@ -97,6 +96,7 @@ struct RootView: View {
             // prompt is shown once per run) without polling the HID stack.
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                 state.checkBluetoothController()
+                state.refreshStatusSnapshot()
             }
             .onReceive(Timer.publish(every: 8, on: .main, in: .common).autoconnect()) { _ in
                 // Not while a game is playing: nothing to ask then, and the
@@ -130,10 +130,11 @@ struct ContentView: View {
     @EnvironmentObject var state: AppState
     // `-openSettings bo1` on the command line opens that game's settings;
     // otherwise the app opens on the row the player had selected last time
-    @State private var selection: Game = (UserDefaults.standard.string(forKey: "openSettings")
-        ?? UserDefaults.standard.string(forKey: "lastSelectedGame"))
-        .flatMap(Game.init(rawValue:))
-        .flatMap { game in GameTab.allCases.contains { $0.games.contains(game) } ? game : nil } ?? .waw
+    @State private var selection: Game = (Paths.isCustomHome
+        ? UserDefaults.standard.string(forKey: "openSettings")
+        : (UserDefaults.standard.string(forKey: "openSettings") ?? UserDefaults.standard.string(forKey: "lastSelectedGame")))
+        .flatMap(Game.sidebarTarget(for:))
+        .flatMap { game in GameTab.allCases.contains { $0.games.contains(game) } ? game : nil } ?? .plutonium
     @State private var showLog = false
     @AppStorage("showBO3ForMac") private var showBO3ForMac = false
 
@@ -151,6 +152,7 @@ struct ContentView: View {
                             .font(.system(size: 10, weight: .semibold)).kerning(0.8)
                             .foregroundStyle(.white.opacity(0.45))
                     }
+                    .collapsible(false)
                 }
             }
             .listStyle(.sidebar)
@@ -161,15 +163,14 @@ struct ContentView: View {
             }
             .onAppear {
                 if !showBO3ForMac && selection == .bo3 { selection = .boiii }
-                // the restored row gets the same refresh as when it is clicked
-                if selection == .bo2c { state.refreshCampaign() }
-                if selection == .bo2s { state.refreshSteamCampaign() }
-                // the sidebar's Battle.net row says Ready / Set up from the start
+                // the sidebar's Steam Library and Battle.net rows say Ready / Set up from the start
+                state.refreshSteamLibrary()
                 state.refreshBattleNet()
             }
             .onChange(of: state.goTo) {
                 guard let g = state.goTo else { return }
-                selection = g; state.goTo = nil
+                selection = g.usesPlutonium ? .plutonium : g
+                state.goTo = nil
             }
             .navigationSplitViewColumnWidth(min: 240, ideal: 250, max: 320)
             .safeAreaInset(edge: .bottom) { EngineFooter(showLog: $showLog) }
@@ -177,7 +178,7 @@ struct ContentView: View {
             GameDetail(game: selection)
                 .id("\(selection.rawValue)-\(state.refreshToken)")
         }
-        .sheet(isPresented: $showLog) { LogView() }
+        .sheet(isPresented: $showLog) { LogView(logStore: state.logStore) }
         .overlay {
             if let g = state.settingsGame {
                 ZStack {
@@ -196,10 +197,8 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.15), value: state.settingsGame)
         .onChange(of: selection) {
-            UserDefaults.standard.set(selection.rawValue, forKey: "lastSelectedGame")
+            if !Paths.isCustomHome { UserDefaults.standard.set(selection.rawValue, forKey: "lastSelectedGame") }
             state.settingsGame = nil
-            if selection == .bo2c { state.refreshCampaign() }
-            if selection == .bo2s { state.refreshSteamCampaign() }
             if selection == .steam { state.refreshSteamLibrary() }
             if selection == .battlenet { state.refreshBattleNet() }
         }
@@ -286,29 +285,27 @@ struct GameRow: View {
     @EnvironmentObject var state: AppState
     let game: Game
 
+    private var isPlaying: Bool {
+        if game == .plutonium { return state.running?.usesPlutonium == true }
+        return state.running == game
+    }
+
     var body: some View {
+        let ready = state.isReady(game)
+        let label = game == .alterware ? "Not available" : isPlaying ? "Playing" : (ready ? "Ready" : "Set up")
+        let dot = isPlaying ? Color(red: 0.35, green: 0.75, blue: 1) : (ready ? Color(red: 0.30, green: 0.82, blue: 0.48) : Color.white.opacity(0.35))
         HStack(spacing: 11) {
             ElementTile(game: game, size: 34)
             VStack(alignment: .leading, spacing: 3) {
                 Text(game.title).font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
                     .lineLimit(1)
                 HStack(spacing: 5) {
-                    Circle().fill(statusColor).frame(width: 6, height: 6)
-                    Text(statusText).font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
+                    Circle().fill(dot).frame(width: 6, height: 6)
+                    Text(label).font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
                 }
             }
         }
         .padding(.vertical, 3)
-    }
-
-    private var statusText: String {
-        if game == .alterware { return "Not available" }   // (an explanation page)
-        if state.running == game { return "Playing" }
-        return state.isReady(game) ? "Ready" : "Set up"
-    }
-    private var statusColor: Color {
-        if state.running == game { return Color(red: 0.35, green: 0.75, blue: 1) }
-        return state.isReady(game) ? Color(red: 0.30, green: 0.82, blue: 0.48) : Color.white.opacity(0.35)
     }
 }
 
@@ -376,30 +373,29 @@ struct GameDetail: View {
                         .frame(maxWidth: 640, alignment: .leading)
                 }
                 switch game {
-                case .waw, .bo1, .bo2, .iw5, .iw4, .iw6, .bo2c, .bo2s, .boiii, .cod4x, .iw7mod: PlutoniumGameView(game: game)
+                case .plutonium: PlutoniumLauncherView()
+                case .waw, .bo1, .bo2, .iw5, .iw4, .boiii, .cod4x, .iw7mod: PlutoniumGameView(game: game)
+                case .ownFiles: OwnFilesView()
                 case .alterware: AlterWareInfoView()
                 case .bo3: BO3View()
                 case .steam: SteamLibraryView()
                 case .battlenet: BattleNetView()
                 }
-                // the Steam Library and Battle.net scroll: their lists run to the
-                // window's edge (with the page margin and this spacer it stopped
-                // ~60 pt short, rows cut off above an empty band)
-                if game != .steam && game != .battlenet { Spacer() }
+                // the scrolling card-list pages run cleanly to the window's edge
+                let edgeScroll = game == .steam || game == .battlenet || game == .plutonium || game == .ownFiles
+                if !edgeScroll { Spacer() }
                 if let p = state.progress {
                     HStack(spacing: 10) {
                         ProgressView().controlSize(.small).tint(.white)
-                        Text(p).font(.system(size: 12, weight: .medium)).foregroundStyle(.white)
+                        Text(p).font(.system(size: 12, weight: .medium).monospacedDigit()).foregroundStyle(.white)
                     }
                     .padding(10)
                     .background(.ultraThinMaterial, in: Capsule())
-                    // (those two pages have no bottom margin: the capsule sat on
-                    // the window's edge and its rounded corner cut it off)
-                    .padding(.bottom, game == .steam || game == .battlenet ? 18 : 0)
+                    .padding(.bottom, edgeScroll ? 18 : 0)
                 }
             }
             .padding([.top, .horizontal], 32)
-            .padding(.bottom, game == .steam || game == .battlenet ? 0 : 32)
+            .padding(.bottom, game == .steam || game == .battlenet || game == .plutonium || game == .ownFiles ? 0 : 32)
         }
     }
 }
@@ -413,38 +409,21 @@ struct PlutoniumGameView: View {
         VStack(alignment: .leading, spacing: 18) {
             content
             if game == .bo2 && state.isReady(game) { DeclassifiedCard() }
-            if game == .iw6
-                ? state.settings["IW6_DIR"] != nil || state.iw6PrefixReady
-                : state.folder(for: game) != nil || state.engineInstalled || (game == .bo2s && state.steamCampaign["steam"] == "installed") {
+            if state.folder(for: game) != nil || state.engineInstalled {
                 Button { confirmRemove = true } label: {
                     Label("Remove setup…", systemImage: "trash").font(.system(size: 11, weight: .medium))
                 }
                     .buttonStyle(.plain)
                     .foregroundStyle(.white.opacity(0.75))
-                    .disabled(state.progress != nil || (game == .iw6 && state.running != nil))
-            }
-            if game == .bo2c {
-                Label("Only works with the Steam version of Black Ops II and an additional required file that cannot be shared here. Contact the developer to obtain it.",
-                      systemImage: "info.circle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.7))
-                    .frame(maxWidth: 620, alignment: .leading)
+                    .disabled(state.progress != nil)
             }
         }
         .confirmationDialog("Remove the \(game.title) setup?", isPresented: $confirmRemove) {
             Button("Remove the \(game.title) setup", role: .destructive) { state.removeSetup(game.rawValue) }
-            if game != .iw6 {
-                Button("Remove everything (engine and Plutonium)", role: .destructive) { state.removeSetup("all") }
-            }
+            Button("Remove everything (engine and Plutonium)", role: .destructive) { state.removeSetup("all") }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(game == .bo2s
-                 ? "Steam campaign: closes Steam and moves its Wine prefix to the Trash, with Steam, its sign-in and the Black Ops II it downloaded (to play again, set it up and download the game again).\n\nEverything: also moves the engine and the Plutonium prefix to the Trash."
-                 : game == .bo2c
-                 ? "Campaign setup: puts the original t6sp.exe back (from t6sp.exe.steam) and moves the campaign's Wine prefix to the Trash. Your game files stay.\n\nEverything: also moves the engine and the Plutonium prefix to the Trash."
-                 : game == .iw6
-                 ? "This forgets the chosen Ghosts folder and moves its Wine prefix to the Trash."
-                 : game == .boiii
+            Text(game == .boiii
                  ? "Black Ops III (Windows) setup: forgets the game folder. The game, boiii.exe and your stats in it are not touched.\n\nEverything: also moves the engine and the Wine prefix (Plutonium, its login and BOIII's identity keys: back up your stats first) to the Trash."
                  : game == .iw5
                  ? "Modern Warfare 3 setup: forgets the 32-bit game folder. Your game files are not touched.\n\nEverything: also moves the engine and the Wine prefix (Plutonium and its login) to the Trash, so every Plutonium game is set up again from the start."
@@ -472,10 +451,9 @@ struct PlutoniumGameView: View {
                 HStack(spacing: 12) {
                     ForEach(modes) { mode in
                         BigButton(title: mode.title, symbol: mode.symbol, primary: mode.id == modes.first?.id) {
-                            if mode.id == "campaign-options" { state.showCampaignOptions() } else { state.play(game, mode: mode) }
+                            state.play(game, mode: mode)
                         }
-                        .disabled(mode.id != "campaign-options" &&
-                                  (state.running != nil || state.progress != nil))
+                        .disabled(state.running != nil || state.progress != nil)
                     }
                     BigButton(title: "Settings", symbol: "slider.horizontal.3", outlined: true) { state.settingsGame = game }
                         .help("Settings and patches")
@@ -488,19 +466,6 @@ struct PlutoniumGameView: View {
                 if state.running == game {
                     Button { state.stop() } label: { Label("Stop the game", systemImage: "stop.fill") }
                         .buttonStyle(.bordered).tint(.white)
-                }
-                if game == .bo2s {
-                    HStack(spacing: 10) {
-                        Button { state.openSteam() } label: { Label("Open Steam", systemImage: "macwindow") }
-                        InfoButton(text: "Play Campaign opens Steam in the background (signed in), applies Siliconium's patches (x87 accelerator, DXMT, direct fullscreen at 1x, console controller aim, 4x anti-aliasing at most) and asks Steam to start the game, which checks your license. Open Steam for downloads, updates or to sign in again.")
-                    }
-                    .buttonStyle(.bordered).tint(.white)
-                    .disabled(state.progress != nil)
-                }
-                if game == .bo2c {
-                    Label("No Steam: Play Campaign starts t6sp.exe directly.", systemImage: "checkmark.seal.fill")
-                        .font(.system(size: 11)).foregroundStyle(.white.opacity(0.85))
-                        .frame(maxWidth: 560, alignment: .leading)
                 }
                 if game == .boiii {
                     // the folder is Steam's own download (found on its own when Black
@@ -584,6 +549,7 @@ struct PlutoniumGameView: View {
 
 struct DeclassifiedCard: View {
     @EnvironmentObject var state: AppState
+    var fullWidth = false
     @State private var confirmInstall = false
     @State private var confirmRemove = false
 
@@ -611,8 +577,8 @@ struct DeclassifiedCard: View {
             .disabled(state.progress != nil || state.running != nil)
         }
         .padding(14)
-        .frame(maxWidth: 620, alignment: .leading)
-        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 14))
+        .frame(maxWidth: fullWidth ? .infinity : 620, alignment: .leading)
+        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 12))
         .confirmationDialog("Install Zombies Declassified?", isPresented: $confirmInstall) {
             Button("Install") { state.zombiesDeclassified("install") }
             Button("Cancel", role: .cancel) {}
@@ -647,58 +613,23 @@ struct SetupChecklist: View {
                   detail: "Downloads our engine, built from open source, and adds our patches. About 330 MB.") {
                 Button("Install") { state.installEngine() }.disabled(state.progress != nil)
             }
-            if game == .bo2s {
-                Check(done: state.steamCampaign["steam"] == "installed", title: "Steam for Windows",
-                      detail: "Downloads Valve's Steam installer and installs it in its own Wine prefix, apart from the other games.") {
-                    Button("Install") { state.setupSteamCampaign() }
-                        .disabled(!state.engineInstalled || state.progress != nil)
-                }
-                Check(done: state.steamCampaign["signedin"] == "yes", title: "Signed in to Steam",
-                      detail: "Sign in with the account that owns Black Ops II, and tick Remember me so Siliconium can open Steam in the background.") {
-                    Button("Open Steam") { state.openSteam() }
-                        .disabled(state.steamCampaign["steam"] != "installed" || state.progress != nil)
-                }
-                Check(done: state.steamCampaign["game"] == "installed", title: "Black Ops II downloaded in Steam",
-                      detail: state.steamCampaign["game"] == "downloading"
-                          ? "Steam is downloading or updating the game: wait until it finishes (Open Steam shows the progress)."
-                          : "Opens Steam's install dialog for Call of Duty: Black Ops II (about 13 GB). Siliconium applies its patches when you play.") {
+            if game == .iw5 {
+                Check(done: state.iw5Usable, title: "IW5 - MW3 game folder",
+                      detail: state.folderDetail(for: .iw5)) {
                     HStack {
-                        Button("Download") { state.downloadInSteam() }
-                        Button("Refresh") { state.refreshSteamCampaign() }
+                        Button("Choose…") { state.chooseFolder(for: .iw5) }
+                        Button("Requires 32-bit game files") { state.showIW5FilesHelp() }
                     }
-                    .disabled(state.steamCampaign["steam"] != "installed" || state.progress != nil)
+                    .disabled(state.progress != nil)
                 }
-            } else {
-                if game == .iw5 {
-                    Check(done: state.iw5Usable, title: "IW5 - MW3 game folder",
-                          detail: state.folderDetail(for: .iw5)) {
-                        HStack {
-                            Button("Choose…") { state.chooseFolder(for: .iw5) }
-                            Button("Requires 32-bit game files") { state.showIW5FilesHelp() }
-                        }
-                        .disabled(state.progress != nil)
-                    }
-                } else if game == .waw || game == .bo1 || game == .bo2 || game == .bo2c || game == .iw6 {
-                    Check(done: state.folderUsable(for: game), title: "\(game.title) game folder",
-                          detail: state.folderDetail(for: game)) {
-                        Button("Choose…") { state.chooseFolder(for: game) }
-                            .disabled(state.progress != nil || state.running != nil)
-                    }
+            } else if game == .waw || game == .bo1 || game == .bo2 {
+                Check(done: state.folderUsable(for: game), title: "\(game.title) game folder",
+                      detail: state.folderDetail(for: game)) {
+                    Button("Choose…") { state.chooseFolder(for: game) }
+                        .disabled(state.progress != nil || state.running != nil)
                 }
-            if game == .bo2c {
-                Check(done: state.campaign["ready"] == "yes", title: "Steam-free campaign",
-                      detail: "Runs directly from t6sp.exe.") {
-                    Button("Prepare") { state.prepareCampaign() }
-                        .disabled(!state.engineInstalled || !state.folderUsable(for: game) || state.progress != nil)
-                }
-            } else if game == .iw6 {
-                Check(done: state.iw6PrefixReady, title: "Wine prefix",
-                      detail: "Creates a separate Windows environment for Ghosts.") {
-                    Button("Create") { state.createIW6Prefix() }
-                        .disabled(!state.engineInstalled || !state.folderUsable(for: game)
-                                  || state.progress != nil || state.running != nil)
-                }
-            } else if game == .boiii {
+            }
+            if game == .boiii {
                 Check(done: state.folderUsable(for: .boiii), title: "Black Ops III game folder",
                       detail: state.folderDetail(for: .boiii)) {
                     Button("Choose…") { state.chooseFolder(for: .boiii) }
@@ -725,22 +656,21 @@ struct SetupChecklist: View {
                         .disabled(!state.engineInstalled || state.progress != nil)
                 }
             } else {
-            Check(done: state.plutoniumInstalled,
-                  title: "Plutonium setup",
-                  detail: state.plutoniumInstalled
-                      ? "Signed in. Every Plutonium game uses this session."
-                      : "Sign in once in Plutonium. Siliconium closes it after sign-in and links this game folder.") {
-                HStack {
-                    if !state.prefixReady {
-                        Button("Import…") { state.choosePrefixToImport() }
-                            .disabled(!state.engineInstalled || state.progress != nil || state.running != nil)
+                Check(done: state.plutoniumInstalled,
+                      title: "Plutonium setup",
+                      detail: state.plutoniumInstalled
+                          ? "Signed in. Every Plutonium game uses this session."
+                          : "Sign in once in Plutonium. Siliconium closes it after sign-in and links this game folder.") {
+                    HStack {
+                        if !state.prefixReady {
+                            Button("Import…") { state.choosePrefixToImport() }
+                                .disabled(!state.engineInstalled || state.progress != nil || state.running != nil)
+                        }
+                        Button("Install") { state.setupPlutonium(game) }
+                            .disabled(!state.engineInstalled || !state.folderUsable(for: game) ||
+                                      state.progress != nil || state.running != nil)
                     }
-                    Button("Install") { state.setupPlutonium(game) }
-                        .disabled(!state.engineInstalled || !state.folderUsable(for: game) ||
-                                  state.progress != nil || state.running != nil)
                 }
-            }
-            }
             }
         }
         .padding(20)
@@ -1381,7 +1311,9 @@ struct EngineFooter: View {
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 HStack(spacing: 4) {
                     Text("x87 \(info["x87sidecar"] ?? "?")").font(.system(size: 10)).foregroundStyle(.secondary)
-                    if let latest = state.x87Latest, latest != info["x87sidecar"] {
+                    if let latest = state.x87Latest,
+                       AppState.isNewer(latest.trimmingCharacters(in: CharacterSet(charactersIn: "v")),
+                                        than: (info["x87sidecar"] ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "v"))) {
                         Button("Update to \(latest)") { state.updateX87() }
                             .font(.system(size: 10)).buttonStyle(.link)
                     }
@@ -1391,7 +1323,7 @@ struct EngineFooter: View {
                 Button {
                     state.showDisplayInfo = true
                 } label: {
-                    Label("\(info.runWidth)×\(info.runHeight) · \(info.runHz) Hz" + (info.runIs1x ? " · 1x" : " · HiDPI"),
+                    Label("\(info.runWidth)×\(info.runHeight) · \(info.runHz) Hz" + info.badgeModeText,
                           systemImage: "display")
                 }
                 .font(.system(size: 10)).buttonStyle(.link)
@@ -1454,280 +1386,3 @@ struct DisplayInfoView: View {
     }
 }
 
-struct SettingsView: View {
-    @EnvironmentObject var state: AppState
-    let game: Game
-    var close: () -> Void
-    @State private var fps = "monitor"
-    @State private var patches: [String: Bool] = [:]
-    @State private var deadzone = 0.08
-    @State private var name = "Player"
-    @State private var mods = ""
-    private var fpsKey: String { game == .iw6 ? "IW6_MAXFPS" : "MAXFPS" }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("\(game.title) settings").font(.system(size: 15, weight: .bold))
-                Spacer()
-                Button(action: close) {
-                    Image(systemName: "xmark.circle.fill").font(.system(size: 20)).foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Close without saving")
-                .keyboardShortcut(.cancelAction)
-            }
-            .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 4)
-            form
-        }
-        .frame(width: 540, height: 560)
-        .onAppear(perform: load)
-    }
-
-    private var form: some View {
-        Form {
-            if let folder = state.folder(for: game) {
-                Section("Game folder") {
-                    HStack {
-                        Text(folder.path).font(.system(size: 11)).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
-                        Spacer()
-                        if game.usesPlutonium || game == .iw6 || game == .iw4 || game == .cod4x || game == .iw7mod || game == .boiii {
-                            Button("Change…") {
-                                state.chooseFolder(for: game)
-                                close()
-                            }
-                            .disabled(state.running != nil || state.progress != nil)
-                        }
-                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
-                    }
-                }
-            }
-            Section("Play") {
-                if !game.usesPlutonium && game != .iw6 && game != .cod4x && game != .iw7mod { TextField("Player name (offline)", text: $name) }
-                Picker("Frame-rate cap", selection: $fps) {
-                    Text("Monitor's refresh rate").tag("monitor")
-                    Text("240").tag("240"); Text("160").tag("160"); Text("120").tag("120")
-                    Text("80").tag("80"); Text("60").tag("60"); Text("No cap").tag("0")
-                }
-            }
-            if game == .iw5 {
-                Section("Display") {
-                    Text("Resolution and anti-aliasing are in the game's Video options. Siliconium starts Modern Warfare 3 at your display's size with 2x anti-aliasing for smooth frame rates; raise them there if you want more detail.")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-            }
-            Section {
-                ForEach(Patch.for(game)) { patch in
-                    HStack(spacing: 6) {
-                        Toggle(patch.title, isOn: Binding(get: { patches[patch.key] ?? true },
-                                                         set: { patches[patch.key] = $0 }))
-                        InfoButton(text: patch.info)
-                    }
-                }
-            } header: {
-                HStack {
-                    Text("Patches")
-                    Spacer()
-                    Button("Turn all on") { for p in Patch.for(game) { patches[p.key] = true } }
-                        .buttonStyle(.link).font(.system(size: 11))
-                }
-            } footer: {
-                Text("All patches are on by default. Changes apply the next time the game starts.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            if game == .waw || game == .bo1 || game == .iw4 {
-                Section("Shaders") {
-                    HStack {
-                        Text("Loads every map once, offline, so its shaders are ready: the first time you play a map, the map and the weapons appear complete. About 1–2 minutes per map; the game opens and closes by itself.")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Prepare all maps") {
-                            save()
-                            close()
-                            state.prepareShaders(game)
-                        }
-                        .disabled(state.running != nil || state.progress != nil || state.folder(for: game) == nil)
-                    }
-                }
-            }
-            Section("Controller") {
-                if game == .iw5 {
-                    Text("Plutonium supports Xbox controllers. Modern Warfare 3 keeps its stick settings in the game (Options → Controls → Gamepad).")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                } else if game == .iw4 {
-                    Text("Modern Warfare 2 keeps its controller settings in the game (Options → Controls).")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                } else if game == .iw6 {
-                    Text("Ghosts keeps its controller settings in the game's Options menu.")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                } else if game == .iw7mod {
-                    Text("Infinite Warfare has its own controller support: it asks to switch to the gamepad when one is connected, and keeps its controller settings in the game (Options → Controls).")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                } else if game == .cod4x {
-                    Text("Call of Duty 4 has no controller support on PC: Siliconium plays your controller as keyboard and mouse, as for Steam's Call of Duty 4 (the keyboard keeps your own bindings).")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                } else {
-                    HStack {
-                        Text("Stick deadzone")
-                        Slider(value: $deadzone, in: 0.02...0.25, step: 0.01)
-                        Text(String(format: "%.2f", deadzone)).monospacedDigit().frame(width: 36)
-                    }
-                }
-                // Bluetooth controllers need macOS's Input Monitoring
-                // permission; wired and dongle ones don't. This is where a
-                // player can read about it again or enable it later.
-                Button("Bluetooth controller help…") { state.checkBluetoothController(force: true) }
-                    .buttonStyle(.link)
-                    .font(.system(size: 11))
-            }
-            if game.usesPlutonium {
-                Section("LAN") {
-                    TextField("LAN player name", text: $name)
-                    if game == .bo2 {
-                        TextField("Extra arguments, e.g. +set fs_game mods/dlc5", text: $mods)
-                    }
-                    Menu("Play on LAN") {
-                        ForEach(game.modes) { mode in
-                            Button(mode.title) {
-                                save()
-                                close()
-                                state.play(game, mode: mode, lan: true)
-                            }
-                        }
-                    }
-                    .disabled(state.running != nil || state.progress != nil)
-                }
-            }
-            HStack {
-                Spacer()
-                Button("Cancel", action: close)
-                Button("Save") { save(); close() }.keyboardShortcut(.defaultAction)
-            }
-        }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-    }
-
-    private func load() {
-        let s = state.settings
-        fps = s[fpsKey] ?? "monitor"
-        for p in Patch.for(game) { patches[p.key] = s[p.key] != p.offValue }
-        deadzone = Double(s["STICK_DEADZONE"] ?? "") ?? 0.08
-        name = s["PLAYER_NAME"] ?? "Player"
-        mods = s["BO2_MODS"] ?? ""
-    }
-
-    private func save() {
-        state.settings[fpsKey] = fps == "monitor" ? nil : fps
-        for p in Patch.for(game) { state.settings[p.key] = (patches[p.key] ?? true) ? nil : p.offValue }
-        if game != .iw6 {
-            state.settings["STICK_DEADZONE"] = String(format: "%.2f", deadzone)
-            state.settings["PLAYER_NAME"] = name
-            state.settings["BO2_MODS"] = mods
-        }
-        state.settings.save()
-    }
-}
-
-struct InfoButton: View {
-    let text: String
-    @State private var shown = false
-
-    var body: some View {
-        Button { shown.toggle() } label: {
-            Image(systemName: "info.circle").foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
-        .help(text)
-        .popover(isPresented: $shown, arrowEdge: .trailing) {
-            Text(text)
-                .font(.system(size: 12))
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: 280, alignment: .leading)
-                .padding(12)
-        }
-    }
-}
-
-struct LogView: View {
-    @EnvironmentObject var state: AppState
-    @Environment(\.dismiss) private var dismiss
-
-    /// The app's own output, then the end of the log file the last error named
-    private var text: String {
-        var parts: [String] = []
-        if !state.log.isEmpty { parts.append(state.log.joined(separator: "\n")) }
-        if let name = state.errorLog {
-            let url = Paths.home.appendingPathComponent(name)
-            if let data = try? Data(contentsOf: url) {
-                let t = String(decoding: data, as: UTF8.self)
-                let lines = t.split(separator: "\n", omittingEmptySubsequences: false).suffix(300)
-                parts.append("— \(name)\n" + (t.isEmpty ? "(empty)" : lines.joined(separator: "\n")))
-            } else {
-                parts.append("— \(name)\n(not found)")
-            }
-        }
-        return parts.isEmpty ? "Nothing logged yet in this session." : parts.joined(separator: "\n\n")
-    }
-
-    var body: some View {
-        VStack(alignment: .leading) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(text)
-                        .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Color.clear.frame(height: 1).id("end")
-                }
-                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
-            }
-            HStack {
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
-                }
-                Button("Open Logs Folder") {
-                    let logs = Paths.home.appendingPathComponent("logs")
-                    try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
-                    NSWorkspace.shared.open(logs)
-                }
-                Spacer()
-                Button("Close") { dismiss() }.keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding()
-        .frame(width: 700, height: 440)
-    }
-}
-
-// MARK: - Setup note
-
-struct SetupNoteView: View {
-    @ObservedObject var model: SetupNoteModel
-    var showApp: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            ProgressView().controlSize(.small).padding(.top, 1)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Plutonium").font(.system(size: 12.5, weight: .semibold))
-                Text(model.step)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(model.hint)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("Show Siliconium", action: showApp)
-                    .buttonStyle(.link)
-                    .font(.system(size: 10.5))
-            }
-        }
-        .padding(14)
-        .frame(width: 360, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-    }
-}

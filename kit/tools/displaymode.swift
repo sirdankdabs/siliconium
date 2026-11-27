@@ -101,7 +101,10 @@ func hz(_ mode: CGDisplayMode) -> Int {
 // stays as it is (HiDPI on, no mode switch, a sharp desktop after Cmd-Tab;
 // Black Ops 159.0 FPS held at 1x, 158.9 kept, 2026-11-23).
 // SIL_KEEP_UNSCALED=2 (KEEP_HIDPI=2): any HiDPI desktop of that size stays,
-// scaled too. 0: every HiDPI desktop at 1x.
+// scaled too. 3 (Smart HiDPI, used for mtld3d and lightweight DXMT games that
+// present a 1x drawable without a 5K stall): any HiDPI desktop of that size
+// stays whenever no 1x mode of its size offers a higher refresh rate.
+// 0: every HiDPI desktop at 1x.
 func decide(_ w: Int, _ h: Int) -> (mode: CGDisplayMode, kind: String) {
   let best = usableOneX(w, h).max(by: { $0.refreshRate < $1.refreshRate })
   let faster = best.map { $0.refreshRate > original.refreshRate + 0.5 } ?? false
@@ -112,6 +115,7 @@ func decide(_ w: Int, _ h: Int) -> (mode: CGDisplayMode, kind: String) {
   let keepMode = ProcessInfo.processInfo.environment["SIL_KEEP_UNSCALED"] ?? ""
   if original.width == w && original.height == h
       && (keepMode == "2"
+          || (keepMode == "3" && !faster)
           || (keepMode == "1" && original.ioFlags & UInt32(kDisplayModeNativeFlag) != 0 && !faster)) {
     return (original, "kept")
   }
@@ -188,6 +192,11 @@ if (args.count == 2 || args.count == 4) && args[1] == "plan" {
   let h = args.count == 4 ? Int(args[3]) ?? original.height : original.height
   let (mode, kind) = decide(w, h)
   print("\(mode.width) \(mode.height) \(hz(mode)) \(kind) \(mode.pixelWidth) \(mode.pixelHeight)")
+  exit(0)
+}
+if args.count == 2 && args[1] == "plan-full" {
+  let (mode, kind) = decide(original.width, original.height)
+  print("\(original.width) \(original.height) \(hz(original)) \(mode.width) \(mode.height) \(hz(mode)) \(kind)")
   exit(0)
 }
 if args.count == 2 && args[1] == "info" {

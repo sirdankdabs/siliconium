@@ -127,6 +127,29 @@ Apply after wine-winemac-reapply-gamma.patch.
 +    CGDisplayModeRelease(target);
 +}
 +
++static BOOL sil_capture_ui_active(void)
++{
++    NSArray<NSRunningApplication*>* apps =
++        [NSRunningApplication runningApplicationsWithBundleIdentifier:@"com.apple.screencaptureui"];
++    return [apps count] > 0;
++}
++
++static BOOL sil_is_system_overlay(NSRunningApplication* front)
++{
++    NSString* bid;
++    if (!front) return YES;
++    if (front.activationPolicy != NSApplicationActivationPolicyRegular) return YES;
++    bid = front.bundleIdentifier;
++    if (!bid) return NO;
++    return [bid isEqualToString:@"com.apple.screencaptureui"] ||
++           [bid isEqualToString:@"com.apple.screenshot.launcher"] ||
++           [bid isEqualToString:@"com.apple.Screenshot"] ||
++           [bid isEqualToString:@"com.apple.ScreenContinuity"] ||
++           [bid isEqualToString:@"com.apple.controlcenter"] ||
++           [bid isEqualToString:@"com.apple.notificationcenterui"] ||
++           [bid isEqualToString:@"com.apple.Spotlight"];
++}
++
 +static void sil_hide_if_other_app_in_front(int tries)
 +{
 +    NSRunningApplication* front;
@@ -134,6 +157,7 @@ Apply after wine-winemac-reapply-gamma.patch.
 +    BOOL fullscreen = FALSE;
 +
 +    if ([NSApp isActive] || [NSApp isHidden]) return;
++    if (sil_capture_ui_active()) return;
 +    front = [[NSWorkspace sharedWorkspace] frontmostApplication];
 +    if (!front || [front isEqual:[NSRunningApplication currentApplication]])
 +    {
@@ -144,7 +168,8 @@ Apply after wine-winemac-reapply-gamma.patch.
 +            });
 +        return;
 +    }
-+    if (front.activationPolicy != NSApplicationActivationPolicyRegular) return;
++    if (sil_is_system_overlay(front)) return;
++    sil_left_by_player = TRUE;
 +    for (window in [NSApp windows])
 +    {
 +        if ([window isKindOfClass:[WineWindow class]] && ((WineWindow*)window).fullscreen &&
@@ -178,16 +203,39 @@ Apply after wine-winemac-reapply-gamma.patch.
      }
  
      - (void)applicationDidChangeScreenParameters:(NSNotification *)notification
-@@ -2695,6 +2841,12 @@
+@@ -2682,20 +2850,33 @@
+ 
+         [self invalidateGotFocusEvents];
+ 
+-        if (!temporarilyIgnoreResignEventsForDialog)
++        NSRunningApplication* front = [[NSWorkspace sharedWorkspace] frontmostApplication];
++        BOOL overlay = hide_on_deactivate() && !temporarilyIgnoreResignEventsForDialog &&
++            (sil_capture_ui_active() ||
++             (front && ![front isEqual:[NSRunningApplication currentApplication]] && sil_is_system_overlay(front)));
++
++        if (!temporarilyIgnoreResignEventsForDialog && !overlay)
+         {
+             event = macdrv_create_event(APP_DEACTIVATED, nil);
+ 
+             [eventQueuesLock lock];
+             for (queue in eventQueues)
+                 [queue postEvent:event];
+             [eventQueuesLock unlock];
+ 
+             macdrv_release_event(event);
+         }
+ 
          [self endMouseLook];
          if (use_transparent_cursor()) [self updateCursor:FALSE];
          [self releaseMouseCapture];
 +
-+        if (hide_on_deactivate() && !temporarilyIgnoreResignEventsForDialog)
-+            sil_left_by_player = TRUE;
-+        if (hide_on_deactivate() && !temporarilyIgnoreResignEventsForDialog && sil_active_since &&
-+            CFAbsoluteTimeGetCurrent() - sil_active_since >= 3.0)
-+            sil_hide_if_other_app_in_front(5);
++        if (hide_on_deactivate() && !temporarilyIgnoreResignEventsForDialog && !overlay)
++        {
++            if (front && ![front isEqual:[NSRunningApplication currentApplication]])
++                sil_left_by_player = TRUE;
++            if (sil_active_since && CFAbsoluteTimeGetCurrent() - sil_active_since >= 3.0)
++                sil_hide_if_other_app_in_front(5);
++        }
      }
  
      - (void) applicationDidUnhide:(NSNotification*)aNotification
@@ -229,23 +277,12 @@ Apply after wine-winemac-reapply-gamma.patch.
  
 --- a/dlls/winemac.drv/window.c
 +++ b/dlls/winemac.drv/window.c
-@@ -1883,10 +1883,54 @@
-  *
-  * Handler for APP_ACTIVATED events.
-  */
-+/* Siliconium (SIL_HIDE_ON_DEACTIVATE=1, every game Siliconium starts): the
-+ * window that had the foreground when the player left the app. Wine gives the
-+ * foreground to the desktop window then (below) and, until now, never gave it
-+ * back when the player returned: a window the game had minimized on losing
-+ * the focus (exclusive fullscreen: Black Ops, Black Ops II) came back on
-+ * screen through an outside helper, 0.25-0.35 s later and from another
-+ * process, and the game, still told it was in the background, took no click
-+ * or key (Black Ops II, 2026-11-24: back from the second Cmd-Tab). Now, as
-+ * Windows does when the player clicks a game's taskbar button: the window is
-+ * restored through its own window procedure (SC_RESTORE, as
-+ * macdrv_window_did_unminimize does) and given the foreground at once, in
-+ * the game's own thread. */
+@@ -1670,6 +1670,22 @@
+     return TRUE;
+ }
+ 
 +static HWND sil_left_foreground;
++static HWND sil_last_main_window;
 +
 +static BOOL sil_restore_foreground(void)
 +{
@@ -258,18 +295,42 @@ Apply after wine-winemac-reapply-gamma.patch.
 +    return enabled;
 +}
 +
+ /***********************************************************************
+  *              WindowPosChanged   (MACDRV.@)
+  */
+@@ -1711,6 +1727,12 @@
+ 
+     if (new_style & WS_VISIBLE)
+     {
++        if (sil_restore_foreground() && !(new_style & WS_CHILD) &&
++            hwnd != NtUserGetDesktopWindow() &&
++            !(NtUserGetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) &&
++            !NtUserGetWindowRelative(hwnd, GW_OWNER))
++            sil_last_main_window = hwnd;
++
+         if (data->cocoa_window)
+         {
+             if (!data->on_screen || (swp_flags & (SWP_FRAMECHANGED|SWP_STATECHANGED)))
+@@ -1883,10 +1905,36 @@
+  *
+  * Handler for APP_ACTIVATED events.
+  */
++/* Siliconium (SIL_HIDE_ON_DEACTIVATE=1, every game Siliconium starts): restore
++ * and give foreground back to the game's window in its own thread when macOS
++ * activates the app — including when a game started in the background and
++ * minimized itself before ever becoming active (e.g. WaW at 160x31). */
  void macdrv_app_activated(void)
  {
-+    HWND hwnd = sil_left_foreground, fg;
++    HWND hwnd = sil_left_foreground ? sil_left_foreground : sil_last_main_window, fg;
 +
      TRACE("\n");
      macdrv_UpdateClipboard();
 +
 +    if (!hwnd || !sil_restore_foreground()) return;
 +    if (!NtUserIsWindow(hwnd) || NtUserGetWindowThread(hwnd, NULL) != GetCurrentThreadId()) return;
-+    sil_left_foreground = 0;
++    if (hwnd == sil_left_foreground) sil_left_foreground = 0;
 +    fg = NtUserGetForegroundWindow();
-+    if (fg && fg != NtUserGetDesktopWindow()) return;   /* the player clicked one already */
++    if (fg && fg != NtUserGetDesktopWindow() && !(NtUserGetWindowLongW(fg, GWL_STYLE) & WS_MINIMIZE)) return;   /* the player clicked one already */
 +    if (!(NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_VISIBLE)) return;
 +    if (NtUserGetWindowLongW(hwnd, GWL_STYLE) & WS_MINIMIZE)
 +    {
@@ -284,7 +345,7 @@ Apply after wine-winemac-reapply-gamma.patch.
  }
  
  
-@@ -1901,6 +1945,7 @@
+@@ -1901,6 +1949,7 @@
  
      if (get_active_window() == NtUserGetForegroundWindow())
      {

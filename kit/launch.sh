@@ -40,6 +40,7 @@
 #   CMDTAB_DESKTOP_MODE=1  while a game is hidden after Cmd-Tab, a HiDPI desktop
 #                      gets its own mode back (two display switches per Cmd-Tab;
 #                      default: the game's 1x mode stays until it quits)
+#   D3D9_MTLD3D=0      use DXVK + MoltenVK instead of mtld3d (Direct3D 9 -> Metal)
 #   MSAA_FIX=0         allow the games' 8x+ MSAA (not supported by Apple GPUs)
 #   BO1_ASYNC=0        BO1 shaders compile while drawing (stutters)
 #   BO1_ASYNC_LEVEL=1  BO1 compiles a newly drawn surface's shaders on the render
@@ -89,7 +90,8 @@
 #                      load NVIDIA's HBAO+/TXAA/APEX libraries
 #   CURSOR_FIX=0       on macOS 26+, keep the transparent-cursor fix (a fast
 #                      mouse no longer lowers the frame rate) to Black Ops II
-#   SKIP_INTRO=0       play the logo movies when WaW, BO1 and BO2 start
+#   SKIP_INTRO=0       play the logo movies when WaW, BO2 and MW3 start
+#   BO1_SKIP_INTRO=1   skip Black Ops' startup intro movie (default: play it)
 #   BOIII_SCREEN=0     Black Ops III keeps its own window mode, size and frame cap
 #   IW7_SCREEN=0       Infinite Warfare (Steam) keeps the resolution and refresh
 #                      rate saved in its profile
@@ -117,11 +119,10 @@ engine="$home/engine"
 export WINEPREFIX="$home/prefix" CX_ROOT="$engine" WINESERVER="$engine/bin/wineserver"
 # Black Ops II's offline campaign had its own prefix (removed in 1.2.1;
 # `bo2c` only stops with a message now)
-if [ "${1:-}" = bo2c ] || [ "${1:-}" = bo2s ] || [ "${1:-}" = steam ] || [ "${1:-}" = cod4x ] || [ "${1:-}" = iw7mod ]; then
+if [ "${1:-}" = bo2c ] || [ "${1:-}" = bo2s ] || [ "${1:-}" = steam ] || [ "${1:-}" = cod4x ] || [ "${1:-}" = iw7mod ] || [ "${1:-}" = own ]; then
   # bo2s and the Steam Library (steam): Steam for Windows in its own prefix
-  # (steam.sh), which starts the game. CoD4X (cod4x): the same prefix and
-  # Steam's Call of Duty 4 multiplayer setup, without Steam; IW7-Mod (iw7mod):
-  # the same with Steam's Infinite Warfare setup
+  # (steam.sh), which starts the game. CoD4X (cod4x), IW7-Mod (iw7mod) and
+  # Your Own Game Files (own): the same prefix and Steam's game setup, without Steam
   if [ "${1:-}" = bo2c ]; then export WINEPREFIX="$home/prefix-bo2c"; else export WINEPREFIX="$home/prefix-steam"; fi
   # its Wine server runs through a link outside the engine folder, so the app
   # doesn't count the campaign's prefix as a game running
@@ -137,8 +138,9 @@ elif [ "${1:-}" = battlenet ]; then
   export WINESERVER="$home/campaign/wineserver"
 fi
 export WINEDLLPATH="$engine/lib/wine/x86_64-windows:$engine/lib/wine/x86_64-unix"
-export WINEMSYNC=1 WINEDEBUG=${WINEDEBUG:--all} WINEDLLOVERRIDES="mscoree,mshtml="
-wine="$engine/lib/wine/x86_64-unix/wine"
+export WINEMSYNC=1 WINEDEBUG=${WINEDEBUG:--all} WINEDLLOVERRIDES="mscoree,mshtml,winemenubuilder.exe="
+plain_wine="$engine/lib/wine/x86_64-unix/wine"
+wine="$plain_wine"
 plutonium="$WINEPREFIX/drive_c/users/crossover/AppData/Local/Plutonium"
 mkdir -p "$home/logs" "$home/cache"
 
@@ -156,6 +158,19 @@ log_cap() {
     tail -c 1048576 "$f" | tail -n +2; } > "$t" && cat "$t" > "$f"
   rm -f "$t"
 }
+# Cap any oversized logs (> 2 MB) during idle prewarm/stop so logs/ never bloats.
+log_cap_sweep() {
+  local f
+  for f in "$home/logs"/*.log; do
+    [ -f "$f" ] && log_cap "$f"
+  done
+}
+# Match a running Wine executable while ignoring Siliconium's own helpers
+# (iw6-focus receives the target exe name as its final argument).
+sil_wine_running() {   # <eregex>
+  ps -axo args= | awk -v pat="$1" 'BEGIN{rc=1; p=tolower(pat)} {l=tolower($0)} l ~ p && l !~ /iw6-focus|iw6-restore\.exe|launch\.sh|awk/ {rc=0; exit} END{exit rc}'
+}
+. "$kit/tools/dl-progress.sh"
 # A community client's copy of a Steam game (CoD4X, IW7-Mod: tools/steam-copy.sh):
 # Steam's files leave it a minute after this start ends, however it ends (the
 # game quit, Stop, an error); a start in that minute keeps them
@@ -183,7 +198,15 @@ focus_helper() {
     >> "${log:-/dev/null}" 2>&1 &
   focus_pid=$!
 }
-stop_all() { "$WINESERVER" -k 2>/dev/null; "$WINESERVER" -w 2>/dev/null; }
+reap_orphan_winedevices() {   # <prefix>
+  local pfx=${1:-$WINEPREFIX} pid cwd
+  [ -n "$pfx" ] || return 0
+  for pid in $(pgrep -if 'winedevice\.exe|plugplay\.exe' 2>/dev/null || true); do
+    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    case "$cwd/" in "$pfx/"*) kill -KILL "$pid" 2>/dev/null || true ;; esac
+  done
+}
+stop_all() { "$WINESERVER" -k 2>/dev/null; "$WINESERVER" -w 2>/dev/null; reap_orphan_winedevices "$WINEPREFIX"; }
 # A display mode hold (hold_1x_size) that was killed before it could put the
 # desktop's mode back: put it back now, unless the player chose another mode
 # since (tools/displaymode restore). A hold that is still on is left alone: it
@@ -192,14 +215,55 @@ restore_display() { "$kit/tools/displaymode" restore >> "$home/logs/displaymode.
 
 game=${1:-}; mode=${2:-}
 [ "$game:$mode" = stop:iw6 ] && { WINEPREFIX="$home/prefix-iw6" stop_all; restore_display; exit 0; }
-[ "$game" = stop ] && { stop_all; WINEPREFIX="$home/prefix-bo2c" "$WINESERVER" -k 2>/dev/null
-  WINEPREFIX="$home/prefix-steam" "$WINESERVER" -k 2>/dev/null
-  WINEPREFIX="$home/prefix-battlenet" "$WINESERVER" -k 2>/dev/null; restore_display; exit 0; }
+[ "$game" = stop ] && { rm -f "$home/cache/.sil-prewarmed"; stop_all
+  for pfx in "$home/prefix-bo2c" "$home/prefix-steam" "$home/prefix-battlenet" "$home/prefix-iw6"; do
+    WINEPREFIX="$pfx" "$WINESERVER" -k 2>/dev/null
+    reap_orphan_winedevices "$pfx"
+  done
+  log_cap_sweep
+  restore_display; exit 0; }
+if [ "$game" = prewarm ]; then
+  log_cap_sweep
+  if [ "$mode" = steam ]; then
+    export WINEPREFIX="$home/prefix-steam"
+    pgrep -if 'steam\.exe' >/dev/null 2>&1 && exit 0
+  fi
+  [ -x "$plain_wine" ] && [ -x "$WINESERVER" ] && [ -d "$WINEPREFIX/drive_c" ] || exit 0
+  # Only pre-warm when idle (no game running and no wineserver already up).
+  sil_wine_running 't4mp\.exe|t4sp\.exe|t5mp\.exe|t5sp\.exe|t6mp\.exe|t6zm\.exe|t6sp\.exe|t6sp-mod\.exe|iw3sp\.exe|iw3sp_mod\.exe|iw3mp\.exe|iw4sp\.exe|iw4mp\.exe|iw5mp\.exe|iw5sp\.exe|boiii(-[[:alnum:]._-]+)?\.exe|blackops3\.exe|blackops4\.exe|iw4x(-launcher)?\.exe|iw6sp64_ship\.exe|plutonium-launcher-win32\.exe|plutonium-bootstrapper-win32\.exe' && exit 0
+  pgrep -f "$engine/bin/wineserver" >/dev/null 2>&1 && exit 0
+  "$WINESERVER" -p 120 >/dev/null 2>&1 </dev/null || exit 0
+  env -u WINELOADER "$plain_wine" cmd /c exit 0 >/dev/null 2>&1 </dev/null || true
+  [ "$mode" != steam ] && : > "$home/cache/.sil-prewarmed"
+  exit 0
+fi
+# Wait for the game to exit. When reusing a pre-warmed persistent wineserver
+# (wineserver -p 120), poll the game process instead of blocking 120 s on
+# wineserver -w, then cleanly stop wineserver so its registry flushes to disk.
+wait_wine_exit() {   # wait_wine_exit <eregex> [wait_for_spawn:0|1]
+  local pat=$1 spawn=${2:-0} i
+  if [ "${prewarm_active:-0}" = 1 ]; then
+    if [ "$spawn" = 1 ]; then
+      for i in $(seq 20); do sil_wine_running "$pat" && break; sleep 0.25; done
+    fi
+    while sil_wine_running "$pat"; do sleep 1; done
+    declare -F mtld3d_save_cache >/dev/null 2>&1 && mtld3d_save_cache
+    "$WINESERVER" -k 2>/dev/null; "$WINESERVER" -w 2>/dev/null
+  else
+    "$WINESERVER" -w 2>/dev/null
+  fi
+  [ -n "${focus_pid:-}" ] && { kill "$focus_pid" 2>/dev/null; wait "$focus_pid" 2>/dev/null; } || true
+}
 [ -x "$wine" ] || die "the engine is not installed"
-# CoD4X or IW7-Mod without the Steam Library set up yet: Steam's prefix, without
-# Steam (as steam.sh setup makes it; Steam for Windows can be added to it later)
-if { [ "$game" = cod4x ] || [ "$game" = iw7mod ]; } && [ ! -f "$WINEPREFIX/system.reg" ]; then
-  printf '==> %s\n' "Preparing Wine for $([ "$game" = cod4x ] && echo CoD4X || echo IW7-Mod)"
+# CoD4X, IW7-Mod or Your Own Game Files without the Steam Library set up yet:
+# Steam's prefix, without Steam (Steam for Windows can be added to it later)
+if { [ "$game" = cod4x ] || [ "$game" = iw7mod ] || [ "$game" = own ]; } && [ ! -f "$WINEPREFIX/system.reg" ]; then
+  case "$game" in
+    cod4x)  own_init_label="CoD4X" ;;
+    iw7mod) own_init_label="IW7-Mod" ;;
+    *)      own_init_label="offline games" ;;
+  esac
+  printf '==> %s\n' "Preparing Wine for $own_init_label"
   "$wine" wineboot --init > "$home/logs/steam-wineboot.log" 2>&1
   "$WINESERVER" -w 2>/dev/null
 fi
@@ -213,11 +277,16 @@ for f in "$wine" "$engine/lib/wine/x86_64-unix/winemetal.so" "$engine/lib/wine/x
   fi
 done
 case "$game:$mode" in
+  plutonium:online)
+    pl_bin="$WINEPREFIX/drive_c/users/crossover/AppData/Local/Plutonium/bin"
+    [ -f "$pl_bin/plutonium-launcher-win32.exe" ] || die "Plutonium is not installed in the prefix. Run Install first."
+    cd "$pl_bin" || exit 1
+    exec "$wine" "$pl_bin/plutonium-launcher-win32.exe" > "$home/logs/plutonium-online.log" 2>&1 ;;
   waw:online|waw:zombies|waw:campaign|waw:mp) dir=${WAW_DIR:-} t=t4 ;;
   bo1:online|bo1:zombies|bo1:campaign|bo1:mp) dir=${BO1_DIR:-} t=t5 ;;
-  bo2:online|bo2:zombies|bo2:mp|bo2:declassified) dir=${BO2_DIR:-} t=t6 ;;
-  iw5:online|iw5:mp) dir=${IW5_DIR:-} t=iw5 ;;
-  iw4:play|iw4:launcher) dir=${IW4_DIR:-} t=iw4 ;;
+  bo2:online|bo2:zombies|bo2:mp|bo2:declassified) dir=${BO2_DIR:-${OWN_BO2_DIR:-}} t=t6 ;;
+  iw5:online|iw5:mp) dir=${IW5_DIR:-${OWN_MW3_DIR:-}} t=iw5 ;;
+  iw4:play|iw4:launcher) dir=${IW4_DIR:-${OWN_MW2_DIR:-}} t=iw4 ;;
   iw6:play) dir=${IW6_DIR:-} t=iw6 ;;
   boiii:play) dir=${BOIII_DIR:-} t=t7 GAME_ARGS=${GAME_ARGS---launch} ;;
   boiii:launcher) dir=${BOIII_DIR:-} t=t7 ;;
@@ -253,7 +322,7 @@ case "$game:$mode" in
     steam_title cod4 mp || die "unknown Steam Library game: cod4-mp"
     s_own=0 s_client=cod4x s_name=CoD4X
     . "$kit/tools/cod4x.sh"
-    sil_cod4x_prepare "${COD4X_DIR:-}" || die "$c4_error"
+    sil_cod4x_prepare "${COD4X_DIR:-${OWN_COD4_DIR:-}}" || die "$c4_error"
     dir=$c4_dir t=steam ;;
   # IW7-Mod (tools/iw7mod.sh): Infinite Warfare with the Steam Library's setup
   # for it (steam iw-sp: AW's DXMT fixes, 1x display mode, resolution and
@@ -268,6 +337,36 @@ case "$game:$mode" in
     . "$kit/tools/iw7mod.sh"
     sil_iw7mod_use "${IW7MOD_DIR:-}" || die "$i7_error"
     dir=$i7_dir t=steam ;;
+  # Offline -> "Your Own Game Files" (disc / retail / offline Windows folders
+  # chosen by the player, started directly without Steam with the same
+  # Siliconium patches as Plutonium and the Steam Library). Auto-detects 32-bit
+  # vs 64-bit PE binaries for retail MW2/MW3 so 32-bit copies automatically use
+  # mtld3d (D3D9 -> Metal) + Smart HiDPI + x87sidecar, while 64-bit copies keep
+  # 64-bit DXVK.
+  own:*)
+    . "$kit/tools/steam-games.sh"
+    s_id=${mode%-*} s_part=${mode#*-}
+    case "$s_id:$s_part" in
+      cod4:sp|cod4:mp) dir=${OWN_COD4_DIR:-} ;;
+      mw2:sp|mw2:mp)   dir=${OWN_MW2_DIR:-} ;;
+      mw3:sp|mw3:mp)   dir=${OWN_MW3_DIR:-} ;;
+      bo2:sp|bo2:mp|bo2:zm) dir=${OWN_BO2_DIR:-} ;;
+      ghosts:sp)       dir=${OWN_GHOSTS_DIR:-${IW6_DIR:-}} ;;
+      *) die "unknown offline game: $mode" ;;
+    esac
+    steam_title "$s_id" "$s_part" || die "unknown offline game: $mode"
+    [ -n "$dir" ] && [ -d "$dir" ] ||
+      die "Choose your $s_name folder in Your Own Game Files first"
+    if [ ! -f "$dir/$s_exe" ]; then
+      own_match=$(find "$dir" -maxdepth 1 -iname "$s_exe" -print -quit 2>/dev/null || true)
+      [ -n "$own_match" ] && s_exe=${own_match##*/}
+    fi
+    [ -f "$dir/$s_exe" ] ||
+      die "$s_exe was not found in the chosen $s_name folder"
+    if [ "$s_api" = d3d9x64 ] && file -b "$dir/$s_exe" 2>/dev/null | grep -qiE 'PE32 executable|Intel 80386'; then
+      s_api=d3d9
+    fi
+    s_own=0 s_client=own t=steam ;;
   # The Battle.net section (battlenet.sh, tools/battlenet-games.sh): Battle.net's
   # own files, started by Battle.net (bnet_play, below)
   battlenet:*)
@@ -275,15 +374,17 @@ case "$game:$mode" in
     bnet_title "$mode" || die "unknown Battle.net game: $mode"
     dir=$(bnet_gamedir "$b_id") t=bnet
     [ -n "$dir" ] || die "$b_name is not installed in Battle.net yet: press Install in the Battle.net section, then Play" ;;
-  *) die "usage: launch.sh waw|bo1|bo2|iw5 online|zombies|campaign|mp [name], launch.sh iw4 play|launcher, launch.sh iw6 play, launch.sh boiii play|launcher, launch.sh steam <game>-<sp|mp|zm>, launch.sh cod4x play, launch.sh iw7mod play, launch.sh battlenet <game>, or launch.sh stop" ;;
+  *) die "usage: launch.sh waw|bo1|bo2|iw5 online|zombies|campaign|mp [name], launch.sh iw4 play|launcher, launch.sh iw6 play, launch.sh boiii play|launcher, launch.sh steam <game>-<sp|mp|zm>, launch.sh own <cod4|mw2|mw3|bo2|ghosts>-<sp|mp|zm>, launch.sh cod4x play, launch.sh iw7mod play, launch.sh battlenet <game>, or launch.sh stop" ;;
 esac
 # (a client's copy was made above: Steam's files leave it after this start)
 [ -n "${sil_copy_dir:-}" ] && trap copy_release EXIT
-# The community fix the player chose for this Steam game, if any
-# (tools/steam-mods.sh; none: nothing here changes). CoD4X is not one of them
+# The community fix the player chose for this Steam or offline game, if any
+# (tools/steam-mods.sh; none: nothing here changes). CoD4X / IW7-Mod skip this.
 if [ "$t" = steam ]; then
   . "$kit/tools/steam-mods.sh"
-  [ -n "${s_client:-}" ] || steam_mod_prepare "$dir" || die "$m_error"
+  if [ -z "${s_client:-}" ] || [ "${s_client:-}" = own ]; then
+    steam_mod_prepare "$dir" || die "$m_error"
+  fi
 fi
 if [ "$t" = t7 ]; then
   [ -n "$dir" ] && [ -d "$dir" ] || die "the Black Ops III (Windows) folder is not set"
@@ -318,7 +419,51 @@ else
   [ -n "$dir" ] && [ -d "$dir/zone" ] || die "the $game game folder is not set (or has no zone folder)"
   [ "$t" != t6c ] || [ -f "$dir/t6sp.exe" ] || die "the Black Ops II campaign folder has no t6sp.exe"
 fi
-stop_all
+# Auto-upgrade bundled patched x87sidecar (PR #54/#57 fixes) on existing engines
+# unless a strictly newer official release is already installed.
+if [ -x "$kit/payload/x87/x87sidecar" ] && [ -f "$kit/payload/x87/VERSION" ] && [ -d "$engine/bin" ]; then
+  x87_want=$(tr -d '\r\n' < "$kit/payload/x87/VERSION")
+  x87_cur=$(awk -F= '/^x87sidecar=/{print $2; exit}' "$engine/siliconium.version" 2>/dev/null || true)
+  [ -n "$x87_cur" ] || x87_cur=$(tr -d '\r\n' < "$engine/x87sidecar.version" 2>/dev/null || true)
+  if [ "$x87_cur" != "$x87_want" ] && { [ "$x87_cur" = "v1.9.1" ] || [ -z "$x87_cur" ]; } &&
+     "$kit/payload/x87/x87sidecar" --probe >/dev/null 2>&1; then
+    if cp -pf "$kit/payload/x87/x87sidecar" "$engine/bin/x87sidecar.new" &&
+       mv -f "$engine/bin/x87sidecar.new" "$engine/bin/x87sidecar"; then
+      printf '%s\n' "$x87_want" > "$engine/x87sidecar.version" 2>/dev/null || true
+      if [ -f "$engine/siliconium.version" ]; then
+        if grep -q '^x87sidecar=' "$engine/siliconium.version" 2>/dev/null; then
+          sed -i '' -E "s|^x87sidecar=.*|x87sidecar=$x87_want|" "$engine/siliconium.version" 2>/dev/null || true
+        else
+          printf 'x87sidecar=%s\n' "$x87_want" >> "$engine/siliconium.version" 2>/dev/null || true
+        fi
+      fi
+    else
+      rm -f "$engine/bin/x87sidecar.new"
+    fi
+  fi
+fi
+# Reuse a pre-warmed wineserver (started silently when Siliconium opened) when
+# launching Plutonium/IW4X play modes and no engine module updates are pending (~4 s faster).
+prewarm_active=0
+need_stop=1
+if [ -f "$home/cache/.sil-prewarmed" ] && [ "$mode" != online ] &&
+   case "$t" in t4|t5|t6|iw5|iw4) true ;; *) false ;; esac; then
+  if pgrep -f "$engine/bin/wineserver" >/dev/null 2>&1 &&
+     ! pgrep -if 't4mp\.exe|t4sp\.exe|t5mp\.exe|t5sp\.exe|t6mp\.exe|t6zm\.exe|t6sp\.exe|iw5mp\.exe|iw5sp\.exe|iw4x(-launcher)?\.exe|plutonium-launcher-win32\.exe|plutonium-bootstrapper-win32\.exe' >/dev/null 2>&1; then
+    mods_match=1
+    for m in ntdll.so winebus.so winecoreaudio.so winemac.so; do
+      [ ! -f "$kit/payload/x86_64-unix/$m" ] || cmp -s "$engine/lib/wine/x86_64-unix/$m" "$kit/payload/x86_64-unix/$m" || { mods_match=0; break; }
+    done
+    [ ! -f "$kit/payload/lib64/libMoltenVK.dylib" ] || [ ! -f "$engine/lib64/libMoltenVK.real.dylib" ] ||
+      cmp -s "$engine/lib64/libMoltenVK.dylib" "$kit/payload/lib64/libMoltenVK.dylib" || mods_match=0
+    if [ "$mods_match" = 1 ]; then
+      need_stop=0
+      prewarm_active=1
+    fi
+  fi
+fi
+rm -f "$home/cache/.sil-prewarmed"
+[ "$need_stop" = 1 ] && stop_all
 # Clients' copies nobody is using (an earlier start that never got to clean
 # up): Steam's files leave them (tools/steam-copy.sh; this start's own copy is
 # in use and stays), in the background
@@ -397,7 +542,9 @@ install_own_moltenvk() {
 }
 install_own_moltenvk \
   a7524c6e8691c4b54d9450d7441c89f12614ada76731b9d311c32d3902ba334d \
-  c9f3818ae802cc2ea20c37260edfba0190dd9632ad3df23c63c07b085ffdd343 ||
+  c9f3818ae802cc2ea20c37260edfba0190dd9632ad3df23c63c07b085ffdd343 \
+  c1ac59e3290653e9a8c2e22c98682b2ec5c6904478f3c9131d8ca0f7906df733 \
+  af8dd8ec76e9e45f1aaff10ae0179495d3b74b3fa10f8fe1224f5edf57cc174b ||
   printf '%s\n' 'Warning: could not install the shader cache update (MoltenVK).' >&2
 # ntdll.so with the renamed SIL_ variables (the 0.9.x builds read the old ones)
 install_own_engine_module ntdll.so \
@@ -417,11 +564,96 @@ if [ "${SDL_STICKS:-${SWITCH_STICKS:-1}}" != 0 ] && { [ "$t" != t5 ] || [ "${BO1
     1e8e5e30b24ff999a97d97cd5733f59c694dc1e01d1f66bbd7c5aa6e3d1b60a0 ||
     printf '%s\n' 'Warning: could not install the SDL controller update.' >&2
 fi
-if [ "$t" = t5 ] || [ "${s_id:-}" = bo1 ]; then   # Black Ops, Plutonium's or Steam's
-  install_own_engine_module winecoreaudio.so 570a756b9f72d4e26769431ea419719cebfbd14c9f1c52ddcd8abd2b61510883 \
-    fb6c9d52aefb1180e4c716c52f873929f91e6e0290a6955f23fe69cf7ab85c8d ||
-    printf '%s\n' 'Warning: could not install the Black Ops audio update.' >&2
-fi
+# CoreAudio render period matching the output device's HAL block (prevents
+# crackling/fluttering on 44.1 kHz / Bluetooth / 512-frame devices for every game).
+install_own_engine_module winecoreaudio.so \
+  570a756b9f72d4e26769431ea419719cebfbd14c9f1c52ddcd8abd2b61510883 \
+  fb6c9d52aefb1180e4c716c52f873929f91e6e0290a6955f23fe69cf7ab85c8d \
+  ac720fac925251b1d22065cca7c7f7c73e16d4610edc4ec6c393e3d16f7f4744 ||
+  printf '%s\n' 'Warning: could not install the audio driver update.' >&2
+# Unified DXMT winemetal.so (v0.80 + patches/dxmt-airconv-ts-workloads-v0.80.patch):
+# eliminates the duplicate 32 MB AW/IW translator and persistent aw-engine clone.
+# Verifies v0.80 ABI via winemetal.dll and checks Mach-O LC_UUID (survives
+# codesign -fs - across macOS versions, zero Xcode CLT dependency).
+# WINEMETAL_FIX=0 restores .sil-original if present.
+install_own_winemetal() {
+  local driver="$engine/lib/wine/x86_64-unix/winemetal.so"
+  local patched="$kit/payload/dxmt/x86_64-unix/winemetal.so"
+  local want_dll="$kit/payload/dxmt/x86_64-windows/winemetal.dll"
+  local have_dll="$engine/lib/wine/x86_64-windows/winemetal.dll"
+  local have_uuid staged
+  [ -f "$patched" ] && [ -f "$driver" ] && [ -f "$want_dll" ] && cmp -s "$have_dll" "$want_dll" || return 0
+  if [ "${WINEMETAL_FIX:-1}" = 0 ]; then
+    if [ -f "$driver.sil-original" ] && ! cmp -s "$driver" "$driver.sil-original"; then
+      staged=$(mktemp "$driver.XXXXXX") || return 1
+      cp -p "$driver.sil-original" "$staged" && mv -f "$staged" "$driver" || { rm -f "$staged"; return 1; }
+    fi
+    return 0
+  fi
+  cmp -s "$driver" "$patched" && return 0
+  have_uuid=$(/usr/bin/python3 -I - "$driver" <<'PY' 2>/dev/null
+import struct, sys
+try:
+    b = open(sys.argv[1], "rb").read(8192)
+    if struct.unpack_from("<I", b, 0)[0] != 0xfeedfacf: sys.exit(0)
+    ncmds = struct.unpack_from("<I", b, 16)[0]
+    off = 32
+    for _ in range(ncmds):
+        if off + 8 > len(b): break
+        cmd, sz = struct.unpack_from("<II", b, off)
+        if cmd == 0x1b and sz >= 24:
+            print(b[off + 8:off + 24].hex()); break
+        off += sz
+except Exception:
+    pass
+PY
+  )
+  case "$have_uuid" in
+    dcb7ddb5ac5937bfbd4005a8f8c416b6|97b23dea742633d680d5b929673bd44a) ;;
+    *) return 0 ;;
+  esac
+  staged=$(mktemp "$driver.XXXXXX") || return 1
+  if ! cp -p "$patched" "$staged" ||
+     { ! codesign -v "$staged" 2>/dev/null && ! codesign -fs - "$staged" 2>/dev/null; } ||
+     { [ ! -e "$driver.sil-original" ] && ! ln "$driver" "$driver.sil-original"; } ||
+     ! mv -f "$staged" "$driver"; then
+    rm -f "$staged"
+    return 1
+  fi
+}
+install_own_winemetal ||
+  printf '%s\n' 'Warning: could not install the unified DXMT translator update.' >&2
+# 32-bit DirectSound FIR resampler with SSE2 + SIMD (patches/wine-dsound-sse2-mixer.patch):
+# ~7x faster audio mixing on Rosetta (-86% CPU, 0 dropouts even without x87sidecar).
+# DSOUND_SSE=0 restores CrossOver's stock i386 dsound.dll (.sil-original).
+install_own_dsound() {
+  local dll="$engine/lib/wine/i386-windows/dsound.dll"
+  local patched="$kit/payload/i386-windows/dsound.dll" digest staged
+  [ -f "$patched" ] && [ -f "$dll" ] || return 0
+  if [ "${DSOUND_SSE:-1}" = 0 ]; then
+    if [ -f "$dll.sil-original" ] && ! cmp -s "$dll" "$dll.sil-original"; then
+      staged=$(mktemp "$dll.XXXXXX") || return 1
+      cp -p "$dll.sil-original" "$staged" && mv -f "$staged" "$dll" || { rm -f "$staged"; return 1; }
+    fi
+    return 0
+  fi
+  cmp -s "$dll" "$patched" && return 0
+  digest=$(shasum -a 256 < "$dll") || return 1
+  case " $* " in
+    *" ${digest%% *} "*) ;;
+    *) return 0 ;;
+  esac
+  staged=$(mktemp "$dll.XXXXXX") || return 1
+  if ! cp -p "$patched" "$staged" ||
+     { [ ! -e "$dll.sil-original" ] && ! ln "$dll" "$dll.sil-original"; } ||
+     ! mv -f "$staged" "$dll"; then
+    rm -f "$staged"
+    return 1
+  fi
+}
+install_own_dsound \
+  c3bd733e6956709dfe8f6ebefd014a42ae862391e7292016de814dd9165258da ||
+  printf '%s\n' 'Warning: could not install the SSE2 DirectSound update.' >&2
 # The cursor fix (see SIL_BO2_TRANSPARENT_CURSOR below): Black Ops II always;
 # on macOS 26 and later every game, since there the stall it fixes (a fast
 # mouse dropping the frame rate) is the system's, not BO2's. CURSOR_FIX=0
@@ -443,28 +675,30 @@ case "$t" in
     esac ;;
   *) [ "${macos_major:-0}" -ge 26 ] 2>/dev/null && [ "${CURSOR_FIX:-1}" != 0 ] && cursor_fix=1 ;;
 esac
-# Our winemac.so also carries the Cmd-Tab hide (SIL_HIDE_ON_DEACTIVATE below),
-# for every game; its other changes stay off unless their variables are set.
-if [ "$cursor_fix" = 1 ] || [ "${HIDE_ON_CMDTAB:-1}" != 0 ]; then
-  # Accept the original and earlier cursor modules so existing engines can update.
-  install_own_engine_module winemac.so \
-    9e1546c897a168aec2387f771a058a9afae0eea0c392a98339137e6fc464bf9f \
-    db3332fdf57b72dda60dfdaf59ef978fdd55a7a7e0596455195b7edbdd4e350a \
-    c44cf8ab1819267438299b0ce2573ffa015ca77260fbbb63e26823b26d3a639c \
-    6afccb6313e968b4ba6d8ba9346f1d33f36be14b32967eb9af4079376fdea1c2 \
-    60213e14b7d1c501219605d9d523b9f1888ca946565d9dc0c4069db1ccd038cb \
-    9b5bb6fc39ff94d1020576e3155f79a6afc81dcc91b4b3b70c60e6841553b4a0 \
-    5624f8cc1a09006bbb3f6c57938ef76ac48e566d820ca1e0f39d216da85d5a69 \
-    f3a79c3d8d1f09588e78726263bab22f6acd045849de2a479bfae25150b04045 \
-    6be7a63ece9504e8f4a7d8e8f4b2409f5bb683ea281cdd39509eef105eff380e \
-    2509d6c5a391e5da36a1c97a9cc61bfbffa5b2275f36e197bc4c777ca1e27dd0 \
-    5412976bc72c5b4843eed6fac2048910befbebef21abf50ebf5627a44386547a \
-    0724dd99b4ad120402a956b9b1836647ccc9431201916c77938ac69f9e55ac95 \
-    eb5eb337107f33cf3fe728e2abd6b3ee6b84bc000768ff0f9d790e045b00108e \
-    2af530d00139527d319ddf3821c1c849029842b2b02c9490453eab610066debd \
-    4e621b5de62d1f4e9f26d3c6219693298ec4edb23f3a693ab793232bb2106137 ||
-    printf '%s\n' 'Warning: could not install the Mac window driver update (cursor, Cmd-Tab).' >&2
-fi
+# Our winemac.so carries the mouse-look input fix (ADS+shoot jumping & 1000 Hz
+# coalescing), cursor fix, and Cmd-Tab hide for every game; optional changes
+# stay off unless their variables are set.
+# Accept the original and earlier modules so existing engines can update.
+install_own_engine_module winemac.so \
+  9e1546c897a168aec2387f771a058a9afae0eea0c392a98339137e6fc464bf9f \
+  db3332fdf57b72dda60dfdaf59ef978fdd55a7a7e0596455195b7edbdd4e350a \
+  c44cf8ab1819267438299b0ce2573ffa015ca77260fbbb63e26823b26d3a639c \
+  6afccb6313e968b4ba6d8ba9346f1d33f36be14b32967eb9af4079376fdea1c2 \
+  60213e14b7d1c501219605d9d523b9f1888ca946565d9dc0c4069db1ccd038cb \
+  9b5bb6fc39ff94d1020576e3155f79a6afc81dcc91b4b3b70c60e6841553b4a0 \
+  5624f8cc1a09006bbb3f6c57938ef76ac48e566d820ca1e0f39d216da85d5a69 \
+  f3a79c3d8d1f09588e78726263bab22f6acd045849de2a479bfae25150b04045 \
+  6be7a63ece9504e8f4a7d8e8f4b2409f5bb683ea281cdd39509eef105eff380e \
+  2509d6c5a391e5da36a1c97a9cc61bfbffa5b2275f36e197bc4c777ca1e27dd0 \
+  5412976bc72c5b4843eed6fac2048910befbebef21abf50ebf5627a44386547a \
+  0724dd99b4ad120402a956b9b1836647ccc9431201916c77938ac69f9e55ac95 \
+  eb5eb337107f33cf3fe728e2abd6b3ee6b84bc000768ff0f9d790e045b00108e \
+  2af530d00139527d319ddf3821c1c849029842b2b02c9490453eab610066debd \
+  4e621b5de62d1f4e9f26d3c6219693298ec4edb23f3a693ab793232bb2106137 \
+  96033465f2e08f71281d46e7a97b44545a05b182290e3992c47945c17b8a09b7 \
+  c730b0cefc86a1654bea4c42a18a537a18dbf134b904d4536c2cdab5078e427e \
+  23f4edc1dd8364a7a20c63a51a3c361a9404ab8d846ef6536bfb073057200ae9 ||
+  printf '%s\n' 'Warning: could not install the Mac window driver update (mouse, cursor, Cmd-Tab).' >&2
 # (exported here for the games started from this script, Ghosts included; the
 # prefix's copy for programs that a launcher starts is set further down)
 unset SIL_HIDE_ON_DEACTIVATE SIL_DISPLAYMODE_RECORD
@@ -526,8 +760,53 @@ hold_1x() { # <game cfg>
   [ -f "$1" ] && grep -qE '^seta r_fullscreen "[12]"' "$1" || return 0
   hold_1x_size "$(sed -n -E 's/^seta r_mode "([0-9]+)x([0-9]+)"/\1 \2/p' "$1")"
 }
-# displaymode's SIL_KEEP_UNSCALED for KEEP_HIDPI (0, 1 = default, 2)
-keep_hidpi() { case "${KEEP_HIDPI:-1}" in 0) echo 0 ;; 2) echo 2 ;; *) echo 1 ;; esac; }
+# Patches and settings are on unless set to 0 (used before the display block).
+on() { [ "${!1:-1}" != 0 ]; }
+# Determine early whether mtld3d (Direct3D 9 -> Metal) will render this title,
+# so Smart HiDPI can keep macOS HiDPI active without switching to 1x.
+macos_major=${macos_major:-$(sw_vers -productVersion 2>/dev/null)}
+macos_major=${macos_major%%.*}
+mtld3d_active=0
+mtld3d_engine=
+mtld3d_cache_file=
+mtld3d_plut_bin=
+if on D3D9_MTLD3D && [ "${macos_major:-15}" -ge 15 ] 2>/dev/null &&
+   [ -f "$kit/payload/mtld3d/x86_64-unix/mtld3d.so" ] &&
+   [ "${s_own:-0}" = 0 ]; then
+  case "$t:${s_id:-}" in
+    t4:*|t5:*|iw5:*|iw4:*|steam:cod4|steam:waw|steam:bo1)
+      mtld3d_active=1 ;;
+    steam:mw2|steam:mw3)
+      # 32-bit retail/offline MW2 & MW3 use the verified IW4/IW5 mtld3d D3D9 path;
+      # 64-bit Steam copies keep verified DXVK64 defaults unless D3D9_MTLD3D=2.
+      if [ "${s_api:-}" = d3d9 ] || [ "${D3D9_MTLD3D:-1}" = 2 ]; then mtld3d_active=1; fi ;;
+    steam:cod2)
+      # Uninstalled D3D9 Steam titles keep verified DXVK defaults; D3D9_MTLD3D=2 opts into mtld3d.
+      [ "${D3D9_MTLD3D:-1}" = 2 ] && mtld3d_active=1 ;;
+    steam:cod1|steam:uo)
+      # CoD 1 / UO via GLDirect 5 -> D3D9: keep verified DXVK default; D3D9_MTLD3D=2 opts into mtld3d.
+      [ "${D3D9_MTLD3D:-1}" = 2 ] && steam_gldirect && mtld3d_active=1 ;;
+  esac
+fi
+# displaymode's SIL_KEEP_UNSCALED for KEEP_HIDPI (0, 1 = Smart HiDPI default, 2):
+# On mtld3d (D3D9->Metal) and BO2 (lightweight DXMT), presenting a 1x drawable
+# over a scaled 5K HiDPI desktop holds 160 FPS flat with zero 5K stall — return
+# 3 so macOS stays razor-sharp HiDPI whenever 1x does not offer a higher Hz.
+# Heavy GPU-bound D3D11 titles (BO3/Ghosts/AW/IW/WWII/BO4) and DXVK/MoltenVK
+# fallback keep mode 1 (unscaled HiDPI kept; scaled 5K switched to 1x).
+keep_hidpi() {
+  case "${KEEP_HIDPI:-1}" in
+    0) echo 0 ;;
+    2) echo 2 ;;
+    *)
+      if [ "$mtld3d_active" = 1 ] || [ "$t" = t6 ] || [ "$t" = t6s ] ||
+         { [ "$t" = steam ] && [ "${s_kind:-}" = t6 ]; }; then
+        echo 3
+      else
+        echo 1
+      fi ;;
+  esac
+}
 hold_1x_size() { # "<width> <height>"
   [ -z "$held_1x" ] && [ "${DISPLAY_MODE:-1}" != 0 ] && [ -n "$1" ] || return 0
   local res=$1 log="$home/logs/displaymode.log" size i launch_pid=$$ keep=0
@@ -554,32 +833,51 @@ hold_1x_size() { # "<width> <height>"
   # shellcheck disable=SC2086
   SIL_KEEP_UNSCALED=$keep "$kit/tools/displaymode" $res $! >> "$log" 2>&1 &
   held_1x=1
-  for i in $(seq 25); do   # wait (up to 5 s) for the switch
+  for i in $(seq 50); do   # wait (up to 5 s) for the switch
     if [ "$(stat -f %z "$log" 2>/dev/null || echo 0)" != "$size" ]; then
       case "$(tail -n 1 "$log")" in
         "displaymode: no 1x "*|"displaymode: could not switch mode") display_1x_unavailable=1 ;;
       esac
       break
     fi
-    sleep 0.2
+    sleep 0.1
   done
 }
 # Controller aim as on the consoles: turn acceleration, the console turn
 # rates (260/90 degrees/s left-right/up-down, 90/55 aiming down sights) and
 # aim assist (slowdown and lock-on over targets). Mouse aim is not affected.
+# Single-pass awk replacement (avoids 24 grep/sed forks per .cfg file).
 console_aim() { # <game cfg>
   [ "${CONSOLE_AIM:-1}" != 0 ] && [ -f "$1" ] || return 0
-  local v
-  for v in aim_accel_turnrate_enabled=1 aim_accel_turnrate_lerp=1200 aim_input_graph_enabled=1 \
-           aim_input_graph_index=3 aim_scale_view_axis=1 aim_turnrate_yaw=260 aim_turnrate_pitch=90 \
-           aim_turnrate_yaw_ads=90 aim_turnrate_pitch_ads=55 aim_autoaim_enabled=1 \
-           aim_lockon_enabled=1 aim_slowdown_enabled=1; do
-    if grep -q "^seta ${v%%=*} " "$1"; then sed -i '' -E "s/^seta ${v%%=*} \"[^\"]*\"/seta ${v%%=*} \"${v#*=}\"/" "$1"
-    else printf 'seta %s "%s"\n' "${v%%=*}" "${v#*=}" >> "$1"; fi
-  done
+  local tmp
+  tmp=$(mktemp "$1.sil.XXXXXX") || return 0
+  if awk '
+    BEGIN {
+      n = split("aim_accel_turnrate_enabled=1 aim_accel_turnrate_lerp=1200 aim_input_graph_enabled=1 aim_input_graph_index=3 aim_scale_view_axis=1 aim_turnrate_yaw=260 aim_turnrate_pitch=90 aim_turnrate_yaw_ads=90 aim_turnrate_pitch_ads=55 aim_autoaim_enabled=1 aim_lockon_enabled=1 aim_slowdown_enabled=1", a, " ")
+      for (i = 1; i <= n; i++) {
+        p = index(a[i], "=")
+        k = substr(a[i], 1, p - 1); v = substr(a[i], p + 1)
+        order[i] = k; want[k] = v
+      }
+    }
+    $1 == "seta" && ($2 in want) {
+      k = $2; seen[k] = 1
+      if (sub(/^seta [^ ]+ "[^"]*"/, "seta " k " \"" want[k] "\"")) { print; next }
+      printf "seta %s \"%s\"\n", k, want[k]; next
+    }
+    { print }
+    END {
+      for (i = 1; i <= n; i++) {
+        k = order[i]
+        if (!(k in seen)) printf "seta %s \"%s\"\n", k, want[k]
+      }
+    }
+  ' "$1" > "$tmp"; then
+    cmp -s "$tmp" "$1" && rm -f "$tmp" || mv -f "$tmp" "$1"
+  else
+    rm -f "$tmp"
+  fi
 }
-# Patches and settings are on unless set to 0 (used before the display block).
-on() { [ "${!1:-1}" != 0 ]; }
 # The desktop's logical size and refresh rate. Read before the display block:
 # hold_1x_size starts the body from there, and on a first run there is no game
 # profile to read the size from. (After restore_display: never the size a
@@ -589,26 +887,14 @@ on() { [ "${!1:-1}" != 0 ]; }
 # the desktop's mode was the old hold's 1x one.
 case "$t" in t4|t5|t6|iw4|iw5|t7|steam|bnet|iw6) stop_displaymode ;; esac
 restore_display
-read -r dw dh hz < <("$kit/tools/displaymode" current 2>/dev/null || true)
-# The games held at the desktop's size (hold_1x_size) get the refresh rate of
-# the mode the display will be in while they run: what the hold will do
-# (displaymode plan: the same rule as the hold) - the 1x mode's rate when the
-# desktop is switched to 1x (a 2560x1440 panel scaled from 5120x2880 stops at
-# 154 Hz, its 1x mode runs at 160 Hz), the desktop's own when its HiDPI mode is
-# kept (a 4K panel at "looks like 1920x1080" 144 Hz: 144, never 160). Every
-# frame cap and refresh setting below follows it.
-case "$t" in
-  t4|t5|t6|iw4|iw5|t7|steam|bnet)   # (t6: Plutonium BO2's profile is held too, hold_1x)
-    # Steam's Ghosts runs borderless on the desktop as Siliconium's own Ghosts
-    # (t=iw6, not in this list): the desktop's rate, not the 1x mode's
-    desktop_rate=0
-    case "$t:${s_exe:-}" in steam:iw6sp64_ship.exe|steam:iw6mp64_ship.exe) desktop_rate=1 ;; esac
-    if [ "$desktop_rate" = 0 ] && on DISPLAY_MODE && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
-      read -r _ _ plan_hz plan_kind _ < <(SIL_KEEP_UNSCALED=$(keep_hidpi) "$kit/tools/displaymode" plan "$dw" "$dh" 2>/dev/null || true)
-      [[ ${plan_hz:-} =~ ^[1-9][0-9]*$ ]] && hz=$plan_hz
-      printf 'Siliconium: display %sx%s, %s Hz while the game runs (%s)\n' "$dw" "$dh" "${hz:-?}" "${plan_kind:-?}" >&2
-    fi ;;
-esac
+desktop_rate=0
+case "$t:${s_kind:-}" in iw6:*|steam:iw6) desktop_rate=1 ;; esac
+# Single displaymode call replaces separate current + plan invocations.
+read -r dw dh hz _ _ plan_hz plan_kind < <(SIL_KEEP_UNSCALED=$(keep_hidpi) "$kit/tools/displaymode" plan-full 2>/dev/null || true)
+if [ "$desktop_rate" = 0 ] && on DISPLAY_MODE && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
+  [[ ${plan_hz:-} =~ ^[1-9][0-9]*$ ]] && hz=$plan_hz
+  printf 'Siliconium: display %sx%s, %s Hz while the game runs (%s)\n' "$dw" "$dh" "${hz:-?}" "${plan_kind:-?}" >&2
+fi
 maxfps=${MAXFPS:-${hz:-0}}
 # DXVK's shader compiler threads: one per performance core, at most 8 (what an
 # M1 Pro/Max uses). On a 4-performance-core Mac (M1, M2, M3) 8 threads competed
@@ -617,6 +903,12 @@ dxvk_threads=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || sysctl -n hw.nc
 [[ $dxvk_threads =~ ^[0-9]+$ ]] || dxvk_threads=8
 [ "$dxvk_threads" -gt 8 ] && dxvk_threads=8
 [ "$dxvk_threads" -lt 2 ] && dxvk_threads=2
+# Universal Apple Silicon hardware probes (M1-M5+, 8-128 GB RAM) used by
+# first-start graphics defaults for heavy D3D11 titles (BO3, BO4, WWII).
+sil_ram_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 17179869184) / 1073741824 ))
+sil_gpu_cores=$(ioreg -rd1 -c IOAccelerator 2>/dev/null | awk -F'= ' '/gpu-core-count/{print $2; exit}')
+[[ ${sil_gpu_cores:-} =~ ^[0-9]+$ ]] || sil_gpu_cores=10
+export SIL_RAM_GB="$sil_ram_gb" SIL_GPU_CORES="$sil_gpu_cores" SIL_P_CORES="$dxvk_threads"
 case "$t:$mode" in
   t6c:*|t6s:*)   # the campaign: its own folder; fullscreen at the desktop's size
     # No fullscreen or display-mode change for BO2 (see the t6:mp note below).
@@ -674,15 +966,13 @@ esac
 
 # --- Environment for the games ---------------------------------------------
 # Plutonium starts the games with an environment built from HKCU\Environment.
-iw4_env_snapshot=
-if [ "$t" = iw4 ] && [ -r "$WINEPREFIX/user.reg" ]; then
-  # stop_all has flushed Wine's registry. Avoid starting a reg.exe process
-  # for every setting that already matches on repeated IW4X launches.
-  iw4_env_snapshot=$(awk '/^\[Environment\]/{ in_env=1; print; next } /^\[/{ in_env=0 } in_env' "$WINEPREFIX/user.reg")
-fi
-# Registry changes are queued and written by one regedit run (reg_flush)
-# before the next Wine program starts: one reg.exe per value took ~0.3 s
-# each, about 12 s of every launch.
+# Clean any temp .reg files left behind by an interrupted earlier run.
+rm -f "$home/cache"/sil-reg.* 2>/dev/null
+# stop_all has flushed Wine's registry to disk (or prewarm left it unchanged),
+# so reg_flush can diff queued changes against user.reg / system.reg and skip
+# spawning wine regedit /S completely when every setting already matches (~3-9 s saved).
+reg_disk_synced=1
+[ "${prewarm_active:-0}" = 1 ] && reg_disk_synced=0
 reg_pending=()
 reg() {   # reg add|delete <key> /v <name> [/d <data>] /f
   local op=$1 key=$2 name= data= s
@@ -704,36 +994,272 @@ reg() {   # reg add|delete <key> /v <name> [/d <data>] /f
 }
 reg_flush() {
   [ ${#reg_pending[@]} -gt 0 ] || return 0
-  local file line
+  local file rc=0
   file=$(mktemp "$home/cache/sil-reg.XXXXXX") || return 0
-  # Version 5 files are UTF-16 (a folder name can be any language)
-  { printf '\xff\xfe'
-    { printf 'Windows Registry Editor Version 5.00\r\n\r\n'
-      for line in "${reg_pending[@]}"; do printf '%s\r\n' "$line"; done
-    } | iconv -f UTF-8 -t UTF-16LE
-  } > "$file"
-  "$wine" regedit /S "$(sil_winpath "$file")" > /dev/null 2>&1 || true
+  # Diff queued changes against Wine's on-disk registry (when Wine is stopped,
+  # reg_disk_synced=1). If every setting already matches -> exit 10 (no-op).
+  # If changes are needed while Wine is stopped -> atomically patch user.reg /
+  # system.reg directly in ~15 ms (exit 11), skipping a 3-4 s cold wine regedit
+  # boot on every game switch. Falls back to plain-loader wine regedit /S (exit 0)
+  # if Wine is running or a hive cannot be patched directly.
+  /usr/bin/python3 -I - "$WINEPREFIX" "$reg_disk_synced" "${prewarm_active:-0}" "$file" "${reg_pending[@]}" <<'PY'
+import os, sys, tempfile, time
+
+prefix, synced, prewarm, out_path = sys.argv[1], sys.argv[2] == "1", sys.argv[3] == "1", sys.argv[4]
+pairs = sys.argv[5:]
+
+def parse_val_line(line):
+    if not line.startswith('"'):
+        return None
+    i, n = 1, len(line)
+    while i < n:
+        c = line[i]
+        if c == '\\' and i + 1 < n:
+            i += 2
+            continue
+        if c == '"':
+            if i + 1 < n and line[i + 1] == '=':
+                return line[1:i], line[i + 2:]
+            return None
+        i += 1
+    return None
+
+def load_wine_reg(path):
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    if not lines or lines[0] != "WINE REGISTRY Version 2":
+        return None
+    data = {}
+    sec = None
+    for line in lines:
+        if line.startswith("["):
+            r = line.rfind("]")
+            if r > 1:
+                sec = line[1:r].replace("\\\\", "\\").lower()
+        elif sec is not None and line.startswith('"'):
+            parsed = parse_val_line(line)
+            if parsed is not None:
+                data[(sec, parsed[0].lower())] = parsed[1]
+    return data, lines
+
+def patch_hive(path, lines, changes):
+    """Apply (sub_orig, sub_low, nlow, vline, val) ops to a Wine v2 hive file."""
+    by_sec = {}
+    sec_order = []
+    for sub_orig, sub_low, nlow, vline, val in changes:
+        if sub_low not in by_sec:
+            by_sec[sub_low] = (sub_orig, {})
+            sec_order.append(sub_low)
+        by_sec[sub_low][1][nlow] = (vline, val)
+
+    out = []
+    cur_sec = None
+    handled_secs = set()
+    pending_add = {}
+
+    def flush_pending():
+        nonlocal pending_add
+        if not pending_add:
+            return
+        # Insert before trailing blank lines of the section
+        blanks = []
+        while out and out[-1] == "":
+            blanks.append(out.pop())
+        for nlow, (vline, val) in pending_add.items():
+            if val != "-":
+                out.append(vline)
+        out.extend(reversed(blanks))
+        pending_add = {}
+
+    for line in lines:
+        if line.startswith("["):
+            flush_pending()
+            r = line.rfind("]")
+            cur_sec = line[1:r].replace("\\\\", "\\").lower() if r > 1 else None
+            out.append(line)
+            if cur_sec in by_sec and cur_sec not in handled_secs:
+                handled_secs.add(cur_sec)
+                pending_add = dict(by_sec[cur_sec][1])
+            continue
+        if cur_sec is not None and pending_add and line.startswith('"'):
+            parsed = parse_val_line(line)
+            if parsed is not None:
+                nlow = parsed[0].lower()
+                if nlow in pending_add:
+                    vline, val = pending_add.pop(nlow)
+                    if val != "-":
+                        out.append(vline)
+                    continue
+        out.append(line)
+    flush_pending()
+
+    ts = str(int(time.time()))
+    for sub_low in sec_order:
+        if sub_low in handled_secs:
+            continue
+        sub_orig, kv = by_sec[sub_low]
+        adds = [vline for vline, val in kv.values() if val != "-"]
+        if not adds:
+            continue
+        if out and out[-1] != "":
+            out.append("")
+        out.append("[%s] %s" % (sub_orig.replace("\\", "\\\\"), ts))
+        out.extend(adds)
+        out.append("")
+
+    payload = ("\n".join(out) + "\n").encode("utf-8", errors="surrogateescape")
+    folder = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix=".sil-hive-", dir=folder)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(payload)
+        try:
+            os.chmod(tmp, os.stat(path).st_mode & 0o777)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+# Collapse pending ops in order (last write wins per (section, value)).
+ops = {}
+order = []
+for i in range(0, len(pairs) - 1, 2):
+    hdr, vline = pairs[i], pairs[i + 1]
+    if not (hdr.startswith("[") and hdr.endswith("]")):
+        continue
+    key = hdr[1:-1]
+    parsed = parse_val_line(vline)
+    if parsed is None:
+        continue
+    name, val = parsed
+    uk = key.upper()
+    if uk.startswith("HKEY_CURRENT_USER\\"):
+        hive, sub_orig = "user.reg", key[len("HKEY_CURRENT_USER\\"):]
+    elif uk.startswith("HKEY_LOCAL_MACHINE\\"):
+        hive, sub_orig = "system.reg", key[len("HKEY_LOCAL_MACHINE\\"):]
+    else:
+        hive, sub_orig = None, key
+    sub = sub_orig.lower()
+    slot = (hive, sub, name.lower())
+    if slot not in ops:
+        order.append(slot)
+    ops[slot] = (hdr, sub_orig, vline, val)
+
+hives = {}
+kept = []
+diff_disk = synced or prewarm
+direct_ok = synced
+per_hive_changes = {}
+for slot in order:
+    hive, sub, nlow = slot
+    hdr, sub_orig, vline, val = ops[slot]
+    if hive is None:
+        direct_ok = False
+    if diff_disk and hive is not None:
+        if hive not in hives:
+            hives[hive] = load_wine_reg(os.path.join(prefix, hive))
+        loaded = hives[hive]
+        if loaded is not None:
+            reg_map = loaded[0]
+            cur = reg_map.get((sub, nlow))
+            if val == "-":
+                if cur is None:
+                    continue
+            else:
+                if cur == val:
+                    continue
+            per_hive_changes.setdefault(hive, []).append((sub_orig, sub, nlow, vline, val))
+        else:
+            direct_ok = False
+    kept.append((hdr, vline))
+
+if not kept:
+    sys.exit(10)
+
+if direct_ok and per_hive_changes:
+    try:
+        for hive, changes in per_hive_changes.items():
+            patch_hive(os.path.join(prefix, hive), hives[hive][1], changes)
+        sys.exit(11)
+    except OSError:
+        pass
+
+out = ["Windows Registry Editor Version 5.00", ""]
+last_hdr = None
+for hdr, vline in kept:
+    if hdr != last_hdr:
+        out.append(hdr)
+        last_hdr = hdr
+    out.append(vline)
+payload = ("\r\n".join(out) + "\r\n").encode("utf-16-le")
+with open(out_path, "wb") as f:
+    f.write(b"\xff\xfe" + payload)
+PY
+  rc=$?
+  if [ "$rc" = 10 ] || [ "$rc" = 11 ]; then
+    rm -f "$file"
+    reg_pending=()
+    return 0
+  elif [ "$rc" != 0 ]; then
+    # Fallback to direct UTF-16LE write if Python failed unexpectedly
+    local line
+    { printf '\xff\xfe'
+      { printf 'Windows Registry Editor Version 5.00\r\n\r\n'
+        for line in "${reg_pending[@]}"; do printf '%s\r\n' "$line"; done
+      } | iconv -f UTF-8 -t UTF-16LE
+    } > "$file"
+  fi
+  env -u WINELOADER "$plain_wine" regedit /S "$(sil_winpath "$file")" > /dev/null 2>&1 || true
   rm -f "$file"
   reg_pending=()
+  reg_disk_synced=0
 }
 set_env() {
   export "$1=$2"
-  if [ -n "$iw4_env_snapshot" ]; then
-    local encoded=${2//\\/\\\\}
-    encoded=${encoded//\"/\\\"}
-    grep -Fxq "\"$1\"=\"$encoded\"" <<< "$iw4_env_snapshot" && return 0
-  fi
   reg add 'HKCU\Environment' /v "$1" /d "$2" /f
 }
 clear_env() {
   unset "$1"
-  if [ -n "$iw4_env_snapshot" ] && ! grep -Fiq "\"$1\"=" <<< "$iw4_env_snapshot"; then return 0; fi
   reg delete 'HKCU\Environment' /v "$1" /f
+}
+# Fast mtime+size stamp wrapper around statecache-merge.py: avoids spawning
+# Python and SHA-1 hashing 20k+ entries on every launch when nothing changed.
+merge_statecache() {   # merge_statecache <target> <source>...
+  local target=$1 stamp sig= f st
+  shift
+  stamp="${target}.sil-merge.stamp"
+  for f in "$target" "$@"; do
+    if [ -f "$f" ]; then
+      st=$(stat -f '%m:%z' "$f" 2>/dev/null || echo 0:0)
+      sig+="${f}=${st};"
+    fi
+  done
+  [ -f "$target" ] && [ -f "$stamp" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$sig" ] && return 0
+  mkdir -p "$(dirname -- "$target")" 2>/dev/null || true
+  /usr/bin/python3 -I "$kit/tools/statecache-merge.py" "$target" "$@" 2>/dev/null || return 0
+  sig=
+  for f in "$target" "$@"; do
+    if [ -f "$f" ]; then
+      st=$(stat -f '%m:%z' "$f" 2>/dev/null || echo 0:0)
+      sig+="${f}=${st};"
+    fi
+  done
+  printf '%s' "$sig" > "$stamp" 2>/dev/null || true
 }
 # Variables an install of the previous name left in the prefix's environment
 legacy_env=$(printf 'B%sM_' O)
-grep -oE "^\"(__CX_UNIX_)?${legacy_env}[A-Z0-9_]+\"=" "$WINEPREFIX/user.reg" 2>/dev/null | tr -d '"=' |
-  while IFS= read -r v; do clear_env "$v"; done
+while IFS= read -r v; do [ -n "$v" ] && clear_env "$v"; done \
+  < <(grep -oE "^\"(__CX_UNIX_)?${legacy_env}[A-Z0-9_]+\"=" "$WINEPREFIX/user.reg" 2>/dev/null | tr -d '"=')
 
 # The D3D11 games share DXMT's shader and frame-pacing settings.
 dxmt_config() {
@@ -742,6 +1268,14 @@ dxmt_config() {
   else config="d3d11.asyncPipelineCompile=False;"; fi
   if [ "$cap" != 0 ] && on "${settings}_FRAME_PACING"; then
     config="d3d11.preferredMaxFrameRate=$cap;$config"
+  fi
+  # Optional DXMT spatial upscale factor (opt-in only via DXMT_UPSCALE_FACTOR,
+  # e.g. 1.3334 when running a game at 1080p on a 1440p monitor; DXMT upscales
+  # the swapchain UP from the game's resolution, unlike mtld3d's render.scale).
+  if [ -n "${DXMT_UPSCALE_FACTOR:-}" ]; then
+    local fx_factor
+    fx_factor=$(awk -v f="$DXMT_UPSCALE_FACTOR" 'BEGIN { if (f > 1.0 && f <= 2.0) printf "%.4f", f }')
+    [ -n "$fx_factor" ] && config="${config}d3d11.metalSpatialUpscaleFactor=${fx_factor};"
   fi
   # <GAME>_TESS_FACTOR=4..64: d3d11.maxTessFactor (upstream ef11653); only
   # DXMT builds that have it read it (none shipped now; DXMT ignores unknown
@@ -794,8 +1328,9 @@ if [ "$t" = iw6 ]; then
   #   off. What the player changes in the game's options afterwards is kept.
   if on IW6_TUNE && [ -f "$profile" ]; then
     tune_once=0; [ -f "$dir/players2/.sil-defaults-iw6" ] || tune_once=1
+    iw6_picmip=0; [ "${sil_ram_gb:-16}" -le 8 ] && iw6_picmip=1
     staged=$(mktemp "$profile.XXXXXX") || die "Could not stage the Ghosts video settings."
-    if awk -v once="$tune_once" '
+    if awk -v once="$tune_once" -v picmip="$iw6_picmip" '
       BEGIN {
         # r_subdiv: subdivision surfaces stream their vertices out of a
         # shader into several buffers; DXMT emulates only the first ("only
@@ -812,10 +1347,10 @@ if [ "$t" = iw6 ]; then
         n = split("cl_loadHBAODLL=0 cl_loadTXAADLL=0 r_apex_turbulence=0 r_ssao=0_Off r_tessellation=0_Off r_subdivLimit=0", a, " ")
         for (i = 1; i <= n; i++) { split(a[i], kv, "="); want[tolower(kv[1])] = kv[2]; name[tolower(kv[1])] = kv[1] }
         if (once) {
-          # textures at full resolution: on "automatic" (r_picmip_manual 0)
-          # Ghosts sizes them for the video memory it detects, and picked low
-          # ones on Apple GPUs
-          n = split("r_mbEnable=0 r_mbEnableA=0 r_fur_shader=0 r_picmip_manual=1 r_picmip=0 r_picmip_bump=0 r_picmip_spec=0 r_picmip_water=0", a, " ")
+          # textures at full resolution on 16+ GB Macs (8 GB Macs use picmip=1
+          # to avoid swap thrashing on Ghosts 6.7 GB footprint); VSync off so
+          # DXMT preferredMaxFrameRate paces cleanly.
+          n = split("r_vsync=0 r_mbEnable=0 r_mbEnableA=0 r_fur_shader=0 r_picmip_manual=1 r_picmip=" picmip " r_picmip_bump=" picmip " r_picmip_spec=" picmip " r_picmip_water=0", a, " ")
           for (i = 1; i <= n; i++) { split(a[i], kv, "="); want[tolower(kv[1])] = kv[2]; name[tolower(kv[1])] = kv[1] }
         }
       }
@@ -839,10 +1374,9 @@ if [ "$t" = iw6 ]; then
   if [ "${SIL_BO2_TRANSPARENT_CURSOR:-1}" = 0 ]; then unset SIL_BO2_TRANSPARENT_CURSOR
   else export SIL_BO2_TRANSPARENT_CURSOR=1; fi
   log="$home/logs/iw6-play.log"
-  "$wine" reg add 'HKCU\Software\Wine\AppDefaults\iw6sp64_ship.exe\Mac Driver' \
-    /v CaptureDisplaysForFullscreen /d n /f > "$log" 2>&1 ||
-    die "Ghosts could not configure its Wine prefix (see logs/iw6-play.log)"
-  "$WINESERVER" -w 2>/dev/null
+  : > "$log"
+  reg add 'HKCU\Software\Wine\AppDefaults\iw6sp64_ship.exe\Mac Driver' /v CaptureDisplaysForFullscreen /d n /f
+  reg_flush
   cd -- "$dir" || die "Could not open the Ghosts game folder."
   # Ghosts writes __iw6sp64_ship while it runs and removes it when it quits.
   # A game stopped from the app (or that crashed) leaves it, and the next start
@@ -952,6 +1486,16 @@ fi
 for v in $clear_vars; do
   if [ -n "${!v:-}" ] || grep -q "^\"$v\"=" "$WINEPREFIX/user.reg" 2>/dev/null; then clear_env "$v"; fi
 done
+# Mouse look (winemac): keep Wine's cursor position while mouse look is active
+# (WINE_MAC_MOUSELOOK=2; wine-winemac-mouselook-position.patch +
+# wine-winemac-mouselook-input.patch) across every game and launcher (Plutonium,
+# IW4X, CoD4X, BOIII/Ezz, Steam, Battle.net), except Ghosts and Advanced Warfare.
+case "$t:${s_kind:-}" in
+  iw6:*|steam:iw6|steam:s1) ml_mode="${WINE_MAC_MOUSELOOK:-0}" ;;
+  *)                        ml_mode="${WINE_MAC_MOUSELOOK:-2}" ;;
+esac
+export WINE_MAC_MOUSELOOK="$ml_mode"
+set_env __CX_UNIX_WINE_MAC_MOUSELOOK "$ml_mode"
 
 if [ "${X87:-1}" = 1 ] && [ -x "$engine/bin/x87sidecar" ]; then
   # Through payload/x87/x87-bundle (tools/x87-bundle.c) when the Game Mode
@@ -968,7 +1512,13 @@ if [ "${X87:-1}" = 1 ] && [ -x "$engine/bin/x87sidecar" ]; then
   # Plutonium's games, the campaign's t6sp.exe (it crashed under an older
   # sidecar; with x87sidecar 1.9 it runs, and is CPU-bound without it),
   # Modern Warfare 3's iw5mp.exe and Modern Warfare 2's iw4x.exe
-  if [ "$t" = steam ]; then set_env X87_SIDECAR_PROGRAMS "t6sp.exe:$steam_x87_programs"
+  if [ "$t" = steam ]; then
+    x87_list="t6sp.exe:$steam_x87_programs"
+    # 32-bit retail/offline MW2 & MW3 (or mixed-case 32-bit exes) also run under x87sidecar
+    if [ "${s_api:-}" = d3d9 ] || [ "${s_api:-}" = d3d11 ]; then
+      case ":$x87_list:" in *":$s_exe:"*) ;; *) x87_list="$x87_list:$s_exe" ;; esac
+    fi
+    set_env X87_SIDECAR_PROGRAMS "$x87_list"
   else set_env X87_SIDECAR_PROGRAMS plutonium-bootstrapper-win32.exe:t6sp.exe:iw5mp.exe:iw4x.exe:iw4x-sp.exe; fi
 else
   # X87=0: Rosetta's own x87 emulation (exact, if slower)
@@ -997,9 +1547,11 @@ if [ "$t" = iw5 ] || [ "$t" = iw4 ] || [ "$t" = steam ]; then
     # Keep MW3's pipeline list separate from the BO1 list we ship and merge.
     dxvk_cache="$dxvk_config_dir"
   elif [ "$t" = steam ]; then
-    # Steam Library: each game its own pipeline list and settings
+    # Steam Library / Your Own Game Files: each game its own pipeline list and settings
     shader_settings=STEAM
-    dxvk_config_dir="$dxvk_cache/steam-$s_id"
+    steam_cache_tag="steam-$s_id"
+    [ "${s_client:-}" = own ] && steam_cache_tag="own-$s_id"
+    dxvk_config_dir="$dxvk_cache/$steam_cache_tag"
     dxvk_cache="$dxvk_config_dir"
   fi
   mkdir -p "$dxvk_config_dir" || die "Could not create the $game graphics cache directory."
@@ -1068,36 +1620,99 @@ else
   else set_env MVKCACHE_OFF 1; set_env DXVK_STATE_CACHE 0; fi
 fi
 set_env MVK_CONFIG_PERFORMANCE_TRACKING 0
+# Silence MoltenVK info extension spam (360+ lines per VkInstance) and DXVK
+# info log file creation by default; explicit caller overrides still win.
+set_env MVK_CONFIG_LOG_LEVEL "${MVK_CONFIG_LOG_LEVEL:-1}"
+set_env DXVK_LOG_LEVEL "${DXVK_LOG_LEVEL:-none}"
+# Never leak BO1 MP's DXVK_T5MP_WARM into other Plutonium / Steam / IW games.
+if [ "$t" != t5 ] && grep -q '^"DXVK_T5MP_WARM"=' "$WINEPREFIX/user.reg" 2>/dev/null; then
+  clear_env DXVK_T5MP_WARM
+fi
+if [ "$mtld3d_active" = 1 ]; then
+  mtld3d_logs="$home/logs/mtld3d"
+  mkdir -p "$mtld3d_logs" 2>/dev/null || true
+  mtld3d_cfg="log.dir=\"Z:${mtld3d_logs//\//\\}\";present.maxFps=$maxfps;color.hdr.enable=false;query.eventImmediate=true"
+  # WaW and BO1 (Treyarch T4/T5 engine) poll occlusion queries with
+  # D3DGETDATA_FLUSH (sun flares, spotlights, fire); answering immediately avoids
+  # mid-frame Metal command-buffer flushes and periodic sawtooth frame spikes.
+  if [ "$t" = t4 ] || [ "$t" = t5 ] || { [ "$t" = steam ] && { [ "${s_id:-}" = waw ] || [ "${s_id:-}" = bo1 ]; }; }; then
+    mtld3d_cfg+=";query.flushImmediate=true"
+  fi
+  if [ "$t" = iw5 ]; then
+    on IW5_SHADER_CACHE || mtld3d_cfg+=";shaderCache.enable=false"
+    on IW5_ASYNC || mtld3d_cfg+=";shader.asyncCompile=false"
+  elif [ "$t" = steam ]; then
+    on STEAM_SHADER_CACHE || mtld3d_cfg+=";shaderCache.enable=false"
+    on STEAM_ASYNC || mtld3d_cfg+=";shader.asyncCompile=false"
+  else
+    on BO1_SHADER_CACHE || mtld3d_cfg+=";shaderCache.enable=false"
+    on BO1_ASYNC || mtld3d_cfg+=";shader.asyncCompile=false"
+  fi
+  # Optional MetalFX spatial scaling (METALFX_SCALE in [0.5, 0.99], default native 1.0).
+  if [ -n "${METALFX_SCALE:-}" ]; then
+    mtld3d_scale=$(awk -v s="$METALFX_SCALE" 'BEGIN { if (s >= 0.5 && s < 0.99) printf "%.2f", s }')
+    [ -n "$mtld3d_scale" ] && mtld3d_cfg+=";render.scale=$mtld3d_scale"
+  fi
+  [ -n "${MTLD3D_EXTRA:-}" ] && mtld3d_cfg+=";$MTLD3D_EXTRA"
+  set_env MTLD3D_CONFIG "$mtld3d_cfg"
+  set_env RUST_LOG "${RUST_LOG:-mtld3d=warn}"
+else
+  grep -q '^"MTLD3D_CONFIG"=' "$WINEPREFIX/user.reg" 2>/dev/null && clear_env MTLD3D_CONFIG
+  grep -q '^"RUST_LOG"=' "$WINEPREFIX/user.reg" 2>/dev/null && clear_env RUST_LOG
+fi
+bo1_cache="$home/cache/bo1"
 bo1_mp_cache="$home/cache/bo1-mp"
+t4_cache="$home/cache/t4"
 if [ "$t:$mode" = t5:mp ]; then
   mkdir -p "$bo1_mp_cache" || die "Could not create the Black Ops Multiplayer graphics cache directory."
   dxvk_cache="$bo1_mp_cache"
+elif [ "$t" = t5 ]; then
+  mkdir -p "$bo1_cache" || die "Could not create the Black Ops graphics cache directory."
+  dxvk_cache="$bo1_cache"
+elif [ "$t" = t4 ]; then
+  mkdir -p "$t4_cache" || die "Could not create the World at War graphics cache directory."
+  dxvk_cache="$t4_cache"
 fi
 set_env DXVK_STATE_CACHE_PATH "Z:${dxvk_cache//\//\\}"
-# MoltenVK compiles Metal libraries while deserializing a pipeline cache.
-# Keep IW4X, IW5 MP and BO1 MP from replaying other games' shaders.
+# Keep every D3D9 game's MoltenVK shader cache isolated so games never share or
+# bloat one another's pipeline shards (T4 WaW, T5 BO1 SP/ZM, T5 MP, IW4X, IW5).
 iw4_mvk_cache="$home/cache/iw4/mvkcache.bin"
 iw5_mvk_cache="$home/cache/iw5/mvkcache.bin"
+bo1_mvk_cache="$bo1_cache/mvkcache.bin"
 bo1_mp_mvk_cache="$bo1_mp_cache/mvkcache.bin"
+t4_mvk_cache="$t4_cache/mvkcache.bin"
 if [ "$t" = iw4 ]; then
   set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$iw4_mvk_cache}"
 elif [ "$t:$mode" = iw5:mp ]; then
   set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$iw5_mvk_cache}"
 elif [ "$t:$mode" = t5:mp ]; then
-  set_env MVKCACHE_FILE "$bo1_mp_mvk_cache"
+  set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$bo1_mp_mvk_cache}"
+elif [ "$t" = t5 ]; then
+  set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$bo1_mvk_cache}"
+elif [ "$t" = t4 ]; then
+  set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$t4_mvk_cache}"
 elif [ "$t" = steam ]; then
   # Black Ops Multiplayer keeps its own, as with Plutonium (bo1-mp)
-  if [ "${s_exe:-}" = BlackOpsMP.exe ]; then mkdir -p "$home/cache/steam-$s_id/mp"; set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$home/cache/steam-$s_id/mp/mvkcache.bin}"
-  else set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$home/cache/steam-$s_id/mvkcache.bin}"; fi
+  if [ "${s_exe:-}" = BlackOpsMP.exe ]; then mkdir -p "$home/cache/$steam_cache_tag/mp"; set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$home/cache/$steam_cache_tag/mp/mvkcache.bin}"
+  else set_env MVKCACHE_FILE "${MVKCACHE_FILE:-$home/cache/$steam_cache_tag/mvkcache.bin}"; fi
 elif grep -Fxq -e "\"MVKCACHE_FILE\"=\"$iw4_mvk_cache\"" \
                 -e "\"MVKCACHE_FILE\"=\"$iw5_mvk_cache\"" \
-                -e "\"MVKCACHE_FILE\"=\"$bo1_mp_mvk_cache\"" "$WINEPREFIX/user.reg" 2>/dev/null; then
+                -e "\"MVKCACHE_FILE\"=\"$bo1_mvk_cache\"" \
+                -e "\"MVKCACHE_FILE\"=\"$bo1_mp_mvk_cache\"" \
+                -e "\"MVKCACHE_FILE\"=\"$t4_mvk_cache\"" "$WINEPREFIX/user.reg" 2>/dev/null; then
   reg delete 'HKCU\Environment' /v MVKCACHE_FILE /f
 fi
+# Black Ops III (BOIII and Steam BO3): always run at native desktop WindowSize
+# (using BO3's own ResolutionPercent for crisp native-resolution HUD/menus;
+# DXMT's swapchain-level metalSpatialUpscaleFactor zooms/clips 1x fullscreen
+# menus and supersamples to 3413x1920 after Cmd+Tab or display-mode changes).
+# Advanced/dev callers can still set DXMT_UPSCALE_FACTOR explicitly.
+bo3_win_w=${dw:-} bo3_win_h=${dh:-} bo3_metalfx_active=0
+export SIL_BO3_WIN_W="$bo3_win_w" SIL_BO3_WIN_H="$bo3_win_h" SIL_BO3_METALFX="$bo3_metalfx_active"
 set_env DXMT_CONFIG "$(dxmt_config BO2 "$maxfps")"
 if [ "$t" = steam ] && [ "$s_kind" = iw6 ]; then
   steam_ids=; on IW6_GPU_ID && steam_ids="dxgi.customVendorId=1002;dxgi.customDeviceId=67df;"
-  set_env DXMT_CONFIG "$steam_ids$(dxmt_config IW6 "$maxfps")"
+  set_env DXMT_CONFIG "$steam_ids$(dxmt_config IW6 "${IW6_MAXFPS:-$maxfps}")"
 fi
 # Advanced Warfare: DXMT's defaults (async pipelines, pacing at the refresh
 # rate) without Ghosts' AMD GPU id; AW_ASYNC / AW_FRAME_PACING=0 turn them off
@@ -1151,23 +1766,20 @@ if [ "$t" = steam ] && [ "${s_kind:-}" = t6 ] && on BO2_SHARED_CACHE; then
     fi
     set_env DXMT_SHADER_CACHE_PATH "$shared"
   fi
-# Advanced Warfare with its own shader translator (AW_DXMT_FIX, when one is in the kit: see the Steam
-# block): its own translated-shader database, since DXMT keys translations by
-# shader and variant only and would reuse the ones the engine's translator made
+# Advanced Warfare with Siliconium's tessellation-fixed DXMT translator (now unified
+# in the engine's winemetal.so): keep its airconv-aw5 shader database so warm caches
+# stay hot and never reload stale pre-fix shaders from the default root folder.
 elif [ "$t" = steam ] && [ "${s_kind:-}" = s1 ] && { [ -f "${AW_DXMT_DIR:-/nonexistent}/x86_64-unix/winemetal.so" ] ||
-     { on AW_DXMT_FIX && [ -f "$kit/payload/steam/aw-winemetal.so" ]; }; }; then
+     on AW_DXMT_FIX; }; then
   aw_cache="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)dxmt/$s_exe/airconv-aw5"
   # a whole DXMT build under test (AW_DXMT_DIR): its own database
   [ -f "${AW_DXMT_DIR:-/nonexistent}/x86_64-unix/winemetal.so" ] && aw_cache="${aw_cache%/*}/test-$(basename "$AW_DXMT_DIR")"
   if [ "${aw_cache#/}" != "$aw_cache" ] && mkdir -p "$aw_cache"; then set_env DXMT_SHADER_CACHE_PATH "$aw_cache"
   else clear_env DXMT_SHADER_CACHE_PATH; fi
-# Infinite Warfare with the same translator (IW7_DXMT_FIX, see the Steam block):
-# its own database too, only when the clone will really be made. IW7-Mod
-# (iw7-mod.exe) draws the same game's shaders: it uses Steam's Infinite
-# Warfare's database and Metal's compiled shaders (iw7_ship.exe's, a link as
-# for Black Ops II above), so neither starts cold after the other was played
-# (the first cold "Preloading Shaders" took ~3.5 min, session 20)
-elif [ "$t" = steam ] && [ "${s_kind:-}" = iw7 ] && on IW7_DXMT_FIX && [ -f "$kit/payload/steam/aw-winemetal.so" ] &&
+# Infinite Warfare & IW7-Mod with the unified tessellation-fixed DXMT translator:
+# share iw7_ship.exe/airconv-aw5 and Metal's compiled shaders so neither starts
+# cold after the other was played (first cold "Preloading Shaders" ~3.5 min).
+elif [ "$t" = steam ] && [ "${s_kind:-}" = iw7 ] && on IW7_DXMT_FIX &&
      cmp -s "$engine/lib/wine/x86_64-windows/winemetal.dll" "$kit/payload/dxmt/x86_64-windows/winemetal.dll"; then
   iw_cache="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)dxmt/iw7_ship.exe/airconv-aw5"
   if [ "${iw_cache#/}" != "$iw_cache" ] && mkdir -p "$iw_cache"; then set_env DXMT_SHADER_CACHE_PATH "$iw_cache"
@@ -1189,9 +1801,15 @@ elif [ "$t" = steam ] && [ -f "${SIL_DXMT_SO:-/nonexistent}" ] && case "${SIL_DX
 elif [ "$t" = steam ]; then
   clear_env DXMT_SHADER_CACHE_PATH
 fi
-# a MetalFX setting left by an earlier Siliconium build
-{ grep -q '^"DXMT_METALFX_SPATIAL_SWAPCHAIN"=' "$WINEPREFIX/user.reg" 2>/dev/null &&
-  clear_env DXMT_METALFX_SPATIAL_SWAPCHAIN; }
+# Enable DXMT MetalFX spatial swapchain only when DXMT_UPSCALE_FACTOR is
+# explicitly set in (1.0, 2.0]; otherwise clear any stale registry entry.
+if [ -n "${DXMT_UPSCALE_FACTOR:-}" ] &&
+   [ -n "$(awk -v f="$DXMT_UPSCALE_FACTOR" 'BEGIN { if (f > 1.0 && f <= 2.0) print 1 }')" ]; then
+  set_env DXMT_METALFX_SPATIAL_SWAPCHAIN 1
+else
+  { grep -q '^"DXMT_METALFX_SPATIAL_SWAPCHAIN"=' "$WINEPREFIX/user.reg" 2>/dev/null &&
+    clear_env DXMT_METALFX_SPATIAL_SWAPCHAIN; }
+fi
 set_env CX_GRAPHICS_BACKEND dxmt
 for v in MTL_HUD_ENABLED MVKCACHE_FPS MVKCACHE_LOG BO_STATS BO_DRLOG; do
   if [ -n "${!v:-}" ]; then set_env "$v" "${!v}"; else clear_env "$v"; fi
@@ -1235,8 +1853,8 @@ if [ "$t" = iw4 ]; then
 fi
 # The Plutonium launcher's window is drawn with OpenGL.
 reg add 'HKCU\Software\Wine\AppDefaults\plutonium-launcher-win32.exe\Direct3D' /v renderer /d gl /f
-reg_flush
-[ "$t" = t6c ] || [ "$t" = steam ] || "$WINESERVER" -w 2>/dev/null   # the campaign's Steam never exits
+# (Each launch branch flushes the combined registry queue once right before
+# starting Wine, avoiding redundant cold regedit + wineserver -w round trips.)
 
 # --- macOS input ----------------------------------------------------------------
 # Holding a key (W, A, S, D…) would open macOS's accent menu in the game's window:
@@ -1268,14 +1886,115 @@ if [ "$t" = bnet ]; then
   exit $?
 fi
 
+# Direct3D 9 -> Metal (patched mtld3d v0.15.5, macOS 15+) in its own persistent
+# stamped engine clone so the base engine stays clean for DXVK fallback
+# (D3D9_MTLD3D=0) and LaunchServices / Apple Metal binary caches stay warm.
+mtld3d_cache_clean=0
+prepare_mtld3d_engine() {
+  local src="$kit/payload/mtld3d" persist="$home/cache/mtld3d-engine" new sig entry win
+  [ -f "$src/x86_64-unix/mtld3d.so" ] && [ -f "$src/i386-windows/d3d9.dll" ] || return 1
+  win="$WINEPREFIX/drive_c/windows"
+  mkdir -p "$win/syswow64" "$win/system32" 2>/dev/null || true
+  if [ -f "$src/prefix-markers/syswow64/mtld3d.dll" ]; then
+    cmp -s "$src/prefix-markers/syswow64/mtld3d.dll" "$win/syswow64/mtld3d.dll" ||
+      cp "$src/prefix-markers/syswow64/mtld3d.dll" "$win/syswow64/mtld3d.dll" || return 1
+  fi
+  if [ -f "$src/prefix-markers/system32/mtld3d.dll" ]; then
+    cmp -s "$src/prefix-markers/system32/mtld3d.dll" "$win/system32/mtld3d.dll" ||
+      cp "$src/prefix-markers/system32/mtld3d.dll" "$win/system32/mtld3d.dll" || return 1
+  fi
+  sig=$(stat -f '%m:%z' \
+    "$engine/siliconium.version" \
+    "$engine/lib/wine/x86_64-unix/winemac.so" \
+    "$engine/lib/wine/x86_64-unix/winecoreaudio.so" \
+    "$engine/lib/wine/x86_64-unix/ntdll.so" \
+    "$engine/lib/wine/x86_64-unix/winebus.so" \
+    "$engine/lib/wine/x86_64-unix/winemetal.so" \
+    "$engine/lib/wine/i386-windows/xinput1_3.dll" \
+    "$engine/lib/wine/i386-windows/dsound.dll" \
+    "$engine/lib/wine/x86_64-windows/winebus.sys" \
+    "$src/x86_64-unix/mtld3d.so" \
+    "$src/i386-windows/d3d9.dll" 2>/dev/null | tr '\n' ';')
+  if [ -x "$persist/lib/wine/x86_64-unix/wine" ] &&
+     [ -f "$persist/lib/wine/x86_64-unix/mtld3d.so" ] &&
+     [ "$(cat "$persist/.sil-stamp" 2>/dev/null)" = "$sig" ]; then
+    mtld3d_engine=$persist
+    return 0
+  fi
+  new="$persist.new"
+  rm -rf "$new"
+  mkdir -p "$new/lib" || return 1
+  for entry in "$engine"/*; do
+    [ "${entry##*/}" = lib ] || ln -s "$entry" "$new/" || { rm -rf "$new"; return 1; }
+  done
+  for entry in "$engine/lib"/*; do
+    [ "${entry##*/}" = wine ] || ln -s "$entry" "$new/lib/" || { rm -rf "$new"; return 1; }
+  done
+  if cp -cRp "$engine/lib/wine" "$new/lib/wine" &&
+     cp "$src/i386-windows/d3d9.dll" "$src/i386-windows/mtld3d.dll" "$new/lib/wine/i386-windows/" &&
+     cp "$src/x86_64-windows/d3d9.dll" "$src/x86_64-windows/mtld3d.dll" "$new/lib/wine/x86_64-windows/" &&
+     cp "$src/x86_64-unix/mtld3d.so" "$new/lib/wine/x86_64-unix/" &&
+     codesign -fs - "$new/lib/wine/x86_64-unix/mtld3d.so" 2>/dev/null &&
+     printf '%s' "$sig" > "$new/.sil-stamp" &&
+     { rm -rf "$persist" && mv "$new" "$persist"; }; then
+    mtld3d_engine=$persist
+    return 0
+  fi
+  rm -rf "$new"
+  return 1
+}
+
+# Keep each D3D9 game's mtld3d_shaders.bin isolated under cache/<game>/
+# (Plutonium shares plutonium/bin across T4/T5/T5 MP/IW5; Steam game folders stay clean).
+mtld3d_save_cache() {
+  if [ -n "${mtld3d_cache_file:-}" ] && [ -f "${mtld3d_plut_bin:-}" ]; then
+    mkdir -p "$(dirname -- "$mtld3d_cache_file")" 2>/dev/null || true
+    cp -f "$mtld3d_plut_bin" "${mtld3d_cache_file}.tmp" 2>/dev/null &&
+      mv -f "${mtld3d_cache_file}.tmp" "$mtld3d_cache_file" 2>/dev/null || true
+    [ "${mtld3d_cache_clean:-0}" = 1 ] && rm -f "$mtld3d_plut_bin" "${mtld3d_plut_bin}.tmp" 2>/dev/null || true
+  fi
+}
+mtld3d_stage_cache() {   # mtld3d_stage_cache <per-game cache file> [run_dir] [clean]
+  local target=$1 run_dir=${2:-"$plutonium/bin"} clean_flag=${3:-0} owner_file prev
+  mtld3d_cache_file=$target
+  mtld3d_plut_bin="$run_dir/mtld3d_shaders.bin"
+  mtld3d_cache_clean=0
+  [ "$clean_flag" = clean ] && mtld3d_cache_clean=1
+  [ -d "$run_dir" ] || return 0
+  owner_file="$run_dir/.sil-mtld3d-owner"
+  if [ "$mtld3d_cache_clean" = 0 ]; then
+    prev=$(cat "$owner_file" 2>/dev/null || true)
+    if [ -n "$prev" ] && [ "$prev" != "$target" ] && [ -f "$mtld3d_plut_bin" ]; then
+      mkdir -p "$(dirname -- "$prev")" 2>/dev/null || true
+      cp -f "$mtld3d_plut_bin" "${prev}.tmp" 2>/dev/null && mv -f "${prev}.tmp" "$prev" 2>/dev/null || true
+    fi
+    printf '%s' "$target" > "$owner_file" 2>/dev/null || true
+  fi
+  if [ -f "$target" ]; then
+    cp -f "$target" "$mtld3d_plut_bin" 2>/dev/null || true
+  else
+    rm -f "$mtld3d_plut_bin" "${mtld3d_plut_bin}.tmp" 2>/dev/null || true
+  fi
+  [ "$mtld3d_cache_clean" = 0 ] && trap mtld3d_save_cache EXIT
+}
+
 # --- The Steam Library (prefix-steam) -------------------------------------------
 # Steam (restarted above, so it and the game it starts get this environment
 # and the 1x display mode) signs in by itself and starts the game: as its own
 # Steam app when the part has one, else its executable with Steam's app ID.
 if [ "$t" = steam ]; then
+  if [ "$mtld3d_active" = 1 ]; then
+    if ! prepare_mtld3d_engine; then
+      mtld3d_active=0
+      mtld3d_engine=
+      clear_env MTLD3D_CONFIG
+      clear_env RUST_LOG
+    fi
+  fi
   steamdir="$WINEPREFIX/drive_c/Program Files (x86)/Steam"
   log="$home/logs/steam-$s_id-$s_part.log"
-  [ -n "${s_client:-}" ] && log="$home/logs/$s_client.log"
+  if [ "${s_client:-}" = own ]; then log="$home/logs/own-$s_id-$s_part.log"
+  elif [ -n "${s_client:-}" ]; then log="$home/logs/$s_client.log"; fi
   log_cap "$log"
   case "$s_kind" in
     iw6) capture=n ;;            # borderless
@@ -1288,17 +2007,24 @@ if [ "$t" = steam ]; then
   esac
   reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\Mac Driver" /v CaptureDisplaysForFullscreen /d "$capture" /f
   if [ "$s_api" = d3d9x64 ]; then
-    steam_dxvk64 "$WINEPREFIX" "$kit" ||
-      die "Could not install DXVK for $s_name (64-bit Direct3D 9): reinstall Siliconium."
-    reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d9 /d native /f
+    if [ "$mtld3d_active" = 1 ]; then
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d9 /d builtin /f
+    else
+      steam_dxvk64 "$WINEPREFIX" "$kit" ||
+        die "Could not install DXVK for $s_name (64-bit Direct3D 9): reinstall Siliconium."
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d9 /d native /f
+    fi
   fi
   # Black Ops Multiplayer: Plutonium's multiplayer renderer (payload/bo1/
   # mp-d3d9.dll, our DXVK with the multiplayer warming flag, DXVK_T5MP_WARM;
   # Steam's BlackOpsMP.exe is the executable Plutonium runs) for that
   # executable only, from Steam's 32-bit system folder; every other 32-bit
-  # Direct3D 9 game of the section keeps the engine's own DXVK (builtin)
-  if [ "$s_api" = d3d9 ]; then
-    if [ "$s_exe" = BlackOpsMP.exe ] && on BO1_MP_FAST_LOAD && on BO1_WARM && on BO1_ASYNC &&
+  # Direct3D 9 game of the section keeps the engine's own DXVK or mtld3d (builtin)
+  if [ "$s_api" = d3d9 ] || { [ "$s_api" = gl ] && [ "$mtld3d_active" = 1 ]; }; then
+    if [ "$mtld3d_active" = 1 ]; then
+      reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v d3d9 /d builtin /f
+      clear_env DXVK_T5MP_WARM
+    elif [ "$s_exe" = BlackOpsMP.exe ] && on BO1_MP_FAST_LOAD && on BO1_WARM && on BO1_ASYNC &&
        [ -f "$kit/payload/bo1/mp-d3d9.dll" ]; then
       # The renderer carries Wine's builtin mark (Plutonium puts it in a copy of
       # the engine's DLL folder); as a native DLL Wine would take it for a
@@ -1410,40 +2136,31 @@ if [ "$t" = steam ]; then
       reg add "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v wininet /d builtin /f
     fi
   fi
-  # Advanced Warfare with its own shader translator (winemetal.so, the unix
-  # half of DXMT, kit/payload/steam/aw-winemetal.so = v0.80 +
-  # patches/dxmt-airconv-ts-workloads-v0.80.patch): DXMT's emulated
-  # tessellation declared fewer mesh workloads than its quad generator emits,
-  # and AW's GPU page-faulted seconds into play. winemetal.so is shared by
-  # every Direct3D 11 game and Wine prefers the built-in modules next to its
-  # own loader, so AW runs from a clone of the engine's lib/wine with that
-  # file replaced (as Black Ops Multiplayer's renderer); every other game
-  # keeps the engine untouched. AW_DXMT_DIR (development only, see above)
-  # puts a whole DXMT build in that clone.
+  # The tessellation-fixed DXMT winemetal.so (patches/dxmt-airconv-ts-workloads-v0.80.patch)
+  # is now unified directly into the base engine, so AW, IW, and IW7-Mod run straight
+  # on $engine with zero clone overhead. Keep ephemeral engine clones only for the
+  # AW_DXMT_DIR and SIL_DXMT_SO developer A/B testing hooks, and remove any legacy
+  # $home/cache/aw-engine clone left by older builds.
   aw_engine=
+  aw_engine_ephemeral=0
   sil_so=
   [ -f "${SIL_DXMT_SO:-/nonexistent}" ] && case "${SIL_DXMT_CACHE:-}" in /?*) true ;; *) false ;; esac && sil_so=$SIL_DXMT_SO
-  # Infinite Warfare (iw7, IW7_DXMT_FIX) runs from the same clone: its
-  # tessellation shaders use the same quad generator (dxmt.generate_workload.
-  # quad.integer) and with only the DLL above its GPU page-faulted ~1.5 min
-  # into its first mission, as AW's did (session 20)
-  if [ -n "${aw_dxmt_dir:-}" ] || [ -n "$sil_so" ] || { { { [ "${s_kind:-}" = s1 ] && on AW_DXMT_FIX; } || { [ "${s_kind:-}" = iw7 ] && on IW7_DXMT_FIX; }; } &&
-     [ -f "$kit/payload/steam/aw-winemetal.so" ] &&
-     cmp -s "$engine/lib/wine/x86_64-windows/winemetal.dll" "$kit/payload/dxmt/x86_64-windows/winemetal.dll"; }; then
-    # (the PE half it must pair with: DXMT v0.80's; the engine's .so is re-signed, so not byte-equal)
-    for old in "$home/cache"/aw-engine.*; do   # left by a run that did not end normally
+  [ -d "$home/cache/aw-engine" ] && rm -rf "$home/cache/aw-engine" 2>/dev/null || true
+  if [ -n "${aw_dxmt_dir:-}" ] || [ -n "$sil_so" ]; then
+    for old in "$home/cache"/aw-engine.*; do   # left by earlier ephemeral runs
       [ -d "$old" ] && /usr/bin/python3 -I -c 'import shutil, sys; shutil.rmtree(sys.argv[1])' "$old"
     done
+    aw_so="$kit/payload/dxmt/x86_64-unix/winemetal.so"; [ -n "${aw_dxmt_dir:-}" ] && aw_so="$aw_dxmt_dir/x86_64-unix/winemetal.so"
+    [ -n "$sil_so" ] && aw_so=$sil_so
     if aw_engine=$(mktemp -d "$home/cache/aw-engine.XXXXXX") && mkdir "$aw_engine/lib"; then
+      aw_engine_ephemeral=1
       for entry in "$engine"/*; do [ "${entry##*/}" = lib ] || ln -s "$entry" "$aw_engine/"; done
       for entry in "$engine/lib"/*; do [ "${entry##*/}" = wine ] || ln -s "$entry" "$aw_engine/lib/"; done
-      aw_so="$kit/payload/steam/aw-winemetal.so"; [ -n "${aw_dxmt_dir:-}" ] && aw_so="$aw_dxmt_dir/x86_64-unix/winemetal.so"
-      [ -n "$sil_so" ] && aw_so=$sil_so
       if ! { cp -cRp "$engine/lib/wine" "$aw_engine/lib/wine" &&
              { [ -z "${aw_dxmt_dir:-}" ] || cp "$aw_dxmt_dir"/x86_64-windows/*.dll "$aw_engine/lib/wine/x86_64-windows/"; } &&
              cp "$aw_so" "$aw_engine/lib/wine/x86_64-unix/winemetal.so" &&
              codesign -fs - "$aw_engine/lib/wine/x86_64-unix/winemetal.so" 2>/dev/null; }; then
-        /usr/bin/python3 -I -c 'import shutil, sys; shutil.rmtree(sys.argv[1])' "$aw_engine"; aw_engine=
+        /usr/bin/python3 -I -c 'import shutil, sys; shutil.rmtree(sys.argv[1])' "$aw_engine"; aw_engine=; aw_engine_ephemeral=0
       fi
     else
       aw_engine=
@@ -1455,14 +2172,17 @@ if [ "$t" = steam ]; then
   # instead of while it is played. As with Plutonium: World at War's list for
   # both parts (Plutonium's T4 multiplayer uses the same cache), Black Ops'
   # for the campaign/Zombies only (its multiplayer learns its own)
-  case "$s_exe" in
-    BlackOps.exe) on BO1_SHADER_CACHE && /usr/bin/python3 -I "$kit/tools/statecache-merge.py" \
-      "$home/cache/steam-bo1/BlackOps.dxvk-cache" "$kit/payload/bo1/pipelines.dxvk-cache" \
-      "$home/cache/plutonium-bootstrapper-win32.dxvk-cache" 2>/dev/null || true ;;
-    CoDWaW.exe|CoDWaWmp.exe) on WAW_PIPELINES && /usr/bin/python3 -I "$kit/tools/statecache-merge.py" \
-      "$home/cache/steam-waw/${s_exe%.exe}.dxvk-cache" "$kit/payload/waw/pipelines.dxvk-cache" \
-      "$home/cache/plutonium-bootstrapper-win32.dxvk-cache" 2>/dev/null || true ;;
-  esac
+  if [ "$mtld3d_active" = 0 ]; then
+    case "$s_exe" in
+      BlackOps.exe) on BO1_SHADER_CACHE && merge_statecache \
+        "$home/cache/steam-bo1/BlackOps.dxvk-cache" "$kit/payload/bo1/pipelines.dxvk-cache" \
+        "$home/cache/bo1/plutonium-bootstrapper-win32.dxvk-cache" \
+        "$home/cache/plutonium-bootstrapper-win32.dxvk-cache" ;;
+      CoDWaW.exe|CoDWaWmp.exe) on WAW_PIPELINES && merge_statecache \
+        "$home/cache/steam-waw/${s_exe%.exe}.dxvk-cache" "$kit/payload/waw/pipelines.dxvk-cache" \
+        "$home/cache/t4/plutonium-bootstrapper-win32.dxvk-cache" ;;
+    esac
+  fi
   # Black Ops, Black Ops II Zombies/Multiplayer and World at War: their own
   # XAudio2 from the game's redist, as with Plutonium (Wine's left Black Ops'
   # gunfire silent, BO2's on some Macs, and World at War's music broken);
@@ -1501,6 +2221,58 @@ if [ "$t" = steam ]; then
       reg delete "HKCU\\Software\\Wine\\AppDefaults\\$s_exe\\DllOverrides" /v "$xa_lc" /f
     fi
   fi
+  # Offline Black Ops II packs ("Your Own Game Files"): common community packs
+  # ship with localization.txt set to a language whose audio bank is missing
+  # (e.g. polish without sound/cmn_root.polish.sabs, causing a silent hang at a
+  # black screen right after R_Init) or with steam_api.dll left on the MP/ZM
+  # variant instead of steam_api.dll_sp. Auto-repair both safely (backing up the
+  # original localization.txt once) so Campaign boots out of the box.
+  if [ "${s_client:-}" = own ] && [ "$s_id" = bo2 ]; then
+    if [ -f "$dir/localization.txt" ] && [ -d "$dir/sound" ]; then
+      bo2_loc=$(head -n 1 "$dir/localization.txt" 2>/dev/null | LC_ALL=C tr -cd 'A-Za-z_' | tr '[:upper:]' '[:lower:]')
+      if [ -z "$bo2_loc" ] || [ ! -f "$dir/sound/cmn_root.$bo2_loc.sabs" ] || [ ! -d "$dir/zone/$bo2_loc" ]; then
+        bo2_pick=
+        for bo2_cand in english spanish french german italian russian polish; do
+          if [ -f "$dir/sound/cmn_root.$bo2_cand.sabs" ] && [ -d "$dir/zone/$bo2_cand" ]; then
+            bo2_pick=$bo2_cand; break
+          fi
+        done
+        if [ -z "$bo2_pick" ]; then
+          for bo2_sabs in "$dir/sound"/cmn_root.*.sabs; do
+            bo2_cand=${bo2_sabs##*/cmn_root.}
+            bo2_cand=${bo2_cand%.sabs}
+            [ "$bo2_cand" = all ] && continue
+            if [ -f "$bo2_sabs" ] && [ -d "$dir/zone/$bo2_cand" ]; then
+              bo2_pick=$bo2_cand; break
+            fi
+          done
+        fi
+        if [ -n "$bo2_pick" ]; then
+          [ -f "$dir/localization.txt.sil-orig" ] || cp -p "$dir/localization.txt" "$dir/localization.txt.sil-orig" 2>/dev/null || true
+          bo2_sw=
+          if [ -d "$dir/_Language Switcher" ]; then
+            bo2_sw=$(find "$dir/_Language Switcher" -maxdepth 2 -iname 'localization.txt' 2>/dev/null | awk -v lang="$bo2_pick" 'tolower($0) ~ "/" lang "/localization\\.txt$" { print; exit }')
+          fi
+          if [ -n "$bo2_sw" ] && [ -f "$bo2_sw" ]; then
+            cp -f "$bo2_sw" "$dir/localization.txt"
+          else
+            bo2_tmp=$(mktemp "$dir/localization.txt.XXXXXX") &&
+              awk -v lang="$bo2_pick" 'NR == 1 { printf "%s\r\n", lang; next } { print } END { if (NR == 0) printf "%s\r\n", lang }' "$dir/localization.txt" > "$bo2_tmp" &&
+              mv -f "$bo2_tmp" "$dir/localization.txt" || rm -f "${bo2_tmp:-}"
+          fi
+          printf '%s\n' "--- $(date) BO2 offline auto-repair: localization.txt ($bo2_loc -> $bo2_pick; missing sound/cmn_root.$bo2_loc.sabs or zone/$bo2_loc)" >> "$log"
+        fi
+      fi
+    fi
+    if [ "$s_part" = sp ] && [ -f "$dir/steam_api.dll_sp" ] && ! cmp -s "$dir/steam_api.dll_sp" "$dir/steam_api.dll" 2>/dev/null; then
+      if [ -f "$dir/steam_api.dll" ] && [ ! -f "$dir/steam_api.dll.sil-orig" ] &&
+         { [ ! -f "$dir/steam_api.dll_zmp" ] || ! cmp -s "$dir/steam_api.dll" "$dir/steam_api.dll_zmp" 2>/dev/null; }; then
+        cp -p "$dir/steam_api.dll" "$dir/steam_api.dll.sil-orig" 2>/dev/null || true
+      fi
+      cp -f "$dir/steam_api.dll_sp" "$dir/steam_api.dll" &&
+        printf '%s\n' "--- $(date) BO2 offline auto-repair: synced steam_api.dll from steam_api.dll_sp" >> "$log"
+    fi
+  fi
   # Black Ops II: the hardware profile made on an Apple GPU, once (as for the campaign)
   if [ "$s_kind" = t6 ] && on BO2_HW_PROFILE && [ ! -f "$dir/players/.sil-defaults-hardware" ]; then
     mkdir -p "$dir/players"
@@ -1509,11 +2281,6 @@ if [ "$t" = steam ]; then
   # (fullscreen at the desktop's size every start, as the Steam Library's
   # other games: STEAM_SCREEN=0 leaves BO2's own choice)
   [ "$s_kind" = t6 ] && [ "${STEAM_SCREEN:-1}" != 0 ] && bo2_hw_screen "$dir/players" - "$dir"/players/hardware*.chp
-  # Controller aim as on the consoles, in the games with controller support
-  case "$s_kind" in
-    t6)  for c in "$dir"/players/*.cfg; do console_aim "$c"; done ;;
-    iw6) for c in "$dir"/players2/*.cfg; do console_aim "$c"; done ;;
-  esac
   # "did not quit properly / run in safe mode?" markers (__<exe>) left by a
   # game stopped from the app or a crash: the app starts a game only when it
   # is not running, so they are stale here
@@ -1592,8 +2359,8 @@ if [ "$t" = steam ]; then
   case "$s_api" in gl|d3d9|d3d11) set_env WINE_LARGE_ADDRESS_AWARE 1 ;; *) clear_env WINE_LARGE_ADDRESS_AWARE ;; esac
   # DXVK's logs go to Siliconium's logs, not into the game's folder
   mkdir -p "$home/logs/dxvk"; set_env DXVK_LOG_PATH "Z:${home//\//\\}\\logs\\dxvk"
-  marker="$home/cache/steam-$s_id/.started-$s_part"; mkdir -p "$home/cache/steam-$s_id"
-  [ -n "${s_client:-}" ] && marker="$home/cache/steam-$s_id/.started-$s_client"
+  marker="$home/cache/$steam_cache_tag/.started-$s_part"; mkdir -p "$home/cache/$steam_cache_tag"
+  [ -n "${s_client:-}" ] && [ "${s_client:-}" != own ] && marker="$home/cache/$steam_cache_tag/.started-$s_client"
   first=1; [ -f "$marker" ] && first=0
   steam_args "${dw:-}" "${dh:-}" "${hz:-}" "$first"
   if [ "${s_client:-}" = cod4x ]; then
@@ -1602,17 +2369,22 @@ if [ "$t" = steam ]; then
     # start 2026-11-21), not in the game's folder: its settings go there
     mkdir -p "$c4_home/players/profiles"
     steam_config "$c4_home" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/steam-$s_id/$s_client-home"
-  elif [ -n "${s_client:-}" ]; then
+  elif [ "${s_client:-}" = iw7mod ]; then
     # IW7-Mod moves the game's profile to <game>\iw7-mod\players2 (its
     # filesystem.cpp) and writes the dvars without a readable name as the game
     # does (setcl <checksum>): the same two values, in its profile
     steam_config "$dir/iw7-mod" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/steam-$s_id/$s_client-home"
   else
-    steam_config "$dir" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/steam-$s_id"
+    steam_config "$dir" "${dw:-}" "${dh:-}" "${hz:-}" "$home/cache/$steam_cache_tag"
   fi
+  # Controller aim as on the consoles (after steam_config so first-start profiles exist)
+  case "$s_kind" in
+    t6)  for c in "$dir"/players/*.cfg; do console_aim "$c"; done ;;
+    iw6) for c in "$dir"/players2/*.cfg; do console_aim "$c"; done ;;
+  esac
   # shellcheck disable=SC2206
   [ -n "${GAME_ARGS:-}" ] && s_argv+=($GAME_ARGS)
-  [ -n "${s_client:-}" ] || steam_mod_args "$dir"
+  if [ -z "${s_client:-}" ] || [ "${s_client:-}" = own ]; then steam_mod_args "$dir"; fi
   # IW7-Mod without Steam: -nosteam takes the path it takes when no Steam is
   # installed (stand-ins for Steam's client and overlay; its own Steam API),
   # so every Mac plays it the same way, with or without Steam in this prefix
@@ -1649,10 +2421,10 @@ if [ "$t" = steam ]; then
   else exit 1; fi
   signed=
   # Steam's sign-in: up to 3 minutes (CoD4X: 90 s, then it starts anyway)
-  tries=90; [ -n "${s_client:-}" ] && tries=45
+  tries=360; [ -n "${s_client:-}" ] && tries=180
   [ "$use_steam" = 1 ] && for _ in $(seq 1 "$tries"); do
     tail -n +$((seen + 1)) "$clog" 2>/dev/null | grep '\[Logged On,' > /dev/null && { signed=1; break; }
-    sleep 2
+    sleep 0.5
   done
   if [ -n "$signed" ] && [ -n "${s_client:-}" ]; then
     printf '%s\n' "--- $(date) Steam signed in: running in the background for $s_name" >> "$log"
@@ -1670,10 +2442,19 @@ if [ "$t" = steam ]; then
   # (kit/tools/dialog-guard.c), so the settings are never replaced
   guard="$kit/payload/steam/dialog-guard.exe"
   guard_pid=
+  steam_cleanup() {
+    [ -n "${guard_pid:-}" ] && kill "$guard_pid" 2>/dev/null || true
+    [ -n "${focus_pid:-}" ] && kill "$focus_pid" 2>/dev/null || true
+    pkill -f 'dialog-guard\.exe|pad-mapper\.exe' 2>/dev/null || true
+    mtld3d_save_cache
+    if [ -z "${s_client:-}" ] || [ "${s_client:-}" = own ]; then steam_mod_remove "$dir"; fi
+    copy_release
+    true
+  }
+  trap steam_cleanup EXIT
   if [ -f "$guard" ]; then
-    "$wine" "$guard" 21600 > /dev/null 2>&1 &
+    env -u WINELOADER "$plain_wine" "$guard" 21600 > /dev/null 2>&1 &
     guard_pid=$!
-    trap '[ -n "$guard_pid" ] && kill "$guard_pid" 2>/dev/null; pkill -f "dialog-guard\.exe|pad-mapper\.exe" 2>/dev/null; copy_release; true' EXIT
   fi
   # Controllers in the games without controller support on PC: played as
   # keyboard and mouse (kit/tools/pad-mapper.c); CONTROLLER_MAP=0 turns it off
@@ -1707,7 +2488,7 @@ if [ "$t" = steam ]; then
                while IFS= read -r c; do steam_pad_binds "$c"; done \
                  < <(find "$dir/main/players" -maxdepth 3 -name 'config*.cfg' 2>/dev/null)
              fi
-             "$wine" "$kit/payload/steam/pad-mapper.exe" 21600 $pad_ads > /dev/null 2>&1 &
+             env -u WINELOADER "$plain_wine" "$kit/payload/steam/pad-mapper.exe" 21600 $pad_ads > /dev/null 2>&1 &
            fi ;;
   esac
   if [ "$s_own" = 1 ]; then
@@ -1718,39 +2499,107 @@ if [ "$t" = steam ]; then
   else
     # Call of Duty and Call of Duty 2 load steam.dll by name ("Failed to find
     # Steam." otherwise): Steam's folder on their search path, as when Steam
-    # starts them
-    steam_env=(SteamAppId="$s_app" SteamGameId="$s_app")
+    # starts them. Offline "Your Own Game Files" (s_client=own) run without
+    # SteamAppId/SteamGameId so retail/disc/offline folders work cleanly.
+    steam_env=()
+    [ "${s_client:-}" != own ] && steam_env=(SteamAppId="$s_app" SteamGameId="$s_app")
     [ "$s_kind" = q3 ] && steam_env+=(WINEPATH='C:\Program Files (x86)\Steam')
     game_wine=$wine game_unset=
-    # (Advanced Warfare / Infinite Warfare's engine clone: its own Game Mode
-    # bundle, never the main engine's WINELOADER)
+    # (Advanced Warfare / Infinite Warfare's engine clone, or mtld3d's D3D9->Metal
+    # engine clone: each uses its own Game Mode bundle, never the main engine's WINELOADER)
     if [ -n "${aw_engine:-}" ]; then
       game_wine="$aw_engine/lib/wine/x86_64-unix/wine"
       if [ -n "${WINELOADER:-}" ] && gb=$(game_bundle "$game_wine"); then
         game_wine=$gb; steam_env+=(WINELOADER="$gb")
       else game_unset=1; fi
+    elif [ -n "${mtld3d_engine:-}" ]; then
+      game_wine="$mtld3d_engine/lib/wine/x86_64-unix/wine"
+      steam_env+=(CX_ROOT="$mtld3d_engine"
+                  WINEDLLPATH="$mtld3d_engine/lib/wine/x86_64-windows:$mtld3d_engine/lib/wine/i386-windows:$mtld3d_engine/lib/wine/x86_64-unix"
+                  WINEDLLOVERRIDES="${WINEDLLOVERRIDES};d3d9=b")
+      mtld3d_cache_part="$s_part"
+      [ -n "${s_client:-}" ] && [ "${s_client:-}" != own ] && mtld3d_cache_part="$s_client"
+      mtld3d_target="$home/cache/$steam_cache_tag/${mtld3d_cache_part}-mtld3d_shaders.bin"
+      # Local on-machine cross-seeding across sibling D3D9 installs (never ships
+      # copyrighted game shaders; copies only an existing local cache on this Mac).
+      if [ ! -f "$mtld3d_target" ]; then
+        mtld3d_seeds=()
+        case "$s_id" in
+          cod4) mtld3d_seeds=("$home/cache/steam-cod4/sp-mtld3d_shaders.bin" "$home/cache/steam-cod4/mp-mtld3d_shaders.bin" "$home/cache/steam-cod4/cod4x-mtld3d_shaders.bin" "$home/cache/own-cod4/sp-mtld3d_shaders.bin") ;;
+          waw)  mtld3d_seeds=("$home/cache/t4/mtld3d_shaders.bin" "$home/cache/steam-waw/sp-mtld3d_shaders.bin" "$home/cache/steam-waw/mp-mtld3d_shaders.bin") ;;
+          bo1)  mtld3d_seeds=("$home/cache/bo1/mtld3d_shaders.bin" "$home/cache/bo1-mp/mtld3d_shaders.bin" "$home/cache/steam-bo1/sp-mtld3d_shaders.bin" "$home/cache/steam-bo1/mp-mtld3d_shaders.bin") ;;
+          mw2)  mtld3d_seeds=("$home/cache/iw4/mtld3d_shaders.bin" "$home/cache/steam-mw2/$s_part-mtld3d_shaders.bin" "$home/cache/own-mw2/sp-mtld3d_shaders.bin") ;;
+          mw3)  mtld3d_seeds=("$home/cache/iw5/mtld3d_shaders.bin" "$home/cache/steam-mw3/$s_part-mtld3d_shaders.bin" "$home/cache/own-mw3/sp-mtld3d_shaders.bin") ;;
+        esac
+        for mtld3d_seed in "${mtld3d_seeds[@]}"; do
+          if [ "$mtld3d_seed" != "$mtld3d_target" ] && [ -s "$mtld3d_seed" ]; then
+            mkdir -p "$(dirname -- "$mtld3d_target")" && cp -f "$mtld3d_seed" "$mtld3d_target" && break
+          fi
+        done
+      fi
+      mtld3d_stage_cache "$mtld3d_target" "$dir" clean
+      if [ -n "${WINELOADER:-}" ] && gb=$(game_bundle "$game_wine"); then
+        game_wine=$gb; steam_env+=(WINELOADER="$gb")
+      else game_unset=1; fi
     fi
+    printf '==> %s\n' "Starting ${s_name}..."
     # (a fix's launcher, m_start, starts the game itself with these arguments)
-    (cd "$dir" && env ${game_unset:+-u WINELOADER} "${steam_env[@]}" "$game_wine" "./${m_start:-$s_exe}" ${s_argv[@]+"${s_argv[@]}"} >> "$log" 2>&1 &)
+    (cd "$dir" && env ${game_unset:+-u WINELOADER} ${steam_env[@]+"${steam_env[@]}"} "$game_wine" "./${m_start:-$s_exe}" ${s_argv[@]+"${s_argv[@]}"} >> "$log" 2>&1 &)
   fi
   # The game is running when its executable works the CPU; Steam says right
-  # away when it will not start it
-  exe_re=${s_exe//./\\.}
+  # away when it will not start it. Match only actual game processes, never our
+  # own iw6-focus / iw6-restore helpers (which receive the exe name as an arg).
+  game_pids() {
+    ps -axo pid=,args= | awk -v name="$1" 'BEGIN { n = tolower(name) } { l = tolower($0) } index(l, n) && l !~ /iw6-focus|iw6-restore\.exe|launch\.sh|awk/ { print $1 }'
+  }
   game_pid=
   # (IW7-Mod's updater fetches its data files, ~376 MB, before the game opens
   # the first time, at a low CPU load: up to 20 minutes)
-  start_wait=180; [ "${s_client:-}" = iw7mod ] && start_wait=1200
-  for _ in $(seq 1 "$start_wait"); do
-    for pid in $(pgrep -f "$exe_re"); do
+  start_wait=720; [ "${s_client:-}" = iw7mod ] && start_wait=4800
+  i7_t0= i7_kb0=0 i7_last_kb=0 i7_last_msg=""
+  if [ "${s_client:-}" = iw7mod ] && [ -d "$dir/iw7-mod" ]; then
+    i7_kb0=$(du -sk "$dir/iw7-mod" 2>/dev/null | awk '{print $1}')
+    i7_kb0=${i7_kb0:-0}; i7_last_kb=$i7_kb0
+  fi
+  for _w in $(seq 1 "$start_wait"); do
+    for pid in $(game_pids "$s_exe"); do
       cpu=$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' '); cpu=${cpu%%.*}
       [ "${cpu:-0}" -gt 20 ] && { game_pid=$pid; break 2; }
     done
+    if [ "${s_client:-}" = iw7mod ] && [ $((_w % 8)) = 0 ] && [ -d "$dir/iw7-mod" ]; then
+      i7_kb=$(du -sk "$dir/iw7-mod" 2>/dev/null | awk '{print $1}'); i7_kb=${i7_kb:-0}
+      if [ "$i7_kb" -gt "$i7_last_kb" ]; then
+        i7_now=$(date +%s)
+        [ -z "$i7_t0" ] && { i7_t0=$i7_now; i7_kb0=$i7_kb; }
+        i7_mb=$((i7_kb / 1024))
+        i7_dt=$((i7_now - i7_t0))
+        i7_dkb=$((i7_kb - i7_kb0))
+        i7_extra=""
+        if [ "$i7_dt" -ge 2 ] && [ "$i7_dkb" -gt 256 ]; then
+          i7_spd=$(awk -v d="$i7_dkb" -v t="$i7_dt" 'BEGIN { printf "%.1f MB/s", (d / 1024.0) / t }')
+          i7_rem_kb=$((385024 - i7_kb))
+          if [ "$i7_rem_kb" -gt 0 ]; then
+            i7_rem=$((i7_rem_kb * i7_dt / i7_dkb))
+            i7_eta=$(sil_fmt_eta "$i7_rem")
+            i7_extra=" · $i7_spd · $i7_eta"
+          else
+            i7_extra=" · $i7_spd"
+          fi
+        fi
+        i7_msg="Downloading IW7-Mod data: ${i7_mb} / ~376 MB${i7_extra}"
+        if [ "$i7_msg" != "$i7_last_msg" ]; then
+          printf '==> %s\n' "$i7_msg"
+          i7_last_msg=$i7_msg
+        fi
+        i7_last_kb=$i7_kb
+      fi
+    fi
     err=$(tail -n +$((cseen + 1)) "$console" 2>/dev/null | grep -oE "AppID $s_app.*LaunchApp failed with [A-Za-z_]+[0-9]*" | grep -oE '[A-Za-z]+Error_[0-9]+|k_E[A-Za-z0-9_]+' | tail -1)
     case "$err" in
       AppError_5) die "Steam has no license for $s_name on this account: sign in with the account that owns it (Open Steam)" ;;
       ?*) env -u WINELOADER bash "$kit/steam.sh" open; die "Steam could not start $s_name ($err): look at Steam's window" ;;
     esac
-    sleep 1
+    sleep 0.25
   done
   if [ -z "$game_pid" ] && [ -n "${s_client:-}" ]; then
     die "$s_name did not start (see logs/${log##*/})"
@@ -1774,7 +2623,7 @@ if [ "$t" = steam ]; then
   # the frontmost app, so the window was never restored (Call of Duty and
   # Call of Duty 2's campaign: after Cmd+Tab the window stayed minimized)
   app_pid=$game_pid
-  for pid in $(pgrep -f "$exe_re"); do
+  for pid in $(game_pids "$s_exe"); do
     case "$(ps -o comm= -p "$pid" 2>/dev/null)" in *"$s_exe") app_pid=$pid; break ;; esac
   done
   # (other parts: found by program name, the fix's executable when it runs
@@ -1790,13 +2639,13 @@ if [ "$t" = steam ]; then
     # (Ghosts' multiplayer passes its executable: a Ghosts name keeps the hiding)
     focus_helper "${m_start:+${m_start##*/}:}$s_exe" 0
   fi
-  while pgrep -f "$exe_re" > /dev/null; do sleep 2; done
-  [ -n "${s_client:-}" ] || steam_mod_remove "$dir"   # the fix's files go with the game
+  while [ -n "$(game_pids "$s_exe")" ]; do sleep 2; done
+  mtld3d_save_cache
+  if [ -z "${s_client:-}" ] || [ "${s_client:-}" = own ]; then steam_mod_remove "$dir"; fi
   [ -n "$focus_pid" ] && kill "$focus_pid" 2>/dev/null
-  # Advanced Warfare's clone goes a while later: a game handing over to its other
-  # part as it quits (Exo Zombies: steam.exe steam://run/…, started from this
-  # clone) lost that request when the clone was removed at once
-  [ -n "${aw_engine:-}" ] &&
+  # Only remove ephemeral dev clones (AW_DXMT_DIR / SIL_DXMT_SO); the standard
+  # persistent $home/cache/aw-engine stays warm across launches.
+  [ "$aw_engine_ephemeral" = 1 ] && [ -n "${aw_engine:-}" ] &&
     (sleep 120; /usr/bin/python3 -I -c 'import shutil, sys; shutil.rmtree(sys.argv[1])' "$aw_engine") > /dev/null 2>&1 &
   exit 0
 fi
@@ -1821,9 +2670,9 @@ if [ "$t" = t6s ]; then
   reg_flush
   bash "$bs" start || exit 1
   signed=
-  for _ in $(seq 1 90); do   # this Steam's sign-in (up to 3 minutes)
+  for _ in $(seq 1 360); do   # this Steam's sign-in (up to 3 minutes)
     tail -n +$((seen + 1)) "$clog" 2>/dev/null | grep '\[Logged On,' > /dev/null && { signed=1; break; }
-    sleep 2
+    sleep 0.5
   done
   if [ -z "$signed" ]; then
     bash "$bs" open
@@ -1835,7 +2684,7 @@ if [ "$t" = t6s ]; then
   # The game is running when t6sp.exe works the CPU; Steam says right away
   # when it will not start it
   game_pid=
-  for _ in $(seq 1 180); do
+  for _ in $(seq 1 720); do
     for pid in $(pgrep -f 't6sp\.exe'); do
       cpu=$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' '); cpu=${cpu%%.*}
       [ "${cpu:-0}" -gt 20 ] && { game_pid=$pid; break 2; }
@@ -1845,7 +2694,7 @@ if [ "$t" = t6s ]; then
       AppError_5) die "Steam has no license for Black Ops II on this account: sign in with the account that owns it (Open Steam)" ;;
       ?*) bash "$bs" open; die "Steam could not start the campaign ($err): look at Steam's window" ;;
     esac
-    sleep 1
+    sleep 0.25
   done
   if [ -z "$game_pid" ]; then
     bash "$bs" open
@@ -1875,18 +2724,21 @@ if [ "$t" = t7 ]; then
   # larger of the two is kept: Metal's cache cannot be merged), as for
   # Black Ops II and IW7-Mod; never while either game runs
   bo3_shared_metal() {   # <DXMT's cache folder>
-    local dxmt=$1 shared own a b
+    local dxmt=$1 shared own a b exe
     case "$dxmt" in /?*/dxmt) ;; *) return 0 ;; esac
-    shared="$dxmt/BlackOps3.exe/com.apple.metal" own="$dxmt/boiii.exe/com.apple.metal"
-    [ -L "$own" ] && return 0
-    pgrep -f '[B]lackOps3\.exe|[b]oiii\.exe' > /dev/null && return 0
-    mkdir -p "$dxmt/boiii.exe" "$dxmt/BlackOps3.exe" || return 0
-    if [ -d "$own" ]; then
-      a=$(du -sk "$own" 2>/dev/null | cut -f1) b=$(du -sk "$shared" 2>/dev/null | cut -f1)
-      if [ "${a:-0}" -gt "${b:-0}" ]; then rm -rf "$shared" && mv "$own" "$shared" || return 0
-      else rm -rf "$own" || return 0; fi
-    fi
-    mkdir -p "$shared" && ln -s "$shared" "$own"
+    shared="$dxmt/BlackOps3.exe/com.apple.metal"
+    pgrep -f '[B]lackOps3\.exe|[b]oiii(-beta)?\.exe' > /dev/null && return 0
+    for exe in boiii.exe boiii-beta.exe; do
+      own="$dxmt/$exe/com.apple.metal"
+      [ -L "$own" ] && continue
+      mkdir -p "$dxmt/$exe" "$dxmt/BlackOps3.exe" || continue
+      if [ -d "$own" ]; then
+        a=$(du -sk "$own" 2>/dev/null | cut -f1) b=$(du -sk "$shared" 2>/dev/null | cut -f1)
+        if [ "${a:-0}" -gt "${b:-0}" ]; then rm -rf "$shared" && mv "$own" "$shared" || continue
+        else rm -rf "$own" || continue; fi
+      fi
+      mkdir -p "$shared" && ln -s "$shared" "$own"
+    done
   }
   bo3_shared_metal "$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)dxmt"
   # The game refuses to start unless Steam is installed ("Steam must be
@@ -1905,8 +2757,8 @@ if [ "$t" = t7 ]; then
   # run mshtml's own registration once per prefix.
   reg_flush
   if [ ! -f "$WINEPREFIX/.sil-mshtml" ]; then
-    WINEDLLOVERRIDES="mscoree=" "$wine" regsvr32 /s mshtml.dll > /dev/null 2>&1 &&
-    WINEDLLOVERRIDES="mscoree=" "$wine" 'C:\windows\syswow64\regsvr32.exe' /s mshtml.dll > /dev/null 2>&1 &&
+    env -u WINELOADER WINEDLLOVERRIDES="mscoree,winemenubuilder.exe=" "$plain_wine" regsvr32 /s mshtml.dll > /dev/null 2>&1 &&
+    env -u WINELOADER WINEDLLOVERRIDES="mscoree,winemenubuilder.exe=" "$plain_wine" 'C:\windows\syswow64\regsvr32.exe' /s mshtml.dll > /dev/null 2>&1 &&
       : > "$WINEPREFIX/.sil-mshtml"
   fi
   # Prefixes made before the engine had winegstreamer: register it once.
@@ -1914,10 +2766,10 @@ if [ "$t" = t7 ]; then
   if [ ! -f "$sys/system32/winegstreamer.dll" ] && [ -f "$engine/lib/wine/x86_64-windows/winegstreamer.dll" ]; then
     cp "$engine/lib/wine/x86_64-windows/winegstreamer.dll" "$sys/system32/"
     cp "$engine/lib/wine/i386-windows/winegstreamer.dll" "$sys/syswow64/" 2>/dev/null
-    "$wine" regsvr32 /s winegstreamer.dll > /dev/null 2>&1
-    "$wine" 'C:\windows\syswow64\regsvr32.exe' /s winegstreamer.dll > /dev/null 2>&1
+    env -u WINELOADER "$plain_wine" regsvr32 /s winegstreamer.dll > /dev/null 2>&1
+    env -u WINELOADER "$plain_wine" 'C:\windows\syswow64\regsvr32.exe' /s winegstreamer.dll > /dev/null 2>&1
   fi
-  "$WINESERVER" -w 2>/dev/null
+  [ "${prewarm_active:-0}" = 0 ] && [ "$reg_disk_synced" = 0 ] && { "$WINESERVER" -w 2>/dev/null; reg_disk_synced=1; }
   # Black Ops III checks for Media Foundation's video decoders ("requires the
   # Windows Media Feature Pack"): the engine's winegstreamer, with GStreamer
   # and its plugins (Apple's VideoToolbox decoder among them) in lib64.
@@ -1931,7 +2783,7 @@ if [ "$t" = t7 ]; then
   printf '%s' "$(sil_winpath "$dir")" > "$bdir/game_path.txt"
   log="$home/logs/boiii-play.log"
   # boiii's launcher window: mshtml stays on here
-  export WINEDLLOVERRIDES="mscoree="
+  export WINEDLLOVERRIDES="mscoree,winemenubuilder.exe="
   # (DXMT's MetalFX swapchain was tried: it scales the game's own back buffer
   # up, 2560x1440 -> 3840x2160 at 1.5, which cost frames instead of saving them.)
   # mods' unsafe Lua functions: boiii asks first unless the player turned
@@ -1993,7 +2845,7 @@ SH
   # unpadded 11-character name: no padding any more, and 1.0.0's is removed.
   # Without a name of the player's own (the app's generic "Player" included),
   # boiii's name is "Siliconium".
-  /usr/bin/python3 -I - "$dir/boiii_players/properties.json" "${3:-${PLAYER_NAME:-}}" <<'PY' 2>/dev/null || true
+  boiii_version=$(/usr/bin/python3 -I - "$dir/boiii_players/properties.json" "${3:-${PLAYER_NAME:-}}" <<'PY' 2>/dev/null || true
 import json, os, sys
 p, name = sys.argv[1], sys.argv[2]
 d = {}
@@ -2011,47 +2863,84 @@ if d.get("playerName") != current:
     d["playerName"] = current
     os.makedirs(os.path.dirname(p), exist_ok=True)
     json.dump(d, open(p, "w", encoding="utf-8-sig"), separators=(",", ":"))
+ver = d.get("selectedVersion", "")
+if isinstance(ver, str) and ver:
+    print(ver)
 PY
+)
   # First start: the game's auto-detect picks for an unknown GPU (half
-  # resolution, no shadows, no ambient occlusion). Set it up once like BO1 and
-  # BO2 instead: fullscreen at the desktop's size and refresh rate with sync,
-  # full resolution and full detail. Afterwards the game's own options rule.
+  # resolution, no shadows, no ambient occlusion). Set it up once with Apple
+  # Silicon-tuned DXMT pipelining (BackbufferCount=3, MaxFrameLatency=2, Vsync=0,
+  # OITLayers=8, SpotShadowTextureSize=2048, Volumetric/SSS off) and RAM/GPU
+  # scaling for base/8 GB Macs. Afterwards the game's own options always rule.
+  bo3_ini_batch() {
+    local f=$1 tmp
+    shift
+    [ $# -gt 0 ] || return 0
+    tmp=$(mktemp "$f.XXXXXX") || return 0
+    if awk -v n="$#" '
+      BEGIN {
+        for (i = 1; i <= n; i++) {
+          kv = ARGV[i]; ARGV[i] = ""
+          p = index(kv, "=")
+          k = substr(kv, 1, p - 1); v = substr(kv, p + 1)
+          order[i] = k; want[k] = v
+        }
+      }
+      {
+        eq = index($0, " = \"")
+        if (eq > 1) {
+          k = substr($0, 1, eq - 1)
+          if (k in want) {
+            if (!(k in seen)) {
+              rest = substr($0, eq + 4); q = index(rest, "\"")
+              tail = q ? substr(rest, q + 1) : ""
+              print k " = \"" want[k] "\"" tail
+              seen[k] = 1
+            }
+            next
+          }
+        }
+        print
+      }
+      END {
+        for (i = 1; i <= n; i++) {
+          k = order[i]
+          if (!(k in seen)) { printf "%s = \"%s\"\n", k, want[k]; seen[k] = 1 }
+        }
+      }
+    ' "$@" "$f" > "$tmp"; then
+      cmp -s "$tmp" "$f" && rm -f "$tmp" || mv -f "$tmp" "$f"
+    else
+      rm -f "$tmp"
+    fi
+  }
   ini="$dir/boiii_players/config.ini"
   if on BOIII_GRAPHICS && [ ! -f "$dir/boiii_players/.sil-defaults-config.ini" ] && [ -n "${dw:-}" ]; then
-    mkdir -p "$dir/boiii_players"; touch "$ini"
-    ini_set() {   # ini_set key value: replace the line or add it
-      if grep -q "^$1 = " "$ini"; then sed -i '' -E "s|^($1 = )\"[^\"]*\"|\1\"$2\"|" "$ini"
-      else printf '%s = "%s"\n' "$1" "$2" >> "$ini"; fi
-    }
-    ini_set AutoDetectHasRun 1;           ini_set RestrictGraphicsOptions 0
-    ini_set FullScreenMode 1;             ini_set WindowSize "${dw}x${dh}"
-    ini_set RefreshRate "${hz:-60}";      ini_set Vsync 1
-    ini_set ResolutionPercent 100;        ini_set MeshQuality 0
-    ini_set TextureQuality 0;             ini_set TextureFilter 2
-    ini_set DisableDynamicLightShadows 0; ini_set DisableDynamicSunShadows 0
-    # Volumetric lighting and subsurface scattering are full-screen passes
-    # that cost the most frame time on Apple GPUs for the least visible
-    # change; they start off (the game's options can turn them on).
-    ini_set ShadowFiltering 1;            ini_set VolumetricLightingEnabled 0
-    ini_set SSAOTechnique "GTAO Medium Quality"
-    ini_set AATechnique "Filmic SMAA T2x"; ini_set SubsurfaceScattering 0
-    ini_set MotionBlur Off
+    mkdir -p "$dir/boiii_players"; [ -f "$ini" ] || : > "$ini"
+    bo3_vmem=0.95 bo3_tex=0 bo3_res=100
+    [ "${sil_ram_gb:-16}" -le 8 ] && { bo3_vmem=0.75; bo3_tex=1; }
+    if [ "${dw:-0}" -ge 3200 ]; then bo3_res=70
+    elif [ "${dw:-0}" -ge 2000 ]; then bo3_res=80
+    elif [ "${sil_gpu_cores:-16}" -le 10 ] && [ "${dw:-0}" -ge 1900 ]; then bo3_res=85
+    fi
+    bo3_ini_batch "$ini" AutoDetectHasRun=1 RestrictGraphicsOptions=0 FullScreenMode=1 "WindowSize=${bo3_win_w:-$dw}x${bo3_win_h:-$dh}" \
+      "RefreshRate=${hz:-60}" Vsync=0 BackbufferCount=3 MaxFrameLatency=2 "VideoMemory=$bo3_vmem" \
+      "ResolutionPercent=$bo3_res" MeshQuality=0 "TextureQuality=$bo3_tex" TextureFilter=2 \
+      DisableDynamicLightShadows=0 DisableDynamicSunShadows=0 SpotShadowTextureSize=2048 \
+      ShadowFiltering=1 VolumetricLightingEnabled=0 OITLayers=8 "SSAOTechnique=GTAO Medium Quality" \
+      "AATechnique=Filmic SMAA T2x" SubsurfaceScattering=0 MotionBlur=Off
     : > "$dir/boiii_players/.sil-defaults-config.ini"
   fi
   # Every launch (BOIII_SCREEN=0 leaves it to the game): fullscreen at the
-  # display's size and refresh rate, and the game's frame cap at that rate. Its
-  # own default cap is 60 (MaxFPS = "60"), and a crash or the launcher could
-  # leave it windowed at a smaller size (2560x1387 here).
+  # display's native size and refresh rate, and the game's frame cap at that
+  # rate. Its own default cap is 60 (MaxFPS = "60"), and a crash or the
+  # launcher could leave it windowed.
   if on BOIII_SCREEN && [ -n "${dw:-}" ] && [ -n "${dh:-}" ]; then
-    mkdir -p "$dir/boiii_players"; touch "$ini"
-    ini_put() {   # ini_put key value: replace the value (keeping its comment) or add the line
-      if grep -q "^$1 = " "$ini"; then sed -i '' -E "s|^($1 = )\"[^\"]*\"|\1\"$2\"|" "$ini"
-      else printf '%s = "%s"\n' "$1" "$2" >> "$ini"; fi
-    }
-    ini_put FullScreenMode 1
-    ini_put WindowSize "${dw}x${dh}"
-    [ -n "${hz:-}" ] && ini_put RefreshRate "$hz"
-    ini_put MaxFPS "${maxfps:-0}"
+    mkdir -p "$dir/boiii_players"; [ -f "$ini" ] || : > "$ini"
+    bo3_pairs=(FullScreenMode=1 "WindowSize=${bo3_win_w:-$dw}x${bo3_win_h:-$dh}" "MaxFPS=${maxfps:-0}")
+    [ -n "${hz:-}" ] && bo3_pairs+=("RefreshRate=$hz")
+    bo3_ini_batch "$ini" "${bo3_pairs[@]}"
     # Ezz keeps the engine's own cap in boiii_players/user/config.cfg
     # (set com_maxfps "60"), and it overrides MaxFPS: the game stopped at 60-62.
     ucfg="$dir/boiii_players/user/config.cfg"
@@ -2070,8 +2959,12 @@ PY
     stop_displaymode
     log_cap "$home/logs/displaymode.log"
     keep=$(keep_hidpi)   # (see hold_1x_size)
+    boiii_dm_size=$(stat -f %z "$home/logs/displaymode.log" 2>/dev/null || echo 0)
     SIL_KEEP_UNSCALED=$keep "$kit/tools/displaymode" "$dw" "$dh" $$ >> "$home/logs/displaymode.log" 2>&1 &
-    sleep 2   # the switch first: Wine reads the desktop mode as the game starts
+    for _ in $(seq 50); do
+      [ "$(stat -f %z "$home/logs/displaymode.log" 2>/dev/null || echo 0)" != "$boiii_dm_size" ] && break
+      sleep 0.1
+    done
   fi
   # Ezz can exit the launcher after starting versions/boiii-beta.exe.
   # Keep this session and its display mode alive until Wine finishes.
@@ -2086,20 +2979,66 @@ PY
   # boiii_players/properties.json "selectedVersion"): -launch alone always
   # started the Stable build, which stops with "Connection Interrupted".
   boiii_exe=boiii.exe
-  boiii_version=$(/usr/bin/python3 -I -c 'import json,sys
-try: print(json.load(open(sys.argv[1], encoding="utf-8-sig")).get("selectedVersion", ""))
-except Exception: pass' boiii_players/properties.json 2>/dev/null)
-  if [ "$mode" != launcher ] && [ "$boiii_version" = beta ] && [ -f versions/boiii-beta.exe ]; then
+  if [ "$mode" != launcher ] && [ "${boiii_version:-}" = beta ] && [ -f versions/boiii-beta.exe ]; then
     boiii_exe=versions/boiii-beta.exe
     case " ${GAME_ARGS:-} " in *" -noupdate "*) ;; *) GAME_ARGS="${GAME_ARGS:+$GAME_ARGS }-noupdate" ;; esac
   fi
   # shellcheck disable=SC2086
   : > "$log"
+  printf '==> %s\n' "Starting Black Ops III..."
   focus_helper "${boiii_exe##*/}"
+  boiii_watch_pid=
+  boiii_stop_watch() { [ -n "${boiii_watch_pid:-}" ] && { kill "$boiii_watch_pid" 2>/dev/null; wait "$boiii_watch_pid" 2>/dev/null; boiii_watch_pid=; } || true; }
+  boiii_data_root="${bdir%/user}"
+  # On first start (or in Ezz's launcher), boiii.exe downloads its data/version
+  # files (~80 MB). Watch folder growth and report live speed & ETA, then stop
+  # automatically once idle so nothing polls during gameplay.
+  if [ ! -d "$boiii_data_root/data" ] || [ "$mode" = launcher ]; then
+    boiii_first=0; [ -d "$boiii_data_root/data" ] || boiii_first=1
+    boiii_kb0=$(du -sk "$boiii_data_root" "$dir/versions" 2>/dev/null | awk '{s+=$1} END{print s+0}')
+    boiii_prev_exit=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\1/")
+    trap "boiii_stop_watch${boiii_prev_exit:+; $boiii_prev_exit}" EXIT
+    (
+      b_t0="" b_last_kb=${boiii_kb0:-0} b_idle=0 b_last_msg=""
+      while sleep 1.5; do
+        b_kb=$(du -sk "$boiii_data_root" "$dir/versions" 2>/dev/null | awk '{s+=$1} END{print s+0}')
+        if [ "$b_kb" -gt "$b_last_kb" ]; then
+          b_idle=0
+          b_dkb=$((b_kb - ${boiii_kb0:-0}))
+          if [ "$b_dkb" -gt 256 ]; then
+            b_now=$(date +%s)
+            [ -z "$b_t0" ] && b_t0=$b_now
+            b_mb=$((b_dkb / 1024)); [ "$b_mb" -lt 1 ] && b_mb=1
+            b_dt=$((b_now - b_t0))
+            b_extra=""
+            if [ "$b_dt" -ge 2 ]; then
+              b_spd=$(awk -v d="$b_dkb" -v t="$b_dt" 'BEGIN { printf "%.1f MB/s", (d / 1024.0) / t }')
+              if [ "$boiii_first" = 1 ] && [ "$b_dkb" -lt 81920 ]; then
+                b_rem=$(( (81920 - b_dkb) * b_dt / b_dkb ))
+                b_extra=" ($b_spd · $(sil_fmt_eta "$b_rem"))"
+              else
+                b_extra=" ($b_spd)"
+              fi
+            fi
+            b_msg="Downloading BOIII data: ${b_mb} MB${b_extra}"
+            if [ "$b_msg" != "$b_last_msg" ]; then
+              printf '==> %s\n' "$b_msg"
+              b_last_msg=$b_msg
+            fi
+          fi
+          b_last_kb=$b_kb
+        else
+          b_idle=$((b_idle + 1))
+          [ "$b_idle" -ge 15 ] && break
+        fi
+      done
+    ) &
+    boiii_watch_pid=$!
+  fi
   "$wine" "$boiii_exe" ${GAME_ARGS:-} >> "$log" 2>&1
   boiii_status=$?
-  [ -n "$focus_pid" ] && kill "$focus_pid" 2> /dev/null
-  "$WINESERVER" -w 2>/dev/null
+  boiii_stop_watch
+  wait_wine_exit 'boiii(-[[:alnum:]._-]+)?\.exe|BlackOps3\.exe' 1
   exit "$boiii_status"
 fi
 
@@ -2108,6 +3047,46 @@ winpath=$(sil_winpath "$dir")
 plutonium_cfg="$plutonium/config.json"
 set_cvar() { sed -i '' -E "s/^seta $2 \"[^\"]*\"/seta $2 \"$3\"/" "$1"; }
 set_or_add() { if grep -q "^seta $2 " "$1"; then set_cvar "$@"; else printf 'seta %s "%s"\n' "$2" "$3" >> "$1"; fi; }
+# Single-pass awk cvar updater (avoids dozens of grep/sed forks per .cfg file).
+# Uses ARGV[1..n] instead of -v with embedded newlines (macOS BSD awk rejects
+# literal newlines in -v variable assignments).
+cfg_batch() {   # cfg_batch <file> name val [name val ...]
+  local cfg=$1 tmp
+  shift
+  [ $# -ge 2 ] || return 0
+  [ -f "$cfg" ] || : > "$cfg"
+  tmp=$(mktemp "$cfg.sil.XXXXXX") || return 1
+  if awk -v n="$#" '
+    BEGIN {
+      m = 0
+      for (i = 1; i + 1 <= n; i += 2) {
+        k = ARGV[i]; v = ARGV[i + 1]
+        ARGV[i] = ""; ARGV[i + 1] = ""
+        if (k == "") continue
+        if (!(k in want)) order[++m] = k
+        want[k] = v
+      }
+    }
+    $1 == "seta" && ($2 in want) {
+      k = $2; seen[k] = 1
+      if (sub(/^seta [^ ]+ "[^"]*"/, "seta " k " \"" want[k] "\"")) { print; next }
+      printf "seta %s \"%s\"\n", k, want[k]; next
+    }
+    { print }
+    END {
+      for (i = 1; i <= m; i++) {
+        k = order[i]
+        if (!(k in seen)) printf "seta %s \"%s\"\n", k, want[k]
+      }
+    }
+  ' "$@" "$cfg" > "$tmp"; then
+    cmp -s "$tmp" "$cfg" && rm -f "$tmp" || mv -f "$tmp" "$cfg"
+    return 0
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
 desktop=${dw:+${dw}x$dh}
 # Default settings, applied once per game profile (marker file), so what the
 # player changes in the game afterwards is kept: fullscreen at the display's
@@ -2115,75 +3094,167 @@ desktop=${dw:+${dw}x$dh}
 defaults_once() {   # defaults_once <cfg> <marker> name value ...
   local cfg=$1 marker=$2; shift 2
   [ -f "$marker" ] && return 0
-  [ -f "$cfg" ] || : > "$cfg"
-  while [ $# -ge 2 ]; do set_or_add "$cfg" "$1" "$2"; shift 2; done
-  : > "$marker"
+  cfg_batch "$cfg" "$@" && : > "$marker"
 }
 common_cvars() {
-  fullscreen_cfg "$1"
-  on MSAA_FIX && sed -i '' -E 's/^seta r_aaSamples "(8|16|32)"/seta r_aaSamples "4"/' "$1"
-  if [ -n "$desktop" ]; then
-    local rmode
-    rmode=$(sed -n -E 's/^seta r_mode "([0-9]+)x[0-9]+"/\1/p' "$1")
-    # Fullscreen at the desktop's own resolution, every start (the player's
-    # choice, 2026-11-24: change the Mac's resolution and the games follow): a
-    # saved resolution other than the desktop's (one from before the desktop
-    # changed, or the game's own pick of the panel's pixels) made Wine switch
-    # the display's mode (Black Ops II's profiles kept 2560x1440 on a
-    # 1920x1080 desktop, 2026-11-23). A windowed game (r_fullscreen "0") and
-    # BO2 on another monitor (r_monitor 2 and up) are left as they are.
-    local mon cur
-    mon=$(sed -n -E 's/^seta r_monitor "([0-9]+)"/\1/p' "$1" | tail -1)
-    cur=$(sed -n -E 's/^seta r_mode "([0-9]+x[0-9]+)".*/\1/p' "$1" | tail -1)
-    if [ "$rmode" = 800 ] || { { [ "$t" != t6 ] || [ "${mon:-0}" -le 1 ]; } && [ -n "$cur" ] && [ "$cur" != "$desktop" ] &&
-                               ! grep -q '^seta r_fullscreen "0"' "$1"; }; then
-      set_cvar "$1" r_mode "$desktop"
-    fi
+  local cfg=$1 tmp fs_fix=0 msaa_fix=0 raw_in=0 c_aim=0 intro_val=0 do_startup=1
+  [ -f "$cfg" ] || : > "$cfg"
+  [ "$t" != t6 ] && [ "${CAPTURE_DISPLAY:-1}" != 0 ] && fs_fix=1
+  on MSAA_FIX && msaa_fix=1
+  [ "${RAW_INPUT:-1}" = 1 ] && raw_in=1
+  [ "${CONSOLE_AIM:-1}" != 0 ] && c_aim=1
+  if [ "$t" = t5 ]; then
+    [ "${BO1_SKIP_INTRO:-0}" = 1 ] && intro_val=1
+  elif on SKIP_INTRO; then
+    intro_val=1
   fi
-  if [ "${RAW_INPUT:-1}" = 1 ]; then set_or_add "$1" raw_input 1; set_or_add "$1" m_filter 0; fi
-  console_aim "$1"
-  set_or_add "$1" gpad_stick_deadzone_min "${STICK_DEADZONE:-0.08}"
-  set_or_add "$1" cl_mouseAccel 0
-  # Straight to the menu: the publisher/studio logo movies are not played
-  # (every start decoded them before the menu could load).
-  if on SKIP_INTRO; then
-    set_or_add "$1" com_introPlayed 1
-    [ "$t" = t6 ] || set_or_add "$1" com_startupIntroPlayed 1
+  [ "$t" = t6 ] && do_startup=0
+  tmp=$(mktemp "$cfg.sil.XXXXXX") || return 0
+  if awk \
+    -v t="$t" -v desktop="$desktop" -v fs_fix="$fs_fix" -v msaa_fix="$msaa_fix" \
+    -v raw_in="$raw_in" -v c_aim="$c_aim" -v deadzone="${STICK_DEADZONE:-0.08}" \
+    -v intro_val="$intro_val" -v do_startup="$do_startup" '
+    BEGIN {
+      m = 0
+      if (raw_in == 1) { order[++m] = "raw_input"; want["raw_input"] = "1"; order[++m] = "m_filter"; want["m_filter"] = "0" }
+      if (c_aim == 1) {
+        nc = split("aim_accel_turnrate_enabled=1 aim_accel_turnrate_lerp=1200 aim_input_graph_enabled=1 aim_input_graph_index=3 aim_scale_view_axis=1 aim_turnrate_yaw=260 aim_turnrate_pitch=90 aim_turnrate_yaw_ads=90 aim_turnrate_pitch_ads=55 aim_autoaim_enabled=1 aim_lockon_enabled=1 aim_slowdown_enabled=1", a, " ")
+        for (i = 1; i <= nc; i++) {
+          p = index(a[i], "="); k = substr(a[i], 1, p - 1); v = substr(a[i], p + 1)
+          order[++m] = k; want[k] = v
+        }
+      }
+      order[++m] = "gpad_stick_deadzone_min"; want["gpad_stick_deadzone_min"] = deadzone
+      order[++m] = "cl_mouseAccel"; want["cl_mouseAccel"] = "0"
+      order[++m] = "com_introPlayed"; want["com_introPlayed"] = intro_val
+      if (do_startup == 1) { order[++m] = "com_startupIntroPlayed"; want["com_startupIntroPlayed"] = intro_val }
+      mon = 0; cur_mode = ""; rmode_w = ""; is_windowed = 0
+    }
+    {
+      lines[NR] = $0
+      if ($0 ~ /^seta r_monitor "[0-9]+"/) {
+        s = $0; sub(/^seta r_monitor "/, "", s); sub(/".*/, "", s); mon = s + 0
+      } else if ($0 ~ /^seta r_mode "[0-9]+x[0-9]+"/) {
+        s = $0; sub(/^seta r_mode "/, "", s); sub(/".*/, "", s); cur_mode = s
+        w = s; sub(/x.*/, "", w); rmode_w = w
+      } else if ($0 ~ /^seta r_fullscreen "0"/) {
+        is_windowed = 1
+      }
+    }
+    END {
+      fit_mode = 0
+      if (desktop != "") {
+        if (rmode_w == "800" || ((t != "t6" || mon <= 1) && cur_mode != "" && cur_mode != desktop && !is_windowed)) {
+          fit_mode = 1
+        }
+      }
+      for (i = 1; i <= NR; i++) {
+        line = lines[i]
+        if (fs_fix && line ~ /^seta r_fullscreen "2"/) {
+          sub(/^seta r_fullscreen "2"/, "seta r_fullscreen \"1\"", line)
+        }
+        if (msaa_fix && line ~ /^seta r_aaSamples "(8|16|32)"/) {
+          sub(/^seta r_aaSamples "(8|16|32)"/, "seta r_aaSamples \"4\"", line)
+        }
+        if (fit_mode && line ~ /^seta r_mode "[^"]*"/) {
+          sub(/^seta r_mode "[^"]*"/, "seta r_mode \"" desktop "\"", line)
+        }
+        split(line, f, " ")
+        if (f[1] == "seta" && (f[2] in want)) {
+          k = f[2]; seen[k] = 1
+          if (sub(/^seta [^ ]+ "[^"]*"/, "seta " k " \"" want[k] "\"", line)) { print line; continue }
+          printf "seta %s \"%s\"\n", k, want[k]; continue
+        }
+        print line
+      }
+      for (i = 1; i <= m; i++) {
+        k = order[i]
+        if (!(k in seen)) printf "seta %s \"%s\"\n", k, want[k]
+      }
+      if (desktop != "" && cur_mode == "" && !is_windowed) {
+        printf "seta r_mode \"%s\"\n", desktop
+      }
+    }
+  ' "$cfg" > "$tmp"; then
+    cmp -s "$tmp" "$cfg" && rm -f "$tmp" || mv -f "$tmp" "$cfg"
+  else
+    rm -f "$tmp"
   fi
 }
 t5mp_engine=
 prepare_t5mp_engine() {
-  local mp_exe="$plutonium/games/t5mp.exe" entry
+  local mp_exe="$plutonium/games/t5mp.exe" entry persist="$home/cache/t5mp-engine" new sig mp_stat old
   local renderer="$kit/payload/bo1/mp-d3d9.dll"
   [ -f "$renderer" ] && [ -f "$mp_exe" ] || return 1
-  # This renderer identifies the warming pass of this specific T5 image.
-  [ "$(shasum -a 256 < "$mp_exe")" = "6a544494722aaf90ae241d687fca0aebd73f97f0d79412d0f8c311f6c369c3fb  -" ] || return 1
   cmp -s "$engine/lib/wine/i386-windows/d3d9.dll" "$kit/payload/i386-windows/d3d9.dll" || return 1
-
-  # Wine prefers built-in DLLs next to its own loader. Clone that directory
-  # for MP so the installed renderer and all other games keep their DLL.
-  t5mp_engine=$(mktemp -d "$home/cache/t5mp-engine.XXXXXX") || return 1
-  mkdir "$t5mp_engine/lib" || return 1
+  # Verify this renderer matches this exact t5mp.exe image (cached by mtime:size).
+  mp_stat=$(stat -f '%m:%z' "$mp_exe" 2>/dev/null || echo 0:0)
+  if [ "$(cat "$persist/.sil-mp-stat" 2>/dev/null)" != "$mp_stat" ]; then
+    [ "$(shasum -a 256 < "$mp_exe")" = "6a544494722aaf90ae241d687fca0aebd73f97f0d79412d0f8c311f6c369c3fb  -" ] || return 1
+  fi
+  # Clean up any legacy random t5mp-engine.* directories left by older builds.
+  for old in "$home/cache"/t5mp-engine.*; do
+    [ -d "$old" ] && /usr/bin/python3 -I -c 'import shutil, sys; shutil.rmtree(sys.argv[1])' "$old"
+  done
+  # Persistent stamped clone: eliminates ~18 s of cold LaunchServices bundle
+  # registration and preserves macOS's com.apple.metal compiled shader cache
+  # (up to 70x faster MoltenVK shard loading) across every BO1 MP Online start.
+  sig=$(stat -f '%m:%z' \
+    "$engine/siliconium.version" \
+    "$engine/lib/wine/x86_64-unix/winemac.so" \
+    "$engine/lib/wine/x86_64-unix/winecoreaudio.so" \
+    "$engine/lib/wine/x86_64-unix/ntdll.so" \
+    "$engine/lib/wine/x86_64-unix/winebus.so" \
+    "$engine/lib/wine/i386-windows/xinput1_3.dll" \
+    "$engine/lib/wine/i386-windows/dsound.dll" \
+    "$engine/lib/wine/x86_64-windows/winebus.sys" \
+    "$renderer" 2>/dev/null | tr '\n' ';')
+  if [ -x "$persist/lib/wine/x86_64-unix/wine" ] &&
+     [ "$(cat "$persist/.sil-stamp" 2>/dev/null)" = "$sig" ]; then
+    printf '%s' "$mp_stat" > "$persist/.sil-mp-stat" 2>/dev/null || true
+    t5mp_engine=$persist
+    return 0
+  fi
+  new="$persist.new"
+  rm -rf "$new"
+  mkdir -p "$new/lib" || return 1
   for entry in "$engine"/*; do
-    [ "${entry##*/}" = lib ] || ln -s "$entry" "$t5mp_engine/" || return 1
+    [ "${entry##*/}" = lib ] || ln -s "$entry" "$new/" || { rm -rf "$new"; return 1; }
   done
   for entry in "$engine/lib"/*; do
-    [ "${entry##*/}" = wine ] || ln -s "$entry" "$t5mp_engine/lib/" || return 1
+    [ "${entry##*/}" = wine ] || ln -s "$entry" "$new/lib/" || { rm -rf "$new"; return 1; }
   done
-  cp -cRp "$engine/lib/wine" "$t5mp_engine/lib/wine" &&
-    cp "$renderer" "$t5mp_engine/lib/wine/i386-windows/d3d9.dll"
+  if cp -cRp "$engine/lib/wine" "$new/lib/wine" &&
+     cp "$renderer" "$new/lib/wine/i386-windows/d3d9.dll" &&
+     printf '%s' "$sig" > "$new/.sil-stamp" &&
+     printf '%s' "$mp_stat" > "$new/.sil-mp-stat" &&
+     { rm -rf "$persist" && mv "$new" "$persist"; }; then
+    t5mp_engine=$persist
+    return 0
+  fi
+  rm -rf "$new"
+  return 1
 }
 
 cleanup_t5mp_engine() {
-  [ -n "$t5mp_engine" ] || return 0
-  /usr/bin/python3 -I -c 'import shutil, sys; shutil.rmtree(sys.argv[1])' "$t5mp_engine"
+  # Persistent clone is intentionally kept warm across launches.
   t5mp_engine=
 }
+
+if [ "$mtld3d_active" = 1 ]; then
+  if ! prepare_mtld3d_engine; then
+    mtld3d_active=0
+    mtld3d_engine=
+    clear_env MTLD3D_CONFIG
+    clear_env RUST_LOG
+  fi
+fi
 
 if [ "$t" = t5 ]; then
   # (cleared for every other Black Ops start too: Zombies and the campaign
   # kept an online Multiplayer start's value in the prefix)
-  if [ "$mode" = mp ] && [ "${4:-}" != --lan ] && on BO1_MP_FAST_LOAD && on BO1_WARM && on BO1_ASYNC &&
+  if [ "$mtld3d_active" = 0 ] && [ "$mode" = mp ] && [ "${4:-}" != --lan ] &&
+     on BO1_MP_FAST_LOAD && on BO1_WARM && on BO1_ASYNC &&
      prepare_t5mp_engine; then
     set_env DXVK_T5MP_WARM 1
     trap cleanup_t5mp_engine EXIT
@@ -2195,12 +3266,14 @@ fi
 
 if [ "$t" = t5 ]; then
   players="$plutonium/storage/t5/players"
-  # The shipped list was collected in Zombies. Keep it and the legacy
-  # imports in the shared cache. MP learns its own pipelines as maps load.
-  if [ "$mode" != mp ] && on BO1_SHADER_CACHE; then
-    /usr/bin/python3 -I "$kit/tools/statecache-merge.py" "$home/cache/plutonium-bootstrapper-win32.dxvk-cache" \
+  # The shipped list was collected in Zombies. Keep BO1 SP/ZM in its own cache
+  # (migrating any previously learned entries from the legacy shared cache once).
+  # MP learns its own pipelines in cache/bo1-mp as maps load.
+  if [ "$mtld3d_active" = 0 ] && [ "$mode" != mp ] && on BO1_SHADER_CACHE; then
+    merge_statecache "$bo1_cache/plutonium-bootstrapper-win32.dxvk-cache" \
       "$kit/payload/bo1/pipelines.dxvk-cache" \
-      "$dir/plutonium-bootstrapper-win32.dxvk-cache" "$dir"/*/cache/plutonium-bootstrapper-win32.dxvk-cache 2>/dev/null || true
+      "$home/cache/plutonium-bootstrapper-win32.dxvk-cache" \
+      "$dir/plutonium-bootstrapper-win32.dxvk-cache" "$dir"/*/cache/plutonium-bootstrapper-win32.dxvk-cache
   fi
   mkdir -p "$players"
   for c in config.cfg config_mp.cfg; do
@@ -2212,9 +3285,11 @@ if [ "$t" = t5 ]; then
     common_cvars "$players/$c"
     [ -n "${hz:-}" ] && set_or_add "$players/$c" r_displayRefresh "$hz Hz"
     on BO1_NO_SHADOWS && set_cvar "$players/$c" sm_enable 0   # shadows froze BO1
-    # The MP renderer queues new pipelines during the normal map load. Other
-    # client builds keep cache-only loading, avoiding a synchronous warm pass.
-    if [ "$mode:$c" = mp:config_mp.cfg ] && on BO1_MP_FAST_LOAD && [ -z "$t5mp_engine" ]; then
+    # Under mtld3d, native async shader compilation compiles only the ~300
+    # shaders actually drawn instead of BO1's 5,838-shader warming pass (>50 s).
+    if [ "$mtld3d_active" = 1 ]; then
+      set_or_add "$players/$c" r_shaderWarming 0
+    elif [ "$mode:$c" = mp:config_mp.cfg ] && on BO1_MP_FAST_LOAD && [ -z "$t5mp_engine" ]; then
       set_or_add "$players/$c" r_shaderWarming 0
     elif on BO1_WARM; then
       set_or_add "$players/$c" r_shaderWarming 1
@@ -2223,7 +3298,11 @@ if [ "$t" = t5 ]; then
     fi
     if [ "${STREAM:-0}" = 1 ]; then sed -i '' '/^seta r_stream "/d' "$players/$c"
     else set_or_add "$players/$c" r_stream 0; fi
-    set_cvar "$players/$c" com_maxfps 0
+    # Avoid Vulkan FIFO + DXVK maxFrameRate double-throttling on high-refresh
+    # displays (same as Steam BO1; macOS WindowServer still composites tear-free).
+    # BO1_VSYNC=1 keeps the profile's in-game VSync setting.
+    if [ "$maxfps" != 0 ] && [ "${BO1_VSYNC:-0}" != 1 ]; then set_or_add "$players/$c" r_vsync 0; fi
+    set_or_add "$players/$c" com_maxfps 0
   done
   gamecfg="$players/config.cfg"; [ "$mode" = mp ] && gamecfg="$players/config_mp.cfg"
   # DXVK reads dxvk.conf from the working directory
@@ -2260,15 +3339,12 @@ elif [ "$t" = t4 ]; then
   mkdir -p "$players/profiles/\$\$\$"
   offline="$players/profiles/\$\$\$"
   # DXVK compiles every pipeline in its state cache as the map's shaders are
-  # registered, so fold in the list gathered on the zombies maps (and any an
-  # older setup left): the load screen then compiles a map's materials instead
-  # of the game compiling them one by one while the player is already looking
-  # at them (the weapon, the character and map objects appeared late). The
-  # bootstrapper's cache is shared with Black Ops.
-  on WAW_PIPELINES && /usr/bin/python3 -I "$kit/tools/statecache-merge.py" \
-    "$home/cache/plutonium-bootstrapper-win32.dxvk-cache" \
+  # registered, so fold in the list gathered on WaW's maps into WaW's own
+  # isolated cache (without Black Ops' 22k pipelines).
+  [ "$mtld3d_active" = 0 ] && on WAW_PIPELINES && merge_statecache \
+    "$t4_cache/plutonium-bootstrapper-win32.dxvk-cache" \
     "$kit/payload/waw/pipelines.dxvk-cache" \
-    "$dir/plutonium-bootstrapper-win32.dxvk-cache" 2>/dev/null || true
+    "$dir/plutonium-bootstrapper-win32.dxvk-cache"
   for f in "$players"/config.cfg "$players"/config_mp.cfg "$offline/config.cfg" "$offline/config_mp.cfg" \
            "$players"/profiles/*/config.cfg "$players"/profiles/*/config_mp.cfg; do
     case "$f" in *'*'*) continue ;; esac
@@ -2291,9 +3367,12 @@ elif [ "$t" = t4 ]; then
     # A profile WaW has just created has no com_maxfps line: set_or_add, not
     # set_cvar, or the game's own cap (85 FPS here) stays.
     set_or_add "$f" com_maxfps 0
-    # Draw every material while the map loads. With DXVK_ASYNC=2 the pipelines
-    # compile in the background during the loading screen (and are written to
-    # DXVK's cache) instead of popping in once play starts.
+    # Avoid Vulkan FIFO + DXVK maxFrameRate double-throttling (WAW_VSYNC=1 keeps VSync).
+    if [ "$maxfps" != 0 ] && [ "${WAW_VSYNC:-0}" != 1 ]; then set_or_add "$f" r_vsync 0; fi
+    # Allow CPU/GPU frame overlap under mtld3d (eliminates sawtooth frame pacing).
+    [ "$mtld3d_active" = 1 ] && set_or_add "$f" r_multiGpu 1
+    # Draw every material while the map loads. Under both DXVK_ASYNC=2 and mtld3d
+    # (WaW only has ~400 shaders/map), warming on load prevents mid-game shader spikes.
     if on WAW_WARM; then set_or_add "$f" r_shaderWarming 1; else set_or_add "$f" r_shaderWarming 0; fi
   done
   gamecfg="$players/profiles/\$\$\$/config.cfg"; [ "$mode" = mp ] && gamecfg="$players/profiles/\$\$\$/config_mp.cfg"
@@ -2341,19 +3420,25 @@ elif [ "$t" = iw5 ]; then
   # no frame over 50 ms (mp_carbon). The compiled pipelines stay in the DXVK
   # state cache, so later loads are quick; the very first start also preloads
   # the menu's (a longer first start). IW5_PRELOAD=0: off.
-  if on IW5_PRELOAD; then set_or_add "$cfg" r_preloadShaders 1; else set_or_add "$cfg" r_preloadShaders 0; fi
+  if [ "$mtld3d_active" = 1 ]; then set_or_add "$cfg" r_preloadShaders 0
+  elif on IW5_PRELOAD; then set_or_add "$cfg" r_preloadShaders 1
+  else set_or_add "$cfg" r_preloadShaders 0; fi
   # No "Set Optimal Settings?" question at start-up (it waits for a click
   # before the game window opens, and would replace the settings above).
   set_or_add "$cfg" com_recommendedSet 1
   # Straight to the menu: no intro movie (Plutonium's plutonium.bik). Bink
   # decodes on one CPU thread under Rosetta (85-95 % busy, GPU idle) and only
   # reached ~27 of its 30 FPS, so the movie skipped frames.
-  if on SKIP_INTRO; then set_or_add "$cfg" intro 0; fi
+  if on SKIP_INTRO; then set_or_add "$cfg" intro 0; else set_or_add "$cfg" intro 1; fi
   # Real fullscreen: a borderless window becomes real fullscreen (no display
   # capture: see the Wine settings). A windowed mode the player picked is left alone.
   on CAPTURE_DISPLAY && sed -i '' -E 's/^seta r_displayMode "windowed \(no border\)"/seta r_displayMode "fullscreen"/' "$cfg"
-  # The app's frame-rate cap (the game's default is 300)
-  set_or_add "$cfg" com_maxfps "${maxfps:-0}"
+  # Let DXVK's d3d9.maxFrameRate handle sub-ms frame pacing cleanly without
+  # fighting the engine's integer-ms com_maxfps (matching BO1, WaW, IW4X, BO2).
+  if [ "$maxfps" != 0 ]; then set_or_add "$cfg" com_maxfps 0
+  else set_or_add "$cfg" com_maxfps 0; fi
+  # Avoid Vulkan FIFO + DXVK maxFrameRate double-throttling (IW5_VSYNC=1 keeps VSync).
+  if [ "$maxfps" != 0 ] && [ "${IW5_VSYNC:-0}" != 1 ]; then set_or_add "$cfg" r_vsync 0; fi
   # Apple GPUs support 4x MSAA at most
   on MSAA_FIX && sed -i '' -E 's/^seta r_aaSamples "(8|16|32)"/seta r_aaSamples "4"/' "$cfg"
   gamecfg="$cfg"
@@ -2366,7 +3451,7 @@ elif [ "$t" = iw4 ]; then
   mkdir -p "$players"
   cfg="$players/iw4x_config.cfg"
   on IW4_GRAPHICS && defaults_once "$cfg" "$players/.sil-defaults-iw4x_config.cfg" \
-    r_fullscreen 1 r_noborder 0 r_mode "1920x1080" r_vsync 1 \
+    r_fullscreen 1 r_noborder 0 r_mode "${desktop:-1920x1080}" r_vsync 1 \
     r_aaSamples 4 r_picmip_manual 0 r_texFilterAnisoMax 16
   [ -f "$cfg" ] || : > "$cfg"
   # Use the D3D9Ex device path for IW4X under DXVK.
@@ -2379,6 +3464,8 @@ elif [ "$t" = iw4 ]; then
   if [ "${IW4_PRELOAD:-0}" = 1 ]; then set_or_add "$cfg" r_preloadShaders 1; else set_or_add "$cfg" r_preloadShaders 0; fi
   [ -n "${hz:-}" ] && set_or_add "$cfg" r_displayRefresh "$hz Hz"
   set_or_add "$cfg" com_maxfps 0
+  # Avoid Vulkan FIFO + DXVK maxFrameRate double-throttling (IW4_VSYNC=1 keeps VSync).
+  if [ "$maxfps" != 0 ] && [ "${IW4_VSYNC:-0}" != 1 ]; then set_or_add "$cfg" r_vsync 0; fi
   # IW4X's "Set Optimal Settings?" question waits for a click before the game
   # window opens (it sat hidden behind other windows, so MW2 looked frozen)
   # and would rewrite the settings above: mark the detection as done.
@@ -2413,7 +3500,7 @@ else
       r_vsync 1 r_monitor 0 r_picmip_manual 0 r_texFilterAnisoMax 16 r_aaSamples 1
     common_cvars "$players/$c"
     set_or_add "$players/$c" fix_mouse_lag "$mouse_lag_fix"
-    set_cvar "$players/$c" com_maxfps 0
+    set_or_add "$players/$c" com_maxfps 0
   done
   bo2_hw_screen "$players" "$players/plutonium_zm.cfg" "$players/hardware_zm.chp"
   bo2_hw_screen "$players" "$players/plutonium_mp.cfg" "$players/hardware_mp.chp"
@@ -2512,7 +3599,30 @@ esac
 
 log="$home/logs/$game-$mode.log"
 reg_flush
-if [ -n "$t5mp_engine" ]; then
+if [ -n "$mtld3d_engine" ]; then
+  [ "${prewarm_active:-0}" = 0 ] && [ "$reg_disk_synced" = 0 ] && { "$WINESERVER" -w 2>/dev/null; reg_disk_synced=1; }
+  export CX_ROOT="$mtld3d_engine"
+  export WINEDLLPATH="$mtld3d_engine/lib/wine/x86_64-windows:$mtld3d_engine/lib/wine/i386-windows:$mtld3d_engine/lib/wine/x86_64-unix"
+  export WINEDLLOVERRIDES="${WINEDLLOVERRIDES};d3d9=b"
+  use_wine "$mtld3d_engine/lib/wine/x86_64-unix/wine"   # (its own Game Mode bundle)
+  if [ "$t" != iw4 ]; then
+    if [ ! -f "$dxvk_cache/mtld3d_shaders.bin" ]; then
+      plut_mtld3d_seeds=()
+      case "$t" in
+        t4)  plut_mtld3d_seeds=("$home/cache/steam-waw/sp-mtld3d_shaders.bin" "$home/cache/steam-waw/mp-mtld3d_shaders.bin") ;;
+        t5)  plut_mtld3d_seeds=("$home/cache/bo1/mtld3d_shaders.bin" "$home/cache/steam-bo1/sp-mtld3d_shaders.bin" "$home/cache/steam-bo1/mp-mtld3d_shaders.bin") ;;
+        iw5) plut_mtld3d_seeds=("$home/cache/own-mw3/sp-mtld3d_shaders.bin" "$home/cache/steam-mw3/mp-mtld3d_shaders.bin") ;;
+      esac
+      for plut_seed in "${plut_mtld3d_seeds[@]}"; do
+        if [ "$plut_seed" != "$dxvk_cache/mtld3d_shaders.bin" ] && [ -s "$plut_seed" ]; then
+          mkdir -p "$dxvk_cache" && cp -f "$plut_seed" "$dxvk_cache/mtld3d_shaders.bin" && break
+        fi
+      done
+    fi
+    mtld3d_stage_cache "$dxvk_cache/mtld3d_shaders.bin"
+  fi
+elif [ -n "$t5mp_engine" ]; then
+  [ "${prewarm_active:-0}" = 0 ] && [ "$reg_disk_synced" = 0 ] && { "$WINESERVER" -w 2>/dev/null; reg_disk_synced=1; }
   export CX_ROOT="$t5mp_engine"
   export WINEDLLPATH="$t5mp_engine/lib/wine/x86_64-windows:$t5mp_engine/lib/wine/x86_64-unix"
   use_wine "$t5mp_engine/lib/wine/x86_64-unix/wine"   # (its own Game Mode bundle)
@@ -2530,17 +3640,38 @@ if [ "$t" = iw4 ]; then
   # client (--arch x86: our patched D3D9 and x87 paths). Without a network it
   # fails: then the installed client starts directly.
   : > "$log"
+  iw4_first=0
+  if [ ! -f iw4x.exe ] || [ ! -d iw4x ]; then
+    iw4_first=1
+    printf '==> %s\n' "Setting up IW4X (first start downloads ~3 GB of maps and assets, please wait)…"
+  else
+    printf '==> %s\n' "Starting IW4X (checking for updates)…"
+  fi
   focus_helper iw4x.exe   # (the launcher starts the client)
+  declare -F sil_iw4x_watch_log >/dev/null || . "$kit/tools/iw4x.sh"
+  iw4_prev_exit=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\1/")
+  trap "sil_iw4x_stop_watch${iw4_prev_exit:+; $iw4_prev_exit}" EXIT
+  if [ -f iw4x-launcher.exe ]; then
+    sil_iw4x_watch_log "$log" 1 "$iw4_first"
+  fi
   if [ -f iw4x-launcher.exe ] && "$wine" iw4x-launcher.exe "${iw4_args[@]}" --no-connect-protocol >> "$log" 2>&1; then
-    :
+    sil_iw4x_stop_watch
+    printf '==> %s\n' "Starting IW4X…"
   elif [ -f iw4x.exe ]; then
+    sil_iw4x_stop_watch
+    printf '==> %s\n' "Starting IW4X…"
     printf '\nStarting the installed IW4X client directly.\n' >> "$log"
     # shellcheck disable=SC2086
-    exec "$wine" iw4x.exe -stdout -nointro ${GAME_ARGS:-} >> "$log" 2>&1
+    if [ "${prewarm_active:-0}" = 1 ]; then
+      "$wine" iw4x.exe -stdout -nointro ${GAME_ARGS:-} >> "$log" 2>&1
+    else
+      exec "$wine" iw4x.exe -stdout -nointro ${GAME_ARGS:-} >> "$log" 2>&1
+    fi
   else
+    sil_iw4x_stop_watch
     die "The IW4X launcher failed (see logs/$game-$mode.log)."
   fi
-  "$WINESERVER" -w 2>/dev/null
+  wait_wine_exit 'iw4x(-launcher)?\.exe' 1
   exit
 fi
 case "$t:$mode" in
@@ -2555,6 +3686,7 @@ case "$t:$mode" in
 esac
 # (Plutonium's launcher starts the bootstrapper, which runs the game)
 : > "$log"
+printf '==> %s\n' "Starting Plutonium…"
 focus_helper plutonium-bootstrapper-win32.exe
 if [ "${4:-}" != --lan ] && [ "$mode" != declassified ]; then
   launcher="$plutonium/bin/plutonium-launcher-win32.exe"
@@ -2569,9 +3701,53 @@ if [ "${4:-}" != --lan ] && [ "$mode" != declassified ]; then
     die "Could not load your Plutonium setup. Open Plutonium to sign in again, or run Install."
   # The launcher's URI skips game selection and hands an online session to
   # the bootstrapper. Keep the Wine configuration and patches set above.
-  "$wine" "$launcher" "plutonium://play/$pmode" >> "$log" 2>&1 ||
+  # Stream download speed & ETA if Plutonium downloads first-time game assets
+  # or a client update before starting the bootstrapper.
+  pl_watch_pid=
+  pl_stop_watch() { [ -n "${pl_watch_pid:-}" ] && { kill "$pl_watch_pid" 2>/dev/null; wait "$pl_watch_pid" 2>/dev/null; pl_watch_pid=; } || true; }
+  pl_first=0; [ -d "$plutonium/storage/$t" ] || pl_first=1
+  pl_kb0=$(du -sk "$plutonium" 2>/dev/null | awk '{print $1}'); pl_kb0=${pl_kb0:-0}
+  pl_prev_exit=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\1/")
+  trap "pl_stop_watch${pl_prev_exit:+; $pl_prev_exit}" EXIT
+  (
+    p_t0="" p_last_kb=$pl_kb0 p_last_msg=""
+    while sleep 1.5; do
+      sil_wine_running 'plutonium-bootstrapper-win32\.exe' && break
+      p_kb=$(du -sk "$plutonium" 2>/dev/null | awk '{print $1}'); p_kb=${p_kb:-0}
+      if [ "$p_kb" -gt "$p_last_kb" ]; then
+        p_dkb=$((p_kb - pl_kb0))
+        if [ "$p_dkb" -gt 256 ]; then
+          p_now=$(date +%s)
+          [ -z "$p_t0" ] && p_t0=$p_now
+          p_mb=$((p_dkb / 1024)); [ "$p_mb" -lt 1 ] && p_mb=1
+          p_dt=$((p_now - p_t0))
+          p_extra=""
+          if [ "$p_dt" -ge 2 ]; then
+            p_spd=$(awk -v d="$p_dkb" -v t="$p_dt" 'BEGIN { printf "%.1f MB/s", (d / 1024.0) / t }')
+            if [ "$pl_first" = 1 ] && [ "$p_dkb" -lt 81920 ]; then
+              p_rem=$(( (81920 - p_dkb) * p_dt / p_dkb ))
+              p_extra=" ($p_spd · $(sil_fmt_eta "$p_rem"))"
+            else
+              p_extra=" ($p_spd)"
+            fi
+          fi
+          p_msg="Updating Plutonium: ${p_mb} MB${p_extra}…"
+          if [ "$p_msg" != "$p_last_msg" ]; then
+            printf '==> %s\n' "$p_msg"
+            p_last_msg=$p_msg
+          fi
+        fi
+        p_last_kb=$p_kb
+      fi
+    done
+  ) &
+  pl_watch_pid=$!
+  "$wine" "$launcher" "plutonium://play/$pmode" >> "$log" 2>&1 || {
+    pl_stop_watch
     die "Plutonium could not start $pmode (see logs/$game-$mode.log). Open Plutonium to check your session."
-  "$WINESERVER" -w 2>/dev/null
+  }
+  pl_stop_watch
+  wait_wine_exit 'plutonium-bootstrapper-win32\.exe|plutonium-launcher-win32\.exe' 1
   exit
 fi
 extra=${GAME_ARGS:-}
@@ -2580,7 +3756,17 @@ cd "$plutonium" || exit 1
 # shellcheck disable=SC2086
 if [ "$t" = iw5 ]; then
   on SKIP_INTRO && extra="+set intro 0 $extra"
+  if [ -n "$mtld3d_cache_file" ] || [ "${prewarm_active:-0}" = 1 ]; then
+    "$wine" bin/plutonium-bootstrapper-win32.exe "$pmode" "$winpath" +set name "${3:-Player}" -lan $extra >> "$log" 2>&1
+    wait_wine_exit 'plutonium-bootstrapper-win32\.exe' 0
+    exit
+  fi
   exec "$wine" bin/plutonium-bootstrapper-win32.exe "$pmode" "$winpath" +set name "${3:-Player}" -lan $extra >> "$log" 2>&1
 fi
 # shellcheck disable=SC2086
+if [ -n "$mtld3d_cache_file" ] || [ "${prewarm_active:-0}" = 1 ]; then
+  "$wine" bin/plutonium-bootstrapper-win32.exe "$pmode" "$winpath" +name "${3:-Player}" -lan $extra >> "$log" 2>&1
+  wait_wine_exit 'plutonium-bootstrapper-win32\.exe' 0
+  exit
+fi
 exec "$wine" bin/plutonium-bootstrapper-win32.exe "$pmode" "$winpath" +name "${3:-Player}" -lan $extra >> "$log" 2>&1

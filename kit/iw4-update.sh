@@ -26,7 +26,13 @@ sil_iw4x_prepare "$dir" || die "could not download the IW4X launcher"
 sil_winpath "$dir" > /dev/null   # a drive letter if Windows cannot name the folder
 step "Updating IW4X with its launcher"
 log="$home/logs/iw4-update.log"
+: > "$log"
+trap 'sil_iw4x_stop_watch' EXIT
+sil_iw4x_watch_log "$log" 0 0
 cd "$dir" || exit 1
-"$wine" iw4x-launcher.exe --arch x86 --skip-launch --no-shortcuts --no-connect-protocol > "$log" 2>&1 ||
+"$wine" iw4x-launcher.exe --arch x86 --skip-launch --no-shortcuts --no-connect-protocol >> "$log" 2>&1 || {
+  sil_iw4x_stop_watch
   die "the IW4X launcher could not update the game (see logs/iw4-update.log)"
+}
+sil_iw4x_stop_watch
 step "IW4X updated"

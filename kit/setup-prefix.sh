@@ -27,6 +27,7 @@ wine="$engine/lib/wine/x86_64-unix/wine"
 plutonium="$WINEPREFIX/drive_c/users/crossover/AppData/Local/Plutonium"
 cfg="$plutonium/config.json"
 . "$kit/tools/winpath.sh"
+. "$kit/tools/dl-progress.sh"
 step() { printf '==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 [ -x "$wine" ] || die "install the engine first"
@@ -88,11 +89,37 @@ install_plutonium() {
       die "could not download Plutonium from plutonium.pw: check your internet connection and press Install again"
     fi
   fi
-  step "Installing Plutonium: sign in when its window opens; Siliconium closes it automatically when you are in"
+  step "Downloading Plutonium files… sign in when its window opens (Siliconium closes it automatically)"
   (cd "$stage" && exec "$wine" plutonium.exe) > "$home/logs/plutonium-install.log" 2>&1 &
-  local installer=$! token= quiet= i
+  local installer=$! token= quiet= i p_t0= p_kb0=0 p_last_kb=0 p_kb p_now p_dt p_dkb p_mb p_spd p_rem p_eta p_extra p_ready_shown=0
   for i in $(seq 1 300); do
     if plutonium_ready; then token=1; break; fi
+    # Stream live download progress & ETA while plutonium.exe fetches client files (~150 MB)
+    if [ $((i % 2)) = 0 ] && [ -d "$plutonium" ]; then
+      p_kb=$(du -sk "$plutonium" 2>/dev/null | awk '{print $1}'); p_kb=${p_kb:-0}
+      if [ "$p_kb" -gt "$p_last_kb" ]; then
+        p_now=$(date +%s)
+        [ -z "$p_t0" ] && { p_t0=$p_now; p_kb0=$p_kb; }
+        p_mb=$((p_kb / 1024))
+        p_dt=$((p_now - p_t0))
+        p_dkb=$((p_kb - p_kb0))
+        p_extra=""
+        if [ "$p_dt" -ge 2 ] && [ "$p_dkb" -gt 256 ]; then
+          p_spd=$(awk -v d="$p_dkb" -v t="$p_dt" 'BEGIN { printf "%.1f MB/s", (d / 1024.0) / t }')
+          if [ "$p_kb" -lt 153600 ]; then
+            p_rem=$(( (153600 - p_kb) * p_dt / p_dkb ))
+            p_extra=" ($p_spd · $(sil_fmt_eta "$p_rem"))"
+          else
+            p_extra=" ($p_spd)"
+          fi
+        fi
+        step "Downloading Plutonium: ${p_mb} MB${p_extra} — sign in when its window opens"
+        p_last_kb=$p_kb
+      elif [ "$p_ready_shown" = 0 ] && [ -f "$plutonium/bin/plutonium-launcher-win32.exe" ]; then
+        step "Plutonium downloaded: sign in in its window (Siliconium closes it automatically when you are in)"
+        p_ready_shown=1
+      fi
+    fi
     # plutonium.exe is an updater: it downloads plutonium.new.exe and exits
     # before the new installer opens the launcher. Do not mistake that exit
     # for a failed install (which used to kill wineserver too early).

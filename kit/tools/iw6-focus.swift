@@ -31,16 +31,30 @@ let gamePID: Int32 = {
     guard args.count == 5 else { exit(2) }
     let wanted = Set(args[4].lowercased().split(separator: ":").map(String.init))
     let deadline = Date().addingTimeInterval(900)
+    var minimizedPID: Int32 = 0
+    var minimizedHits = 0
     while Date() < deadline {
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        var smallPID: Int32 = 0
         for info in list {
             guard let pid = info[kCGWindowOwnerPID as String] as? Int32,
                   let bounds = info[kCGWindowBounds as String] as? [String: Any],
                   let width = bounds["Width"] as? Double, let height = bounds["Height"] as? Double,
-                  width >= 640, height >= 480, let name = windowsProgram(pid)?.lowercased(), wanted.contains(name) else { continue }
-            return pid
+                  let name = windowsProgram(pid)?.lowercased(), wanted.contains(name) else { continue }
+            if width >= 640 && height >= 480 { return pid }
+            // Wine's iconic (minimized) titlebar window is 160x31 — avoid matching
+            // transient pre-game splash/console windows like Plutonium's console.
+            if smallPID == 0 && width >= 140 && width <= 220 && height >= 24 && height <= 48 { smallPID = pid }
         }
-        usleep(500_000)
+        // Exclusive-fullscreen games (e.g. WaW) can minimize themselves to Wine's
+        // iconic 160x31 window immediately when started behind another app.
+        if smallPID != 0 {
+            if smallPID == minimizedPID { minimizedHits += 1 } else { minimizedPID = smallPID; minimizedHits = 1 }
+            if minimizedHits >= 10 { return smallPID }
+        } else {
+            minimizedPID = 0; minimizedHits = 0
+        }
+        usleep(150_000)
     }
     exit(0)
 }()
@@ -119,12 +133,38 @@ let resident: Process? = {
     DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250), execute: work)
 }
 
+// macOS screenshot/screen-recording UI (Cmd+Shift+3/4/5) and transient system
+// overlays (Spotlight, Control Center, Notification Center): never hide the
+// fullscreen game when these appear on top, so players can capture or record
+// without the game minimizing.
+@Sendable func isSystemOverlay(_ app: NSRunningApplication?) -> Bool {
+    guard let app else { return true }
+    if app.activationPolicy != .regular { return true }
+    guard let bid = app.bundleIdentifier?.lowercased() else { return false }
+    return bid == "com.apple.screencaptureui"
+        || bid == "com.apple.screenshot.launcher"
+        || bid == "com.apple.screenshot"
+        || bid == "com.apple.screencontinuity"
+        || bid == "com.apple.controlcenter"
+        || bid == "com.apple.notificationcenterui"
+        || bid == "com.apple.spotlight"
+}
+
+@Sendable func isScreenCaptureActive() -> Bool {
+    !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.screencaptureui").isEmpty
+}
+
 // The game has been the active app at least once (its first frames drawn)
 var wasFront = false
 let updateVisibility: @MainActor @Sendable () -> Void = {
-    if workspace.frontmostApplication?.processIdentifier == gamePID {
+    let front = workspace.frontmostApplication
+    if front?.processIdentifier == gamePID {
         wasFront = true
         restoreOnActivation()
+    } else if isSystemOverlay(front) || isScreenCaptureActive() {
+        // Keep the fullscreen game visible and un-minimized while the user
+        // takes a screenshot or uses the screen recording overlay.
+        pending?.cancel()
     } else {
         pending?.cancel()
         // As Windows does with a fullscreen game on Alt-Tab: the game goes
@@ -167,16 +207,20 @@ let updateVisibility: @MainActor @Sendable () -> Void = {
 // _SLPSSetFrontProcessWithOptions, as macOS's own app switchers do; looked up
 // at run time, skipped if missing); the log says which one worked.
 /// The game's screen window (not one of its message boxes), if it is on screen.
-func gameWindowOnScreen() -> CGWindowID? {
+/// Returns (windowID, isMinimizedFallback) so bringFront can also restore a
+/// game that started minimized to Wine's iconic 160x31 window.
+func gameWindowOnScreen() -> (CGWindowID, Bool)? {
     guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return nil }
+    var fallback: CGWindowID?
     for info in list {
         guard (info[kCGWindowOwnerPID as String] as? Int32) == gamePID,
               let bounds = info[kCGWindowBounds as String] as? [String: Any],
-              let width = bounds["Width"] as? Double, let height = bounds["Height"] as? Double,
-              width >= 640 && height >= 480 else { continue }
-        return (info[kCGWindowNumber as String] as? UInt32) ?? 0
+              let width = bounds["Width"] as? Double, let height = bounds["Height"] as? Double else { continue }
+        let wid = (info[kCGWindowNumber as String] as? UInt32) ?? 0
+        if width >= 640 && height >= 480 { return (wid, false) }
+        if fallback == nil && width >= 140 && width <= 220 && height >= 24 && height <= 48 { fallback = wid }
     }
-    return nil
+    return fallback.map { ($0, true) }
 }
 func say(_ text: String) { FileHandle.standardOutput.write(Data("Siliconium: \(text)\n".utf8)) }
 /// WindowServer's own "make this the front process" (what a click on the
@@ -198,12 +242,18 @@ let frontFrom = (ProcessInfo.processInfo.environment["SIL_FOCUS_FROM"] ?? "").sp
 var frontTries = 0
 var frontFirstFrom = ""
 let frontSince = Date()
-let bringFront: Timer? = frontFrom.isEmpty ? nil : Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
+let bringFront: Timer? = frontFrom.isEmpty ? nil : Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { timer in
     MainActor.assumeIsolated {
         if Date().timeIntervalSince(frontSince) > 300 { timer.invalidate(); return }
-        guard let window = gameWindowOnScreen(), let game = NSRunningApplication(processIdentifier: gamePID),
+        guard let (window, isMinimized) = gameWindowOnScreen(), let game = NSRunningApplication(processIdentifier: gamePID),
               let front = workspace.frontmostApplication else { return }
         if front.processIdentifier == gamePID {
+            if isMinimized {
+                restoreOnActivation()
+                frontTries += 1
+                if frontTries >= 15 { timer.invalidate() }
+                return
+            }
             if frontTries > 0 {
                 say("the game is in front (from \(frontFirstFrom), \(frontTries == 1 ? "macOS request" : "WindowServer"))")
             }

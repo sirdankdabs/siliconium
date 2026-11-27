@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.4.0 — Native Metal D3D9, SIMD Audio & Lighter App
+
+**New**
+- **Native Direct3D 9 → Metal (`mtld3d v0.15.5`)**: replaces DXVK + MoltenVK on 32-bit CoD 4, CoD4X, World at War, Black Ops, MW2 / IW4X, and MW3 — delivering locked **150–160 FPS at 2560×1440** (up to **+45% higher FPS** on WaW Zombies and CoD4X, plus a custom DXSO float-clamp fix for *Call of the Dead* frost shaders). `D3D9_MTLD3D=0` keeps DXVK + MoltenVK if needed.
+- **Custom SSE2 + SIMD 32-bit Audio (`dsound.dll`)**: **7.1× faster** audio mixing (**−86% audio CPU** under 24-voice load; **14× less audio-thread CPU** live in MW2 32-bit) with zero dropouts (`DSOUND_SSE=0` restores stock Wine `dsound.dll`).
+- **Unified Plutonium Launcher & Offline *Your Own Game Files***: World at War, Black Ops, Black Ops II, and Modern Warfare 3 now live in one unified **Plutonium Launcher** sidebar section, while **Offline → Your Own Game Files** plays your own CoD 4, MW2, MW3, BO2 (with **T6SP-Mod** on by default), and Ghosts folders directly without Steam — with **IW-Pad v0.1.3** (32-bit & 64-bit), **IW3SP-MOD**, and automatic folder linking to Plutonium, IW4X, and CoD4X.
+- **Live download speed & ETA**: real-time MB/s and remaining time for Plutonium, IW4X, BOIII, IW7-Mod, and engine setup.
+- **Smart HiDPI & Pre-warmed Wine engine**: keeps sharp HiDPI on D3D9 (`mtld3d`) and BO2 with zero display mode switch; pre-warms `wineserver` in the background to cut cold launches by **~4 seconds**.
+- **Screenshots & streaming**: macOS screenshots and screen recordings (`Cmd+Shift+3/4/5`) no longer minimize fullscreen games, and a new **Hide fullscreen game on Cmd+Tab** toggle supports Discord/OBS window capture.
+
+**Changed**
+- **23% smaller app (`144 MB → 111 MB`)**: unified the tessellation-fixed DXMT translator (`winemetal.so`) engine-wide across every Direct3D 11 game, eliminated the separate `cache/aw-engine` clone, and removed unused payload DLLs.
+- **Apple Silicon D3D11 tuning**: **+18% FPS**, **−62% frame-time spikes (p99)**, and **−280 MB RAM** on **WWII**; **+10–30% FPS** and **−570 MB RAM** on **Black Ops III** with balanced first-start render scale (keeping crisp native menus/HUD); **−230 MB RAM** and smooth first-start render scaling on **Black Ops 4** for base & Pro Apple silicon Macs.
+- **Bundled `x87sidecar v1.9.1.2`**: includes upstream SMC memory-leak and `fild m64` fixes, auto-upgraded on existing engines.
+- **Smoother SwiftUI app**: moved log streaming and filesystem status checks off the main thread so script output never causes UI redraws.
+
+**Fixed**
+- Fixed a macOS BSD `awk` first-launch bug in `cfg_batch()` that silently skipped initial defaults on brand-new Plutonium and IW4X installs (leaving BO1 at `800×600` on first launch).
+- Fixed orphaned `winedevice.exe` background processes surviving game exit and case-sensitive window tracking for `BlackOps4.exe`, `BlackOps3.exe`, `BlackOps.exe`, `CoDWaW.exe`, and `T6SP-Mod.exe`.
+- Fixed BO2 offline black-screen hangs on mismatched `localization.txt` (automatic repair with backup) and enabled bidirectional local `mtld3d` shader cross-seeding across sibling D3D9 installs.
+
 ## 1.3.2
 
 **Changed**

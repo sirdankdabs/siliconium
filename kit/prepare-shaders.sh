@@ -98,9 +98,11 @@ for entry in $maps; do
     bo2:mp_*) mode=mp;      scache=$dxmt_cache ;;
     bo2:*)    mode=zombies; scache=$dxmt_cache ;;
     iw4:*)  mode=play;    scache="$home/cache/iw4x.dxvk-cache" ;;
-    *:mp_*) mode=mp
-            scache="$home/cache/plutonium-bootstrapper-win32.dxvk-cache"
-            [ "$game" = bo1 ] && scache="$home/cache/bo1-mp/plutonium-bootstrapper-win32.dxvk-cache" ;;
+    waw:mp_*) mode=mp;      scache="$home/cache/t4/plutonium-bootstrapper-win32.dxvk-cache" ;;
+    waw:*)    mode=zombies; scache="$home/cache/t4/plutonium-bootstrapper-win32.dxvk-cache" ;;
+    bo1:mp_*) mode=mp;      scache="$home/cache/bo1-mp/plutonium-bootstrapper-win32.dxvk-cache" ;;
+    bo1:*)    mode=zombies; scache="$home/cache/bo1/plutonium-bootstrapper-win32.dxvk-cache" ;;
+    *:mp_*) mode=mp;      scache="$home/cache/plutonium-bootstrapper-win32.dxvk-cache" ;;
     *)      mode=zombies; scache="$home/cache/plutonium-bootstrapper-win32.dxvk-cache" ;;
   esac
   log="$home/logs/$game-$mode.log"

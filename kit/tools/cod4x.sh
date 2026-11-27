@@ -51,15 +51,23 @@ c4_error=
 # A Steam library's game folder (Steam would put its own files back, and its
 # Call of Duty 4 must stay as Steam installed it)
 sil_cod4x_is_steam() { case "$1/" in */steamapps/common/*) return 0 ;; esac; return 1; }
+# Also play from an APFS clone when sharing Your Own Game Files' CoD 4 folder,
+# so CoD4X's mss32.dll loader never alters the offline campaign's files.
+sil_cod4x_uses_copy() {
+  sil_cod4x_is_steam "$1" && return 0
+  [ -n "${OWN_COD4_DIR:-}" ] && [ "$1" = "$OWN_COD4_DIR" ] && return 0
+  return 1
+}
 
 sil_cod4x_fetch() {
-  local entry name sum url f got
+  local entry name sum url f got idx=0 total=${#c4_files[@]}
   mkdir -p "$c4_store" || { c4_error="Could not create $c4_store."; return 1; }
   for entry in "${c4_files[@]}"; do
+    idx=$((idx + 1))
     read -r name sum url <<< "$entry"
     f="$c4_store/$name"
     [ -f "$f" ] && [ "$(shasum -a 256 "$f" | cut -d' ' -f1)" = "$sum" ] && continue
-    printf '==> %s\n' "Downloading CoD4X ($name)"
+    printf '==> %s\n' "Downloading CoD4X ($idx/$total: $name)…"
     if ! curl -fsSL --proto '=https' --retry 2 --connect-timeout 15 -o "$f.download" "$url"; then
       rm -f "$f.download"
       c4_error="Could not download CoD4X from GitHub: check your internet connection and press Play again."
@@ -143,7 +151,7 @@ sil_cod4x_prepare() {   # <game folder>
   [ -n "$users" ] || users="$WINEPREFIX/drive_c/users/crossover/AppData/Local"
   c4_home="$users/CallofDuty4MW"
   sil_cod4x_fetch || return 1
-  if sil_cod4x_is_steam "$src"; then
+  if sil_cod4x_uses_copy "$src"; then
     c4_dir="$home/cod4x/$(basename "$src")"
     sil_cod4x_clone "$src" "$c4_dir" || { c4_error=${sil_copy_error:-"Could not make CoD4X's copy of Call of Duty 4 in $home/cod4x."}; return 1; }
   else

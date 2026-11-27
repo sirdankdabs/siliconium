@@ -21,7 +21,7 @@
 
 ---
 
-Download your games in the **Steam Library** or **Battle.net**, or choose a game folder for Plutonium, IW4X, CoD4X or BOIII, then press **Play**. Siliconium brings its own engine, built from open source, with patches tuned for Apple GPUs and Rosetta. You don't need CrossOver, a Wine install or Terminal.
+Download your games in the **Steam Library** or **Battle.net**, or choose your own game folders for **Plutonium**, **IW4X**, **CoD4X**, **BOIII**, or **Offline campaigns**, then press **Play**. Siliconium brings its own open-source engine tuned for Apple silicon — native Metal translation for Direct3D 9 (`mtld3d`) and Direct3D 11 (`DXMT`), SIMD-accelerated 32-bit audio, and Rosetta x87 acceleration. You don't need CrossOver, a Wine install or Terminal.
 
 <p align="center">
   <a href="docs/assets/showcase.mp4"><img src="docs/assets/showcase-poster.jpg" width="820" alt="Siliconium showcase video"></a><br>
@@ -29,8 +29,8 @@ Download your games in the **Steam Library** or **Battle.net**, or choose a game
 </p>
 
 <p align="center">
-  <a href="docs/assets/steam-library.jpg"><img src="docs/assets/steam-library.jpg" width="820" alt="The Siliconium app, Steam Library"></a><br>
-  The Steam Library: twelve Call of Duty games from Steam, each with a button for every part
+  <a href="docs/assets/plutonium-launcher.jpg"><img src="docs/assets/plutonium-launcher.jpg" width="820" alt="Siliconium 1.4.0 — Plutonium Launcher"></a><br>
+  Siliconium 1.4.0: unified Plutonium Launcher, Steam Library, Battle.net, community clients and offline campaigns in one app
 </p>
 
 <p align="center">
@@ -41,28 +41,28 @@ Download your games in the **Steam Library** or **Battle.net**, or choose a game
 
 ## Games
 
-There are three ways to play. The **Steam Library** plays Steam's own files with Siliconium's setup, and the **Battle.net** section does the same for the games sold only on Battle.net (Black Ops 4, also offline with Project-BO4's **Shield**). The **community clients** (Plutonium, IW4X, CoD4X, BOIII, IW7-Mod) and the **Offline** campaign (Ghosts) play your game folder, and IW4X, CoD4X, BOIII and IW7-Mod can also use your Steam download. The **AlterWare** section explains why AlterWare's Ghosts and Advanced Warfare clients cannot be played on Apple silicon.
+There are four ways to play. The **Steam Library** plays Steam's own files with Siliconium's setup, and the **Battle.net** section does the same for the games sold only on Battle.net (Black Ops 4, also offline with Project-BO4's **Shield**). The **community clients** (**Plutonium Launcher**, IW4X, CoD4X, BOIII, IW7-Mod) play your game folders or your Steam downloads, and **Offline → Your Own Game Files** plays your own CoD 4, MW2, MW3, Black Ops II (with **T6SP-Mod**), and Ghosts campaign folders directly without Steam (with automatic folder linking to Plutonium, IW4X, and CoD4X). The **AlterWare** section explains why AlterWare's Ghosts and Advanced Warfare clients cannot be played on Apple silicon.
 
-FPS numbers come from a MacBook Pro M1 Pro (macOS 15.8.3) at 2560×1440, in game, with the display at 160 Hz. A range is the lowest and highest the FPS counter showed during play; "avg" is the average over a play session. Your numbers depend on your Mac and settings. Test conditions and what is verified for each game: [COMPATIBILITY.md](COMPATIBILITY.md).
+FPS numbers come from a MacBook Pro M1 Pro (macOS 15+ / Apple silicon) at 2560×1440, in game, with the display at 160 Hz. A range is the lowest and highest the FPS counter showed during play; "avg" is the average over a play session. Your numbers depend on your Mac and settings. Test conditions and what is verified for each game: [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ### Steam Library
 
 | Game | Campaign | Multiplayer | Zombies |
 |---|---|---|---|
 | **Call of Duty** (2003) | Works (player confirmed)<br>**148 FPS** avg, median 157 | Not tested<br>not measured yet | – |
-| **Call of Duty: United Offensive** (2004)<br>*new in 1.1.1* | Works (player confirmed)<br>**122 FPS** avg, median 118 | Not tested<br>not measured yet | – |
+| **Call of Duty: United Offensive** (2004) | Works (player confirmed)<br>**122 FPS** avg, median 118 | Not tested<br>not measured yet | – |
 | **Call of Duty 2** (2005) | Works (player confirmed)<br>**133–160 FPS** | Not re-tested since the fixes<br>not measured yet | – |
-| **Call of Duty 4: Modern Warfare** (2007) | Works<br>**137–153 FPS** | Not tested<br>not measured yet (CoD4X: see below) | – |
-| **World at War** (2008) | Runs<br>not measured yet | Not tested<br>not measured yet | Runs<br>**101–160 FPS** (Verrückt) |
-| **Modern Warfare 2** (2009) | Works (player confirmed)<br>**151–160 FPS** | Runs<br>menus ~90 FPS; not measured in a match yet | – |
-| **Black Ops** (2010) | Accepted by the player<br>**~120 FPS** in a mission, with 10–15 s stretches at 48–62 (not solved yet) | Accepted by the player<br>**~91 FPS** (the game's own cap online) | Accepted by the player<br>**147–160 FPS** |
+| **Call of Duty 4: Modern Warfare** (2007) | Works (`mtld3d`)<br>**158–160 FPS** | Not tested<br>(CoD4X: see below) | – |
+| **World at War** (2008) | Runs (`mtld3d`)<br>not measured yet | Not tested<br>not measured yet | Runs (`mtld3d`)<br>**143–160 FPS** |
+| **Modern Warfare 2** (2009) | Works (player confirmed)<br>**160 FPS** flat (`mtld3d` 32-bit) / 151–160 (64-bit) | Runs<br>menus ~90 FPS; not measured in a match yet | – |
+| **Black Ops** (2010) | Works (`mtld3d`)<br>**145–160 FPS** | Accepted by the player<br>**~91 FPS** (the game's own cap online) | Works (`mtld3d`)<br>**152–160 FPS** |
 | **Modern Warfare 3** (2011) | Works<br>**115–160 FPS** (first mission), Survival 150 | Blocked: stays at "Connecting to online services" | – |
-| **Black Ops II** (2012) | Runs (player)<br>**156–158 FPS** | Not tested<br>not measured yet | Runs well (player)<br>**129–138 FPS** (Town) |
-| **Ghosts** (2013) | Runs (player)<br>**150–154 FPS** (borderless, on the 154 Hz desktop) | Not tested<br>not measured yet | – |
-| **Advanced Warfare** (2014) | Playable (validation in progress)<br>**108 FPS** avg (first mission, 15 min) | Blocked: stays at "Connecting to online services" | Exo Zombies: blocked, as Multiplayer |
-| **Black Ops III** (2015) | Not verified yet<br>not measured yet | Not verified yet<br>not measured yet | Runs (player)<br>**~55 FPS** at Extra detail (GPU-bound) |
+| **Black Ops II** (2012) | Works (`T6SP-Mod`)<br>**158–160 FPS** | Not tested<br>not measured yet | Works<br>**158–160 FPS** |
+| **Ghosts** (2013) | Runs (player)<br>**150–154 FPS** (borderless) | Not tested<br>not measured yet | – |
+| **Advanced Warfare** (2014) | Playable<br>**108 FPS** avg (first mission, unified DXMT) | Blocked: stays at "Connecting to online services" | Exo Zombies: blocked, as Multiplayer |
+| **Black Ops III** (2015) | Runs<br>shared with BOIII | Runs (Clean Ops)<br>shared with BOIII | Works<br>**71–81 FPS** (80% scale) / **62 FPS** native 1440p |
 | **Infinite Warfare** (2016) | Playable<br>**~50–58 FPS** at the game's own settings (GPU-bound) | Not tested<br>not measured yet | Not tested in Steam's game<br>(IW7-Mod: see below) |
-| **WWII** (2017)<br>*new in 1.3.0* | Playable<br>**74–78 FPS** at the game's own settings (first mission, GPU-bound) | Runs<br>**~60 FPS** online (Team Deathmatch) | Runs (player)<br>**52–63 FPS** (The Final Reich, solo) |
+| **WWII** (2017) | Playable<br>**74–78 FPS** (first mission, GPU-bound) | Runs<br>**~60–70 FPS** | Runs (`+18%` tuned)<br>**70 FPS** avg (**−62%** p99 spikes) |
 
 Call of Duty's official timedemo runs at 138–139 FPS. Black Ops III has one **Play** button: Campaign, Multiplayer and Zombies are chosen in its own menu; its **Fixes** menu offers **Clean Ops**, the community Multiplayer patch (also in the Mod Tools' map tests). Its **Mod Tools** button downloads Treyarch's Black Ops III Mod Tools from Steam: the launcher, Radiant, compiling, lighting and linking work, in a workspace that never changes Steam's files (your maps and mods are linked from `Documents/Black Ops III Mod Tools`).
 
@@ -70,21 +70,28 @@ Call of Duty's official timedemo runs at 138–139 FPS. Black Ops III has one **
 
 | Game | Multiplayer | Zombies | Blackout |
 |---|---|---|---|
-| **Black Ops 4** (2018)<br>*new in 1.3.0* | Not tested yet | Plays (player)<br>**~62 FPS** at 1920x1080, 100 % render resolution (Blood of the Dead, GPU-bound); also offline with **Shield** (player) | Not tested yet |
+| **Black Ops 4** (2018) | Not tested yet | Plays (player)<br>**~62 FPS** at 75% / 1080p render scale (Blood of the Dead, GPU-bound); also offline with **Shield** | Not tested yet |
 
 ### Community clients and offline
 
 | | Game | Client | Modes | Status | FPS |
 |---|---|---|---|---|---|
-| **T4** | World at War | Plutonium | Zombies, Campaign, Multiplayer | Works | Zombies ~104 (CPU-bound), Multiplayer ~136; Campaign not measured yet |
-| **T5** | Black Ops | Plutonium | Zombies, Campaign, Multiplayer | Works | Zombies 152–154, Multiplayer ~131; Campaign not measured yet |
-| **T6** | Black Ops II | Plutonium | Zombies, Multiplayer | Works | Zombies 159–160 (Town); Multiplayer not measured yet |
-| **IW5** | Modern Warfare 3 | Plutonium | Multiplayer | Works | 138–156 |
-| **IW3** | Call of Duty 4 | CoD4X | Multiplayer | Works (player confirmed) | about 120 once its shaders are compiled (83–120 in play) |
-| **IW4** | Modern Warfare 2 | IW4X | Multiplayer | Works | 158–160 (with Steam's 64-bit game: not tested yet) |
-| **T7** | Black Ops III | Ezz (BOIII) | Zombies, Campaign, Multiplayer | Works | 120+ at High with lighter shadows and effects; 40–50 with everything at maximum (GPU-bound) |
-| **IW7** | Infinite Warfare | IW7-Mod (CBServers) | Zombies, Campaign, Multiplayer, custom maps | Zombies works (player) | Zombies 55–70 at High settings |
-| **IW6** | Ghosts | Offline | Campaign | Works | not measured yet (Steam Library copy: 150–154) |
+| **T4** | World at War | Plutonium | Zombies, Campaign, Multiplayer | Works (`mtld3d`) | Zombies **143–160** (Der Riese), Multiplayer ~136 |
+| **T5** | Black Ops | Plutonium | Zombies, Campaign, Multiplayer | Works (`mtld3d`) | Zombies **152–160** (Kino / Call of the Dead), Multiplayer ~131 |
+| **T6** | Black Ops II | Plutonium | Zombies, Multiplayer | Works (`DXMT`) | Zombies **158–160** (Nuketown / Town) |
+| **IW5** | Modern Warfare 3 | Plutonium | Multiplayer | Works (`mtld3d`) | **148–160** (Dome) |
+| **IW3** | Call of Duty 4 | CoD4X | Multiplayer | Works (`mtld3d`) | **144–160** (Crash) |
+| **IW4** | Modern Warfare 2 | IW4X | Multiplayer | Works (`mtld3d`) | **155–160** (Rust) |
+| **T7** | Black Ops III | Ezz (BOIII) | Zombies, Campaign, Multiplayer | Works (`DXMT`) | **71–81** (80% scale, crisp native UI) / **62** native 1440p; **120+** at lighter settings |
+| **IW7** | Infinite Warfare | IW7-Mod (CBServers) | Zombies, Campaign, Multiplayer, custom maps | Zombies works (`DXMT`) | Zombies **55–70** at High settings |
+| **OF** | CoD 4, MW2, MW3, BO2, Ghosts | Your Own Game Files | Offline Campaigns | Works | **150–160** (`IW3SP-MOD`, `IW-Pad v0.1.3`, `T6SP-Mod` included) |
+
+**New in 1.4.0**
+- **Native Direct3D 9 → Metal (`mtld3d v0.15.5`)** for 32-bit CoD 4, CoD4X, WaW, BO1, MW2/IW4X, and MW3: locked **150–160 FPS** (up to **+45%** faster on WaW Zombies and CoD4X, with *Call of the Dead* frost shaders fixed).
+- **Custom SSE2 + SIMD 32-bit audio (`dsound.dll`)**: **7.1× faster** audio mixing (**−86%** audio CPU under load; **14× less** audio-thread CPU in MW2).
+- **23% smaller app (`144 MB → 111 MB`)**: unified tessellation-fixed DXMT (`winemetal.so`) across all Direct3D 11 titles and removed duplicate payloads.
+- **Unified Plutonium Launcher & Offline *Your Own Game Files*** (CoD 4, MW2, MW3, BO2 with default **T6SP-Mod**, Ghosts, plus **IW-Pad v0.1.3** 32/64-bit), live MB/s + ETA download progress, Smart HiDPI, pre-warmed Wine startup (~4 s faster), and fullscreen screenshot/recording support (`Cmd+Shift+3/4/5`) without minimizing.
+- **Apple Silicon D3D11 tuning**: WWII **+18% FPS** / **−62%** p99 spikes / **−280 MB RAM**; BO3 **+10–30% FPS** / **−570 MB RAM**; BO4 **−230 MB RAM** and smooth first-start scaling.
 
 **New in 1.3.0**
 - **Battle.net** section with **Black Ops 4**: Siliconium installs Battle.net for Windows, you sign in and install the game there, and **Play** starts it with Siliconium's setup.
@@ -111,12 +118,12 @@ All changes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Highlights
 
-- **Fast and steady.** Direct3D 9 runs on DXVK + MoltenVK and Direct3D 11 on DXMT. Call of Duty and United Offensive draw through Siliconium's own GLDirect build (OpenGL on Direct3D 9). Shaders compile in the background and are kept between sessions. The games run on the performance cores, and x87 maths is accelerated by [x87sidecar](https://github.com/athei/x87sidecar).
-- **Fullscreen done right.** Games open at your display's resolution and true refresh rate. On a HiDPI desktop drawn at the panel's own resolution (for example "looks like 1920x1080" on a 4K display) your Mac keeps its display mode: no switch when a game starts, ends or is left with Cmd-Tab. A scaled desktop (one that macOS draws larger than the panel) is held in a 1x mode while the game runs, so it doesn't cost frames. Every game runs in macOS Game Mode, comes to the front by itself, and is back within about a second after Cmd-Tab.
-- **Controllers.** Xbox, PlayStation (DualShock 4, DualSense, DualSense Edge), Switch Pro, Joy-Con and 8BitDo, wired or Bluetooth, also in the Steam games that have no controller support on PC. Optional console-style aim assist.
-- **No surprises.** "Set Optimal Settings?" and "Safe Mode" prompts never undo your settings. Intro movies are skipped.
-- **Ready the first time.** *Prepare all maps* compiles every map's shaders once, so even a first visit loads complete.
-- **Keeps itself up to date:** the app, Plutonium, IW4X, CoD4X, boiii and the x87 accelerator.
+- **Native Metal performance.** 32-bit Direct3D 9 games translate straight to Metal via [`mtld3d`](https://github.com/athei/mtld3d) (with DXVK + MoltenVK kept for CoD 2 and 64-bit Steam MW2/MW3), Direct3D 11 runs on unified tessellation-fixed [`DXMT`](https://github.com/3Shain/dxmt), and Call of Duty / United Offensive draw through Siliconium's own GLDirect build. 32-bit audio uses a custom SSE2+SIMD Wine `dsound.dll`, x87 maths runs on [`x87sidecar`](https://github.com/athei/x87sidecar), and a pre-warmed Wine engine cuts startup time by ~4 s.
+- **Fullscreen & Smart HiDPI done right.** Games open at your display's resolution and true refresh rate. Smart HiDPI keeps sharp HiDPI active on `mtld3d` and BO2 with zero display mode switch, while heavy D3D11 titles hold an optimal 1x mode on scaled desktops. Every game runs in macOS Game Mode, comes to the front by itself, supports macOS screenshots/recording (`Cmd+Shift+3/4/5`) without minimizing, and returns within ~1 s after Cmd-Tab.
+- **Controllers.** Xbox, PlayStation (DualShock 4, DualSense, DualSense Edge), Switch Pro, Joy-Con and 8BitDo, wired or Bluetooth, including full controller mapping for PC titles that never shipped gamepad support plus **IW-Pad v0.1.3** (32-bit & 64-bit) and optional console-style aim assist.
+- **No surprises.** "Set Optimal Settings?" and "Safe Mode" prompts never undo your settings. Intro movies are skipped. Live MB/s download speed and ETA appear across every launcher setup.
+- **Ready the first time.** Local shader caching and cross-seeding across sibling D3D9 installs, plus *Prepare all maps* to precompile every map once.
+- **Keeps itself up to date:** the app, Plutonium, IW4X, CoD4X, boiii, engine modules and the x87 accelerator.
 
 ## Getting started
 
@@ -194,7 +201,7 @@ bo3/      BO3 Mac Client and BO3MacFix sources (optional Black Ops III for Mac)
 - Optional fixes, downloaded from their authors and never shipped: **JerryALT** ([IW3SP-MOD](https://gitea.com/JerryALT/iw3sp_mod)), **JBShady** ([T4M Enhanced](https://github.com/JBShady/T4M-Enhanced)), **GalvarinoDev** ([IW-Pad](https://github.com/GalvarinoDev/IW-Pad)), **Rattpak** ([T6SP-Mod](https://github.com/Rattpak/T6SP-Mod-Release)), **nxghtwolf** ([Clean Ops](https://cleanops.dev)), **project-bo4** ([Shield](https://github.com/project-bo4/shield-development); Build R2 by **Scroptss**).
 - **The Wine project**, **CodeWeavers** (open-source CrossOver Wine) and **WineHQ** (Wine Mono, Wine Gecko).
 - **Sikarugir** (Gcenx and contributors): the engine's x86_64 libraries.
-- **athei**: [x87sidecar](https://github.com/athei/x87sidecar). **Lifeisawful**: [rosettax87](https://github.com/Lifeisawful/rosettax87).
+- **athei**: [mtld3d](https://github.com/athei/mtld3d) (native Direct3D 9 → Metal) and [x87sidecar](https://github.com/athei/x87sidecar). **Lifeisawful**: [rosettax87](https://github.com/Lifeisawful/rosettax87).
 - **DXVK** (Philip Rebohle and contributors), **Sporif** (dxvk-async), **3Shain**: [DXMT](https://github.com/3Shain/dxmt). **Khronos**: MoltenVK.
 - **SciTech Software** (GLDirect, original author Keith Harrison), **MrRendroc** ([GLDirect 5](https://github.com/MrRendroc/gldirect)) and **Brian Paul** (Mesa 6.0): Call of Duty's OpenGL on Direct3D 9 (MIT; notices in `kit/payload/steam/cod1-gl/LICENSE.txt`).
 - **BO3MacFix** by Emma / InvoxiPlayGames and Anthony / serious, with **T7Patch** work by its authors.
@@ -210,4 +217,4 @@ Not affiliated with Activision, Blizzard, Treyarch, Infinity Ward, Sledgehammer 
 
 ## License
 
-The app and scripts are MIT ([LICENSE](LICENSE)). The patches follow the licenses of what they patch (Wine: LGPL-2.1+, DXVK: zlib, DXMT: its license). Downloaded and included components keep their own licenses.
+The app and scripts are MIT ([LICENSE](LICENSE)). The patches follow the licenses of what they patch (Wine: LGPL-2.1+, mtld3d: MIT, DXVK: zlib, DXMT: its license). Downloaded and included components keep their own licenses.
