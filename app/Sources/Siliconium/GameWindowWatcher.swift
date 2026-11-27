@@ -139,16 +139,65 @@ enum Paths {
         if let custom = ProcessInfo.processInfo.environment["SIL_HOME"], !custom.isEmpty { return true }
         return false
     }()
-    /// ~/Library/Application Support/Siliconium (or $SIL_HOME when overridden).
-    /// The first time, an install of the app's previous name is moved here whole
-    /// (engine, prefixes, Plutonium, caches, settings), so nothing has to be set up again.
+    /// True when any component of a Unix path ends with "." or " " (Windows/Wine
+    /// strips trailing dots/spaces in RtlDosPathNameToNtPathName_U, causing
+    /// kernel32.dll status c0000135 on every Wine launch).
+    static func hasWineUnsafeComponent(_ path: String) -> Bool {
+        path.split(separator: "/").contains { comp in
+            comp != "." && comp != ".." && (comp.hasSuffix(".") || comp.hasSuffix(" "))
+        }
+    }
+    /// True when Siliconium moved its data folder outside $HOME because the Mac
+    /// user folder ends in a trailing dot or space.
+    static let usesIsolatedHome: Bool = {
+        !isCustomHome && hasWineUnsafeComponent(FileManager.default.homeDirectoryForCurrentUser.path)
+    }()
+    private static func darwinUserCacheDir() -> String? {
+        let len = confstr(_CS_DARWIN_USER_CACHE_DIR, nil, 0)
+        guard len > 0 else { return nil }
+        var buf = [CChar](repeating: 0, count: len)
+        guard confstr(_CS_DARWIN_USER_CACHE_DIR, &buf, len) > 0 else { return nil }
+        return String(cString: buf)
+    }
+    /// ~/Library/Application Support/Siliconium (or $SIL_HOME, or a private 0700
+    /// Wine-safe folder when the Mac username ends in "." or " ").
     static let home: URL = {
         if let custom = ProcessInfo.processInfo.environment["SIL_HOME"], !custom.isEmpty {
             return URL(fileURLWithPath: custom)
         }
         let fm = FileManager.default
         let support = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        let home = support.appendingPathComponent("Siliconium")
+        let defaultHome = support.appendingPathComponent("Siliconium")
+        if hasWineUnsafeComponent(fm.homeDirectoryForCurrentUser.path) {
+            let safeShared = URL(fileURLWithPath: "/Users/Shared/Siliconium-\(getuid())")
+            let target: URL
+            if fm.fileExists(atPath: safeShared.path) ||
+               (try? fm.createDirectory(at: safeShared, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])) != nil {
+                target = safeShared
+            } else if let cache = darwinUserCacheDir() {
+                let cURL = URL(fileURLWithPath: cache).appendingPathComponent("Siliconium")
+                try? fm.createDirectory(at: cURL, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+                target = cURL
+            } else {
+                target = defaultHome
+            }
+            if target != defaultHome {
+                let oldEngine = defaultHome.appendingPathComponent("engine")
+                let newEngine = target.appendingPathComponent("engine")
+                if fm.fileExists(atPath: oldEngine.path), !fm.fileExists(atPath: newEngine.path) {
+                    try? fm.moveItem(at: oldEngine, to: newEngine)
+                }
+                let oldSettings = defaultHome.appendingPathComponent("settings.conf")
+                let newSettings = target.appendingPathComponent("settings.conf")
+                if fm.fileExists(atPath: oldSettings.path), !fm.fileExists(atPath: newSettings.path) {
+                    try? fm.moveItem(at: oldSettings, to: newSettings)
+                }
+            }
+            return target
+        }
+        let home = defaultHome
         let legacy = support.appendingPathComponent(["Black", "Ops", "Mac"].joined(separator: " "))
         if !fm.fileExists(atPath: home.path), fm.fileExists(atPath: legacy.path) {
             try? fm.moveItem(at: legacy, to: home)
@@ -160,6 +209,64 @@ enum Paths {
         }
         return home
     }()
+    /// Environment for child kit scripts and tools: propagates SIL_HOME whenever
+    /// running isolated or in a custom sandbox.
+    static func processEnvironment(merging extra: [String: String] = [:]) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        if isCustomHome || usesIsolatedHome {
+            env["SIL_HOME"] = home.path
+        }
+        for (k, v) in extra { env[k] = v }
+        return env
+    }
+    /// Scrubs the user's Mac home path and username from logs before display or
+    /// clipboard copy (both Unix `/Users/<name>` and Wine `Z:\Users\<name>`).
+    static func redact(_ text: String) -> String {
+        let userHome = FileManager.default.homeDirectoryForCurrentUser.path
+        let trimmedHome = userHome.trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+        var out = text
+        if !userHome.isEmpty {
+            out = out.replacingOccurrences(of: userHome, with: "~")
+        }
+        if !trimmedHome.isEmpty && trimmedHome != userHome {
+            out = out.replacingOccurrences(of: trimmedHome, with: "~")
+        }
+        let keepUsers: Set<String> = ["shared", "public", "crossover", "runner", "<user>"]
+        if let unixRe = try? NSRegularExpression(pattern: #"/Users/([^/\s:"']+)"#) {
+            let matches = unixRe.matches(in: out, range: NSRange(out.startIndex..., in: out)).reversed()
+            for m in matches {
+                guard let r = Range(m.range(at: 1), in: out) else { continue }
+                if !keepUsers.contains(out[r].lowercased()) {
+                    out.replaceSubrange(r, with: "<user>")
+                }
+            }
+        }
+        if let winRe = try? NSRegularExpression(pattern: #"(?i)([A-Z]:\\{1,2}Users\\{1,2})([^\\/\s:"']+)"#) {
+            let matches = winRe.matches(in: out, range: NSRange(out.startIndex..., in: out)).reversed()
+            for m in matches {
+                guard let r = Range(m.range(at: 2), in: out) else { continue }
+                if !keepUsers.contains(out[r].lowercased()) {
+                    out.replaceSubrange(r, with: "<user>")
+                }
+            }
+        }
+        return out
+    }
+    /// Non-identifying hardware & OS summary shown at the top of LogView for
+    /// faster troubleshooting when users share logs.
+    static func cpuBrand() -> String {
+        var size = 0
+        sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
+        guard size > 0 else { return "Apple silicon" }
+        var buf = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("machdep.cpu.brand_string", &buf, &size, nil, 0) == 0 else { return "Apple silicon" }
+        return String(cString: buf)
+    }
+    static func freeDiskGB() -> Int? {
+        guard let attrs = try? FileManager.default.attributesOfFileSystem(forPath: home.deletingLastPathComponent().path),
+              let free = attrs[.systemFreeSize] as? NSNumber else { return nil }
+        return Int(free.uint64Value / 1_073_741_824)
+    }
     static var engine: URL { home.appendingPathComponent("engine") }
     static var prefix: URL { home.appendingPathComponent("prefix") }
     static var steamPrefix: URL { home.appendingPathComponent("prefix-steam") }

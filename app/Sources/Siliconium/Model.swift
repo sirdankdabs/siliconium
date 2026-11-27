@@ -189,6 +189,7 @@ final class AppState: ObservableObject {
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/bash")
             p.arguments = [Paths.kit.appendingPathComponent("launch.sh").path, "prewarm"] + (useSteamPrefix ? ["steam"] : [])
+            p.environment = Paths.processEnvironment()
             p.standardInput = FileHandle.nullDevice
             p.standardOutput = FileHandle.nullDevice
             p.standardError = FileHandle.nullDevice
@@ -212,6 +213,7 @@ final class AppState: ObservableObject {
             let p = Process()
             p.executableURL = tool
             p.arguments = ["restore"]
+            p.environment = Paths.processEnvironment()
             if let h = try? FileHandle(forWritingTo: log) {
                 h.seekToEndOfFile()
                 p.standardOutput = h
@@ -240,9 +242,7 @@ final class AppState: ObservableObject {
             let p = Process()
             p.executableURL = tool
             p.arguments = ["info"]
-            var env = ProcessInfo.processInfo.environment
-            env["SIL_KEEP_UNSCALED"] = keep
-            p.environment = env
+            p.environment = Paths.processEnvironment(merging: ["SIL_KEEP_UNSCALED": keep])
             let pipe = Pipe()
             p.standardOutput = pipe
             p.standardError = FileHandle.nullDevice
@@ -1315,6 +1315,7 @@ final class AppState: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [Paths.kit.appendingPathComponent(script).path] + args
+        p.environment = Paths.processEnvironment()
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = Pipe()
@@ -1404,7 +1405,7 @@ final class AppState: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
         p.arguments = [Paths.kit.appendingPathComponent(script).path] + args
-        if !env.isEmpty { p.environment = ProcessInfo.processInfo.environment.merging(env) { $1 } }
+        p.environment = Paths.processEnvironment(merging: env)
         let launchesGame = gameWindow != nil || script == "launch.sh"
         p.qualityOfService = launchesGame ? .userInteractive : .userInitiated
         let pipe = Pipe()

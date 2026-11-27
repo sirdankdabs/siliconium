@@ -316,4 +316,4 @@ rm -f "$downloads"/siliconium-engine-*.tar.xz "$downloads"/wine-gecko-*.tar.xz \
   "$downloads"/SteamSetup.exe "$downloads"/*.part
 rm -rf "$downloads"/CrossOver-*.app "$downloads/cx.tmp"
 rmdir "$downloads" 2>/dev/null || true
-step "Engine ready in $engine"
+step "Engine ready"

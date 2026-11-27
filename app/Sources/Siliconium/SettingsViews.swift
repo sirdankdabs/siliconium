@@ -206,11 +206,61 @@ struct LogView: View {
     @ObservedObject var logStore: LogStore
     @Environment(\.dismiss) private var dismiss
 
-    /// The app's own output, then the end of the log file the last error named
+    /// Privacy-safe system summary so bug reports immediately show OS, chip,
+    /// RAM, Rosetta, engine/x87 versions, prefixes, and free disk space.
+    private var diagnosticHeader: String {
+        let os = ProcessInfo.processInfo.operatingSystemVersionString
+        let chip = Paths.cpuBrand()
+        let ramGB = Int((Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0).rounded())
+        let rosetta = state.rosettaInstalled ? "yes" : "no"
+        let info = state.engineInfo
+        let eng = state.engineInstalled ? (info["base"] ?? info["crossover"].map { "CrossOver \($0)" } ?? "installed") : "not installed"
+        let kitV = info["kit"] ?? state.kitVersion ?? "?"
+        let x87 = info["x87sidecar"] ?? "none"
+        let disp: String = {
+            guard let d = state.display else { return "unknown" }
+            let mode = d.plan == "kept" ? (d.keepMode == "1" ? "Smart HiDPI" : "HiDPI") : d.plan
+            return "\(d.gameWidth)x\(d.gameHeight) @ \(d.gameHz) Hz (\(mode))"
+        }()
+        let fm = FileManager.default
+        let pMain = state.prefixReady ? "ready" : "none"
+        let pSteam = fm.fileExists(atPath: Paths.steamPrefix.appendingPathComponent("system.reg").path) ? "ready" : "none"
+        let pBnet = fm.fileExists(atPath: Paths.home.appendingPathComponent("prefix-battlenet/system.reg").path) ? "ready" : "none"
+        let disk = Paths.freeDiskGB().map { "\($0) GB free" } ?? "unknown"
+        var line3 = "Prefixes: main=\(pMain), steam=\(pSteam), battlenet=\(pBnet) · Disk: \(disk)"
+        if Paths.usesIsolatedHome { line3 += " · Storage: isolated (special char in home path)" }
+        return """
+        Siliconium \(state.appVersion) · macOS \(os) · \(chip) · \(ramGB) GB RAM · Rosetta 2: \(rosetta)
+        Engine: \(eng) (kit \(kitV)) · x87sidecar: \(x87) · Display: \(disp)
+        \(line3)
+        """
+    }
+
+    /// Most recent setup/error log modified in the last 10 minutes if an error
+    /// message did not explicitly name a `logs/*.log` file (e.g. Steam setup).
+    private var recentErrorLogName: String? {
+        guard state.errorLog == nil, state.error != nil else { return nil }
+        let logsDir = Paths.home.appendingPathComponent("logs")
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: logsDir, includingPropertiesForKeys: [.contentModificationDateKey], options: .skipsHiddenFiles) else { return nil }
+        let cutoff = Date().addingTimeInterval(-600)
+        let newest = urls
+            .filter { ($0.pathExtension == "log" || $0.pathExtension == "txt") && $0.lastPathComponent != "displaymode.log" }
+            .compactMap { url -> (URL, Date)? in
+                guard let d = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                      d >= cutoff else { return nil }
+                return (url, d)
+            }
+            .max { $0.1 < $1.1 }
+        return newest.map { "logs/\($0.0.lastPathComponent)" }
+    }
+
+    /// System summary, the app's own output, and the end of the relevant log
+    /// file — automatically scrubbed of the user's home directory and username.
     private var text: String {
-        var parts: [String] = []
+        var parts: [String] = [diagnosticHeader]
         if !logStore.lines.isEmpty { parts.append(logStore.lines.joined(separator: "\n")) }
-        if let name = state.errorLog {
+        if let name = state.errorLog ?? recentErrorLogName {
             let url = Paths.home.appendingPathComponent(name)
             if let data = try? Data(contentsOf: url) {
                 let t = String(decoding: data, as: UTF8.self)
@@ -220,7 +270,7 @@ struct LogView: View {
                 parts.append("— \(name)\n(not found)")
             }
         }
-        return parts.isEmpty ? "Nothing logged yet in this session." : parts.joined(separator: "\n\n")
+        return Paths.redact(parts.joined(separator: "\n\n"))
     }
 
     var body: some View {

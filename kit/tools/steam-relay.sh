@@ -13,6 +13,7 @@
 # relay/bypass-<app>) runs as Steam would have run it.
 kit=$(cd -- "$(dirname -- "$0")/.." && pwd)
 home=${SIL_HOME:-"$HOME/Library/Application Support/Siliconium"}
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/migrate.sh"
 rd="$home/prefix-steam/drive_c/users/Public/Siliconium/relay"
 pidfile="$home/cache/steam-relay.pid"
 log="$home/logs/steam-relay.log"

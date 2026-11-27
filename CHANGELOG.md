@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.1 — Improved Logs & Special-Character Home Folder Fix
+
+**Improved**
+- **Better logs for troubleshooting**: Show Log and Copy now include a non-identifying system summary at the top (Siliconium version, macOS version and build, Apple silicon chip, RAM, Rosetta 2 status, engine/x87sidecar versions, display mode, prefix status, and free disk space) and automatically attach the newest error log when a setup step fails without naming a specific file.
+- **User privacy in logs**: automatically redacts the user's macOS home directory and username (both Unix `/Users/<name>` and Wine `Z:\Users\<name>` paths) before displaying or copying logs, and removes full paths from engine install messages.
+
+**Fixed**
+- **macOS home folders ending in a dot or space (e.g. `/Users/name.`)**: Wine strips trailing dots and spaces from path components, which broke every prefix, Steam, and Plutonium launch with `could not load kernel32.dll, status c0000135`. Siliconium now automatically detects this and uses a private `0700` Wine-safe data directory outside the user's home folder, migrating any already-downloaded engine automatically.
+
 ## 1.4.0 — Native Metal D3D9, SIMD Audio & Lighter App
 
 **New**

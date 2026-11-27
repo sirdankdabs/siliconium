@@ -8,6 +8,37 @@
 
 sil_legacy_name() { printf '%s %s %s' Black Ops Mac; }
 
+# Wine strips trailing dots and spaces from every Windows path component
+# (RtlDosPathNameToNtPathName_U), so if $HOME itself has a component ending in
+# "." or " " (e.g. /Users/name.), Wine fails with "could not load kernel32.dll,
+# status c0000135" on every prefix/engine call (and symlinks still fail because
+# Wine calls realpath()). Use a private 0700 folder outside $HOME automatically.
+if [ -z "${SIL_HOME:-}" ]; then
+  case "/$HOME/" in
+    *./*|*" "/*)
+      sil_orig_home="$home"
+      sil_uid=$(id -u 2>/dev/null || echo 501)
+      sil_safe="/Users/Shared/Siliconium-$sil_uid"
+      if [ -d "$sil_safe" ] || mkdir -m 700 -p "$sil_safe" 2>/dev/null; then
+        home="$sil_safe"
+      else
+        sil_cache=$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)
+        if [ -n "$sil_cache" ]; then
+          home="${sil_cache%/}/Siliconium"
+          mkdir -m 700 -p "$home" 2>/dev/null || true
+        fi
+      fi
+      if [ "$home" != "$sil_orig_home" ] && [ -d "$sil_orig_home/engine" ] && [ ! -e "$home/engine" ]; then
+        mv "$sil_orig_home/engine" "$home/engine" 2>/dev/null || true
+        [ -f "$sil_orig_home/settings.conf" ] && [ ! -e "$home/settings.conf" ] &&
+          mv "$sil_orig_home/settings.conf" "$home/settings.conf" 2>/dev/null || true
+      fi
+      export SIL_HOME="$home"
+      unset sil_orig_home sil_uid sil_safe sil_cache
+      ;;
+  esac
+fi
+
 # the data folder: moved as a whole, never merged
 if [ -z "${SIL_HOME:-}" ] && [ ! -e "$home" ]; then
   sil_old_home="$HOME/Library/Application Support/$(sil_legacy_name)"

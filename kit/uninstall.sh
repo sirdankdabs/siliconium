@@ -179,7 +179,7 @@ bo3)
     if [ -f "$g/BO3MacFix/boiii_key.dat" ]; then
       mkdir -p "$home/bo3/Personal"
       cp -p "$g/BO3MacFix/boiii_key.dat" "$home/bo3/Personal/identity-key-saved.dat"
-      step "Identity key kept in $home/bo3/Personal"
+      step "Identity key kept in Siliconium/bo3/Personal"
     fi
     m="$g/CoDBlkOps3.app/Contents/MacOS"
     if [ -f "$m/AppBundleExe_backup" ]; then
