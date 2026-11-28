@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.2 — Black Ops II Long Path Fix
+
+**Fixed**
+- **Black Ops II (Plutonium) blank menus and crash when installed through Steam Library (#3)**: when Black Ops II was installed inside Siliconium's Steam prefix and launched through Plutonium's prefix via `Z:\Users\...\prefix-steam\drive_c\Program Files (x86)\Steam\steamapps\common\Call of Duty Black Ops II`, the ~167-character `.ipak` path overflowed BO2's image-pack path buffer (`ipak file not found: base`, missing menu textures/text, then crash). `winpath.sh` now automatically maps long game directories (`> 80` Windows characters) through a shared Wine drive letter (e.g. `P:\Call of Duty Black Ops II`) for Plutonium (T4, T5, T6, IW5), BOIII, and offline/custom folders, and refreshes previously saved long paths on launch or when opening Plutonium. Thanks to **Andytizer** for the detailed diagnosis and reproduction in #3.
+
 ## 1.4.1 — Improved Logs & Special-Character Home Folder Fix
 
 **Improved**

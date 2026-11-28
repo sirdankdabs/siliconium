@@ -285,7 +285,9 @@ enum Paths {
         if chars[0].lowercased() == "z" {
             root = "/"
         } else if let target = try? FileManager.default.destinationOfSymbolicLink(atPath: drive.path) {
-            root = target
+            root = target.hasPrefix("/")
+                ? target
+                : drive.deletingLastPathComponent().appendingPathComponent(target).standardizedFileURL.path
         } else {
             return nil
         }

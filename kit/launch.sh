@@ -278,8 +278,18 @@ for f in "$wine" "$engine/lib/wine/x86_64-unix/winemetal.so" "$engine/lib/wine/x
 done
 case "$game:$mode" in
   plutonium:online)
-    pl_bin="$WINEPREFIX/drive_c/users/crossover/AppData/Local/Plutonium/bin"
+    pl_root="$WINEPREFIX/drive_c/users/crossover/AppData/Local/Plutonium"
+    pl_bin="$pl_root/bin"
     [ -f "$pl_bin/plutonium-launcher-win32.exe" ] || die "Plutonium is not installed in the prefix. Run Install first."
+    # Refresh saved game paths with short Windows drive letters before opening
+    # the launcher so previously linked long Steam Library paths (issue #3) work
+    # even when launched directly from Plutonium's own window.
+    for pl_pair in "t4:${WAW_DIR:-}" "t5:${BO1_DIR:-}" "t6:${BO2_DIR:-${OWN_BO2_DIR:-}}" "iw5:${IW5_DIR:-${OWN_MW3_DIR:-}}"; do
+      pl_id=${pl_pair%%:*} pl_dir=${pl_pair#*:}
+      if [ -n "$pl_dir" ] && [ -d "$pl_dir/zone" ]; then
+        /usr/bin/python3 -I "$kit/tools/plutonium-config.py" link "$pl_root/config.json" "$pl_id" "$(sil_winpath "$pl_dir")" || true
+      fi
+    done
     cd "$pl_bin" || exit 1
     exec "$wine" "$pl_bin/plutonium-launcher-win32.exe" > "$home/logs/plutonium-online.log" 2>&1 ;;
   waw:online|waw:zombies|waw:campaign|waw:mp) dir=${WAW_DIR:-} t=t4 ;;
