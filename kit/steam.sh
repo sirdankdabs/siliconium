@@ -7,9 +7,9 @@
 #
 #   steam.sh status            steam=installed|missing  signedin=yes|no  running=yes|no
 #   steam.sh library           one line per game in the catalog:
-#                              <id>|<state>|<folder>|<part>:<state>,...|<DLC installed>|<tool>:<state>,...
-#                              state: installed|downloading|missing (each part,
-#                              like Multiplayer or Zombies, is its own Steam app)
+#                              <id>|<state>|<folder>|<part>:<state>,...|<DLC installed>|<tool>:<state>,...|<owned>
+#                              state: installed|downloading|missing; owned: yes|no|unknown
+#                              (from Steam's local appcache/packageinfo.vdf)
 #   steam.sh setup             creates prefix-steam, installs Steam for Windows
 #                              (Valve's installer) and opens it to sign in
 #   steam.sh open              opens Steam's window (sign in, downloads)
@@ -19,6 +19,7 @@
 #   steam.sh download-tool <id>  the same for a game's tools (Black Ops III:
 #                              Mod Tools), never part of download / download-all
 #   steam.sh store <id>        opens the game's store page in Steam
+#   steam.sh sync-ownership    restarts Steam silently with a fresh packageinfo.vdf
 #   steam.sh start             starts Steam in the background if it isn't open
 #   steam.sh wait              waits (up to 3 minutes) until Steam is signed in
 #   steam.sh gamedir <appid>   an app's folder (empty if not installed)
@@ -192,11 +193,45 @@ relay_setup() {
     printf '%s\n' 'Warning: could not set Steam launch options for in-game part switches.' >&2
   (nohup bash "$kit/tools/steam-relay.sh" > /dev/null 2>&1 &)
 }
+# Anonymous fingerprint of Steam's per-account licensecache(s). Steam updates
+# licensecache on login whenever licenses change (purchase, refund, Family
+# Sharing, account switch), but never prunes removed packages from the global
+# appcache/packageinfo.vdf. When the fingerprint changes (and Steam is not set
+# to offline mode), dropping packageinfo.vdf before launch lets Steam fetch a
+# fresh ~24 KB copy containing only the signed-in account's active packages.
+license_fingerprint() {
+  local f files=()
+  for f in "$steamdir"/userdata/*/config/licensecache; do
+    [ -f "$f" ] || continue
+    case "$f" in */userdata/0/*) continue ;; esac
+    files+=("$f")
+  done
+  [ "${#files[@]}" -gt 0 ] || return 1
+  ( for f in "${files[@]}"; do
+      printf '%s\n' "${f#"$steamdir"/userdata/}"
+      cat "$f"
+    done ) | /usr/bin/shasum -a 256 | awk '{print $1}'
+}
+wants_offline() {
+  grep -qE '"WantsOfflineMode"[[:space:]]*"1"' "$steamdir/config/loginusers.vdf" 2>/dev/null
+}
+refresh_packageinfo_if_stale() {
+  local fp stamp="$home/cache/steam-license.stamp" prev=""
+  wants_offline && return 0
+  fp=$(license_fingerprint) || return 0
+  [ -f "$stamp" ] && prev=$(cat "$stamp" 2>/dev/null)
+  if [ "$fp" != "$prev" ]; then
+    mkdir -p "$home/cache"
+    printf '%s\n' "$fp" > "$stamp"
+    rm -f "$steamdir/appcache/packageinfo.vdf"
+  fi
+}
 start_steam() {
   . "$kit/tools/configure-ds4.sh"
   configure_ds4_xinput || printf '%s\n' 'Warning: could not set up PlayStation controller XInput mapping.' >&2
   overlay_off
   relay_setup
+  refresh_packageinfo_if_stale
   (cd "$steamdir" && nohup "$wine" Steam.exe "$@" -cef-disable-gpu -cef-disable-gpu-compositing \
     -cef-disable-sandbox > "$home/logs/steam.log" 2>&1 &)
 }
@@ -216,6 +251,34 @@ ensure_running() {
 }
 need_steam() { [ -f "$steamdir/Steam.exe" ] || die "Steam is not installed: press Install Steam first"; }
 
+# Owned AppIDs from Steam's local appcache/packageinfo.vdf (sets owned_known=0|1
+# and owned_apps=" 2620 2630 ... "). No network calls, works with private profiles.
+owned_known=0
+owned_apps=" "
+load_owned() {
+  local all_apps line first=1
+  owned_known=0
+  owned_apps=" "
+  [ -f "$steamdir/appcache/packageinfo.vdf" ] || return 0
+  all_apps=$(catalog | tr ' ' '\n' | sed -n 's/^\([0-9]*\):.*/\1/p')
+  while IFS= read -r line; do
+    if [ "$first" = 1 ]; then
+      first=0
+      [ "$line" = known ] && owned_known=1 || break
+    elif [ -n "$line" ]; then
+      owned_apps+="$line "
+    fi
+  done < <(/usr/bin/python3 -I "$kit/tools/steam-owned.py" "$steamdir" $all_apps 2>/dev/null)
+}
+game_owned() {   # <id> <state> -> yes|no|unknown
+  local id=$1 a
+  [ "$owned_known" = 1 ] || { echo unknown; return; }
+  for a in $(apps_of "$id"); do
+    case "$owned_apps" in *" $a "*) echo yes; return ;; esac
+  done
+  echo no
+}
+
 case "${1:-}" in
 status)
   [ -f "$steamdir/Steam.exe" ] && echo "steam=installed" || echo "steam=missing"
@@ -223,12 +286,15 @@ status)
   running && echo "running=yes" || echo "running=no"
   ;;
 library)
+  load_owned
   catalog | while read -r id parts; do
-    main=${parts%%:*} list= tl=
+    main=${parts%%:*} list= tl= st= own=
+    st=$(game_state "$id")
+    own=$(game_owned "$id" "$st")
     for p in $parts; do list+="${p#*:}:$(app_state "${p%%:*}"),"; done
-    # (6th field: the game's tools, as <name>:<state>)
+    # (6th field: the game's tools, as <name>:<state>; 7th: ownership yes|no|unknown)
     for p in $(tools | awk -v id="$id" '$1 == id { $1 = ""; print }'); do tl+="${p#*:}:$(app_state "${p%%:*}"),"; done
-    printf '%s|%s|%s|%s|%s|%s\n' "$id" "$(game_state "$id")" "$(gamedir "$main")" "${list%,}" "$(dlc_count "$id")" "${tl%,}"
+    printf '%s|%s|%s|%s|%s|%s|%s\n' "$id" "$st" "$(gamedir "$main")" "${list%,}" "$(dlc_count "$id")" "${tl%,}" "$own"
   done
   ;;
 setup)
@@ -273,8 +339,11 @@ download)
 download-all)
   need_steam
   ensure_running
+  load_owned
   # Steam queues the downloads; its install dialogs come one after another
+  # (skip games the account does not own when ownership is known)
   for id in $(catalog | awk '{print $1}'); do
+    [ "$(game_owned "$id" "$(game_state "$id")")" = no ] && continue
     for a in $(apps_of "$id"); do
       [ "$(app_state "$a")" = missing ] || continue
       step "Asking Steam to download $id ($a)"
@@ -305,6 +374,35 @@ workshop)
   ensure_running
   steam_cmd "steam://url/SteamWorkshopPage/$main"
   ;;
+sync-ownership)
+  need_steam
+  if running; then
+    step "Restarting Steam to refresh owned games"
+    steam_cmd -shutdown
+    for _ in $(seq 1 40); do running || break; sleep 0.5; done
+    if running; then
+      "$WINESERVER" -k 2>/dev/null || true
+      for _ in $(seq 1 10); do running || break; sleep 0.5; done
+    fi
+  fi
+  rm -f "$steamdir/appcache/packageinfo.vdf" "$home/cache/steam-license.stamp"
+  step "Syncing owned games with Steam"
+  seen=$(wc -l < "$steamdir/logs/connection_log.txt" 2>/dev/null | tr -d ' '); seen=${seen:-0}
+  start_steam -silent
+  for _ in $(seq 1 120); do
+    tail -n +$((seen + 1)) "$steamdir/logs/connection_log.txt" 2>/dev/null | grep -q '\[Logged On,' && break
+    sleep 0.5
+  done
+  for _ in $(seq 1 30); do
+    [ -s "$steamdir/appcache/packageinfo.vdf" ] && break
+    sleep 0.5
+  done
+  sleep 1
+  if fp=$(license_fingerprint); then
+    mkdir -p "$home/cache"
+    printf '%s\n' "$fp" > "$home/cache/steam-license.stamp"
+  fi
+  ;;
 start)
   need_steam
   running || start_steam -silent
@@ -317,6 +415,6 @@ gamedir) gamedir "${2:?appid}" ;;
 state) app_state "${2:?appid}" ;;
 launch) steam_cmd -applaunch "${2:?appid}" ;;
 *)
-  die "usage: steam.sh status | library | setup | open | download <id> | download-all | download-tool <id> | store <id> | workshop <id> | start | wait | gamedir <appid> | state <appid> | launch <appid>"
+  die "usage: steam.sh status | library | setup | open | download <id> | download-all | download-tool <id> | store <id> | workshop <id> | sync-ownership | start | wait | gamedir <appid> | state <appid> | launch <appid>"
   ;;
 esac

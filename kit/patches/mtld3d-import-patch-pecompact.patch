@@ -1,0 +1,293 @@
+diff --git a/windows/d3d9/src/import_patch.rs b/windows/d3d9/src/import_patch.rs
+index 48d0c75..faef350 100644
+--- a/windows/d3d9/src/import_patch.rs
++++ b/windows/d3d9/src/import_patch.rs
+@@ -20,6 +20,10 @@ use super::LOG_TARGET;
+ 
+ /// `VirtualProtect` protection that lets an import slot be written.
+ const PAGE_READWRITE: u32 = 0x04;
++/// `VirtualQuery` flags for committed, readable memory pages.
++const MEM_COMMIT: u32 = 0x1000;
++const PAGE_NOACCESS: u32 = 0x01;
++const PAGE_GUARD: u32 = 0x100;
+ /// `IMAGE_DOS_HEADER.e_lfanew`: file offset of the NT headers.
+ const E_LFANEW_OFFSET: usize = 0x3c;
+ /// Size of `IMAGE_FILE_HEADER`, which sits between the PE signature and the optional header.
+@@ -27,6 +31,8 @@ const FILE_HEADER_SIZE: usize = 20;
+ /// `IMAGE_OPTIONAL_HEADER.Magic` for PE32 and PE32+.
+ const PE32_MAGIC: u16 = 0x10b;
+ const PE32PLUS_MAGIC: u16 = 0x20b;
++/// Offset of `SizeOfImage` inside `IMAGE_OPTIONAL_HEADER` (identical in PE32 and PE32+).
++const SIZE_OF_IMAGE_OFFSET: usize = 56;
+ /// Offset of `DataDirectory` inside the optional header, per format.
+ const PE32_DATA_DIRECTORY_OFFSET: usize = 96;
+ const PE32PLUS_DATA_DIRECTORY_OFFSET: usize = 112;
+@@ -34,9 +40,24 @@ const PE32PLUS_DATA_DIRECTORY_OFFSET: usize = 112;
+ const IMPORT_DIRECTORY: usize = 1;
+ /// Size of `IMAGE_IMPORT_DESCRIPTOR`.
+ const IMPORT_DESCRIPTOR_SIZE: usize = 20;
++/// Maximum byte length accepted for an imported DLL or function name.
++const MAX_IMPORT_NAME_LEN: usize = 256;
+ /// Thunk entries with this bit import by ordinal and carry no name.
+ const ORDINAL_FLAG: usize = 1 << (usize::BITS - 1);
+ 
++#[repr(C)]
++struct MemoryBasicInformation {
++    base_address: *mut c_void,
++    allocation_base: *mut c_void,
++    allocation_protect: u32,
++    #[cfg(target_pointer_width = "64")]
++    partition_id: u16,
++    region_size: usize,
++    state: u32,
++    protect: u32,
++    mem_type: u32,
++}
++
+ unsafe extern "system" {
+     fn GetModuleHandleA(module_name: *const u8) -> *mut c_void;
+     fn VirtualProtect(
+@@ -45,6 +66,12 @@ unsafe extern "system" {
+         new_protect: u32,
+         old_protect: *mut u32,
+     ) -> i32;
++    #[allow(clashing_extern_declarations)]
++    fn VirtualQuery(
++        address: *const c_void,
++        buffer: *mut MemoryBasicInformation,
++        length: usize,
++    ) -> usize;
+ }
+ 
+ /// One import to redirect.
+@@ -100,42 +127,68 @@ impl MappedImage {
+     /// takes the first import descriptor that carries the name, whichever
+     /// module it is.
+     pub fn import_slot(&self, dll: Option<&[u8]>, func: &[u8]) -> Option<*mut *const ()> {
+-        if self.read::<[u8; 2]>(0) != *b"MZ" {
++        if !self.is_readable_raw(0, E_LFANEW_OFFSET + 4) || self.read::<[u8; 2]>(0) != *b"MZ" {
+             return None;
+         }
+         let nt = usize::try_from(self.read::<u32>(E_LFANEW_OFFSET)).ok()?;
+-        if self.read::<[u8; 4]>(nt) != *b"PE\0\0" {
++        let optional = nt.checked_add(4 + FILE_HEADER_SIZE)?;
++        if !self.is_readable_raw(nt, 4 + FILE_HEADER_SIZE + SIZE_OF_IMAGE_OFFSET + 4)
++            || self.read::<[u8; 4]>(nt) != *b"PE\0\0"
++        {
+             return None;
+         }
+-        let optional = nt + 4 + FILE_HEADER_SIZE;
+         let directory = match self.read::<u16>(optional) {
+             PE32_MAGIC => PE32_DATA_DIRECTORY_OFFSET,
+             PE32PLUS_MAGIC => PE32PLUS_DATA_DIRECTORY_OFFSET,
+             _ => return None,
+         };
+-        let imports =
+-            usize::try_from(self.read::<u32>(optional + directory + IMPORT_DIRECTORY * 8)).ok()?;
+-        if imports == 0 {
++        let image_size = usize::try_from(self.read::<u32>(optional + SIZE_OF_IMAGE_OFFSET)).ok()?;
++        let import_dir_entry = optional.checked_add(directory)?.checked_add(IMPORT_DIRECTORY * 8)?;
++        if !self.is_readable(import_dir_entry, 8, image_size) {
+             return None;
+         }
+-        for i in 0.. {
+-            let descriptor = imports + i * IMPORT_DESCRIPTOR_SIZE;
++        let imports = usize::try_from(self.read::<u32>(import_dir_entry)).ok()?;
++        let imports_size = usize::try_from(self.read::<u32>(import_dir_entry + 4)).ok()?;
++        if imports == 0 || imports >= image_size {
++            return None;
++        }
++        for i in 0usize.. {
++            let desc_off = i.checked_mul(IMPORT_DESCRIPTOR_SIZE)?;
++            if imports_size != 0 && desc_off.checked_add(IMPORT_DESCRIPTOR_SIZE)? > imports_size {
++                return None;
++            }
++            let descriptor = imports.checked_add(desc_off)?;
++            if !self.is_readable(descriptor, IMPORT_DESCRIPTOR_SIZE, image_size) {
++                return None;
++            }
+             let name_rva = usize::try_from(self.read::<u32>(descriptor + 12)).ok()?;
+             if name_rva == 0 {
+                 return None;
+             }
+-            if dll.is_some_and(|dll| !self.c_string(name_rva).eq_ignore_ascii_case(dll)) {
++            let dll_name = self.c_string_checked(name_rva, image_size)?;
++            // Packed executables (e.g. PECompact2) may overwrite their import
++            // directory after unpacking; bail out if the name is not valid ASCII.
++            if !dll_name.iter().all(u8::is_ascii_graphic) {
++                return None;
++            }
++            if dll.is_some_and(|dll| !dll_name.eq_ignore_ascii_case(dll)) {
+                 continue;
+             }
+             let names = usize::try_from(self.read::<u32>(descriptor)).ok()?;
+             let addresses = usize::try_from(self.read::<u32>(descriptor + 16)).ok()?;
+-            // Without a separate name table the address table still holds
+-            // the names before the loader overwrote it; the loader has, so
+-            // an image bound that way is not searchable here.
+-            if names == 0 || addresses == 0 {
++            // Without a separate name table (either OriginalFirstThunk == 0 or
++            // OriginalFirstThunk == FirstThunk, as emitted by PECompact2) the
++            // loader overwrote the shared table in place with resolved pointers,
++            // so it is not searchable as RVAs.
++            if names == 0
++                || addresses == 0
++                || names == addresses
++                || names >= image_size
++                || addresses >= image_size
++            {
+                 continue;
+             }
+-            if let Some(slot) = self.named_slot(names, addresses, func) {
++            if let Some(slot) = self.named_slot(names, addresses, image_size, func) {
+                 return Some(slot);
+             }
+         }
+@@ -143,9 +196,23 @@ impl MappedImage {
+     }
+ 
+     /// The address-table slot of `func` in one descriptor's name table.
+-    fn named_slot(&self, names: usize, addresses: usize, func: &[u8]) -> Option<*mut *const ()> {
+-        for j in 0.. {
+-            let entry = self.read::<usize>(names + j * size_of::<usize>());
++    fn named_slot(
++        &self,
++        names: usize,
++        addresses: usize,
++        image_size: usize,
++        func: &[u8],
++    ) -> Option<*mut *const ()> {
++        for j in 0usize.. {
++            let step = j.checked_mul(size_of::<usize>())?;
++            let name_off = names.checked_add(step)?;
++            let slot = addresses.checked_add(step)?;
++            if !self.is_readable(name_off, size_of::<usize>(), image_size)
++                || !self.is_readable(slot, size_of::<usize>(), image_size)
++            {
++                return None;
++            }
++            let entry = self.read::<usize>(name_off);
+             if entry == 0 {
+                 return None;
+             }
+@@ -153,11 +220,14 @@ impl MappedImage {
+                 continue;
+             }
+             // `IMAGE_IMPORT_BY_NAME`: a u16 hint, then the name.
+-            if self.c_string(entry + 2) == func {
++            let name_rva = entry.checked_add(2)?;
++            let Some(name) = self.c_string_checked(name_rva, image_size) else {
++                return None;
++            };
++            if name == func {
+                 // An import-address-table entry is pointer-aligned by the PE
+                 // layout; the address stays inside the mapping (see `read`)
+                 // and keeps the image's provenance.
+-                let slot = addresses + j * size_of::<usize>();
+                 return Some(ptr::with_exposed_provenance_mut(
+                     self.base.expose_provenance() + slot,
+                 ));
+@@ -166,28 +236,89 @@ impl MappedImage {
+         None
+     }
+ 
++    fn is_readable_raw(&self, offset: usize, len: usize) -> bool {
++        if len == 0 {
++            return true;
++        }
++        let base_addr = self.base as usize;
++        let Some(mut cur) = base_addr.checked_add(offset) else {
++            return false;
++        };
++        let Some(end) = cur.checked_add(len) else {
++            return false;
++        };
++        while cur < end {
++            let mut mbi = core::mem::MaybeUninit::<MemoryBasicInformation>::zeroed();
++            // SAFETY: Win32 `VirtualQuery` probes an arbitrary address without faulting.
++            let got = unsafe {
++                VirtualQuery(
++                    cur as *const c_void,
++                    mbi.as_mut_ptr(),
++                    size_of::<MemoryBasicInformation>(),
++                )
++            };
++            if got == 0 {
++                return false;
++            }
++            // SAFETY: `VirtualQuery` succeeded and filled `mbi`.
++            let mbi = unsafe { mbi.assume_init() };
++            let readable = mbi.state == MEM_COMMIT
++                && mbi.protect != 0
++                && (mbi.protect & (PAGE_NOACCESS | PAGE_GUARD)) == 0;
++            if !readable || mbi.region_size == 0 {
++                return false;
++            }
++            let region_start = mbi.base_address as usize;
++            let Some(region_end) = region_start.checked_add(mbi.region_size) else {
++                return false;
++            };
++            if region_end <= cur {
++                return false;
++            }
++            cur = region_end;
++        }
++        true
++    }
++
++    fn is_readable(&self, offset: usize, len: usize, image_size: usize) -> bool {
++        offset.checked_add(len).is_some_and(|end| end <= image_size)
++            && self.is_readable_raw(offset, len)
++    }
++
+     const fn read<T: Copy>(&self, offset: usize) -> T {
+-        // SAFETY: `base` is a mapped image (the type's invariant) and every
+-        // offset read here comes from its own headers, which the loader
+-        // validated when it mapped the image, so the sum stays inside it.
++        // SAFETY: callers validate `[offset, offset + size_of::<T>())` via
++        // `is_readable` / `is_readable_raw` before reading.
+         let at = unsafe { self.base.add(offset) };
+-        // SAFETY: `at` is inside the mapping (above); `read_unaligned`
+-        // tolerates the packed header layouts.
++        // SAFETY: `at` is inside a committed, readable page; `read_unaligned`
++        // tolerates packed header layouts.
+         unsafe { at.cast::<T>().read_unaligned() }
+     }
+ 
+-    /// The bytes of a NUL-terminated string at `offset`, without the terminator.
+-    const fn c_string(&self, offset: usize) -> &[u8] {
++    /// The bytes of a NUL-terminated string at `offset`, bounded by `image_size`.
++    fn c_string_checked(&self, offset: usize, image_size: usize) -> Option<&[u8]> {
++        if offset >= image_size {
++            return None;
++        }
++        let max_len = MAX_IMPORT_NAME_LEN.min(image_size - offset);
+         let mut len = 0;
+-        while self.read::<u8>(offset + len) != 0 {
++        while len < max_len {
++            let pos = offset + len;
++            let addr = (self.base as usize).checked_add(pos)?;
++            if (len == 0 || (addr & 0xfff) == 0) && !self.is_readable(pos, 1, image_size) {
++                return None;
++            }
++            if self.read::<u8>(pos) == 0 {
++                if len == 0 {
++                    return None;
++                }
++                // SAFETY: `offset..offset + len` was just verified readable inside the image.
++                let start = unsafe { self.base.add(offset) };
++                // SAFETY: every byte in `start..start + len` was just read from the mapped image.
++                return Some(unsafe { core::slice::from_raw_parts(start, len) });
++            }
+             len += 1;
+         }
+-        // SAFETY: `offset` was just read from inside the mapping (see `read`).
+-        let start = unsafe { self.base.add(offset) };
+-        // SAFETY: the bytes `offset..offset + len` were just read one by one
+-        // inside the mapping, so the slice lies within it and stays mapped
+-        // for the image's lifetime, which outlives `self`.
+-        unsafe { core::slice::from_raw_parts(start, len) }
++        None
+     }
+ }
+ 

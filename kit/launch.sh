@@ -416,11 +416,14 @@ elif [ "$t" = iw5 ]; then
 elif [ "$t" = iw4 ]; then
   [ -n "$dir" ] && [ -d "$dir/main" ] && [ -d "$dir/zone" ] ||
     die "Choose the Modern Warfare 2 game folder (the one with main/ and zone/)."
-  # IW4X's launcher: downloaded when missing, then it keeps itself and the
-  # game up to date (kit/tools/iw4x.sh)
+  # IW4X's launcher: downloaded or updated automatically to the latest official
+  # release on every launch (kit/tools/iw4x.sh). Only fall back to an existing
+  # iw4x.exe when genuinely offline (iw4x_online=0).
   . "$kit/tools/iw4x.sh"
-  sil_iw4x_prepare "$dir" || [ -f "$dir/iw4x.exe" ] ||
-    die "Could not download the IW4X launcher: check your internet connection and press Play again."
+  if ! sil_iw4x_prepare "$dir"; then
+    [ "${iw4x_online:-0}" = 0 ] && [ -f "$dir/iw4x.exe" ] ||
+      die "Could not download the latest IW4X launcher: check your internet connection and press Play again."
+  fi
 elif [ "$t" = iw6 ]; then
   [ -n "$dir" ] && [ -f "$dir/iw6sp64_ship.exe" ] && [ -f "$dir/zone/prologue.ff" ] &&
     [ -f "$dir/bink2w64.dll" ] && [ -f "$dir/steam_api64.dll" ] ||
@@ -784,18 +787,17 @@ if on D3D9_MTLD3D && [ "${macos_major:-15}" -ge 15 ] 2>/dev/null &&
    [ -f "$kit/payload/mtld3d/x86_64-unix/mtld3d.so" ] &&
    [ "${s_own:-0}" = 0 ]; then
   case "$t:${s_id:-}" in
-    t4:*|t5:*|iw5:*|iw4:*|steam:cod4|steam:waw|steam:bo1)
+    t4:*|t5:*|iw5:*|iw4:*|steam:cod4|steam:waw|steam:bo1|steam:cod2)
       mtld3d_active=1 ;;
+    steam:cod1|steam:uo)
+      # CoD 1 / UO via GLDirect 5 -> D3D9 -> Metal (mtld3d): keeps GLDirect's
+      # HLSL alpha-test/fog/gamma fixes, unlocks Direct presentation + Smart HiDPI,
+      # and falls back to DXVK with D3D9_MTLD3D=0 (or Apple GL with *_GLDIRECT=0).
+      steam_gldirect && mtld3d_active=1 ;;
     steam:mw2|steam:mw3)
       # 32-bit retail/offline MW2 & MW3 use the verified IW4/IW5 mtld3d D3D9 path;
       # 64-bit Steam copies keep verified DXVK64 defaults unless D3D9_MTLD3D=2.
       if [ "${s_api:-}" = d3d9 ] || [ "${D3D9_MTLD3D:-1}" = 2 ]; then mtld3d_active=1; fi ;;
-    steam:cod2)
-      # Uninstalled D3D9 Steam titles keep verified DXVK defaults; D3D9_MTLD3D=2 opts into mtld3d.
-      [ "${D3D9_MTLD3D:-1}" = 2 ] && mtld3d_active=1 ;;
-    steam:cod1|steam:uo)
-      # CoD 1 / UO via GLDirect 5 -> D3D9: keep verified DXVK default; D3D9_MTLD3D=2 opts into mtld3d.
-      [ "${D3D9_MTLD3D:-1}" = 2 ] && steam_gldirect && mtld3d_active=1 ;;
   esac
 fi
 # displaymode's SIL_KEEP_UNSCALED for KEEP_HIDPI (0, 1 = Smart HiDPI default, 2):
@@ -1924,7 +1926,8 @@ prepare_mtld3d_engine() {
     "$engine/lib/wine/i386-windows/dsound.dll" \
     "$engine/lib/wine/x86_64-windows/winebus.sys" \
     "$src/x86_64-unix/mtld3d.so" \
-    "$src/i386-windows/d3d9.dll" 2>/dev/null | tr '\n' ';')
+    "$src/i386-windows/d3d9.dll" \
+    "$src/x86_64-windows/d3d9.dll" 2>/dev/null | tr '\n' ';')
   if [ -x "$persist/lib/wine/x86_64-unix/wine" ] &&
      [ -f "$persist/lib/wine/x86_64-unix/mtld3d.so" ] &&
      [ "$(cat "$persist/.sil-stamp" 2>/dev/null)" = "$sig" ]; then
@@ -2535,13 +2538,16 @@ if [ "$t" = steam ]; then
       if [ ! -f "$mtld3d_target" ]; then
         mtld3d_seeds=()
         case "$s_id" in
+          cod1) mtld3d_seeds=("$home/cache/steam-cod1/sp-mtld3d_shaders.bin" "$home/cache/steam-cod1/mp-mtld3d_shaders.bin" "$home/cache/steam-uo/sp-mtld3d_shaders.bin" "$home/cache/steam-uo/mp-mtld3d_shaders.bin") ;;
+          uo)   mtld3d_seeds=("$home/cache/steam-uo/sp-mtld3d_shaders.bin" "$home/cache/steam-uo/mp-mtld3d_shaders.bin" "$home/cache/steam-cod1/sp-mtld3d_shaders.bin" "$home/cache/steam-cod1/mp-mtld3d_shaders.bin") ;;
+          cod2) mtld3d_seeds=("$home/cache/steam-cod2/sp-mtld3d_shaders.bin" "$home/cache/steam-cod2/mp-mtld3d_shaders.bin") ;;
           cod4) mtld3d_seeds=("$home/cache/steam-cod4/sp-mtld3d_shaders.bin" "$home/cache/steam-cod4/mp-mtld3d_shaders.bin" "$home/cache/steam-cod4/cod4x-mtld3d_shaders.bin" "$home/cache/own-cod4/sp-mtld3d_shaders.bin") ;;
           waw)  mtld3d_seeds=("$home/cache/t4/mtld3d_shaders.bin" "$home/cache/steam-waw/sp-mtld3d_shaders.bin" "$home/cache/steam-waw/mp-mtld3d_shaders.bin") ;;
           bo1)  mtld3d_seeds=("$home/cache/bo1/mtld3d_shaders.bin" "$home/cache/bo1-mp/mtld3d_shaders.bin" "$home/cache/steam-bo1/sp-mtld3d_shaders.bin" "$home/cache/steam-bo1/mp-mtld3d_shaders.bin") ;;
           mw2)  mtld3d_seeds=("$home/cache/iw4/mtld3d_shaders.bin" "$home/cache/steam-mw2/$s_part-mtld3d_shaders.bin" "$home/cache/own-mw2/sp-mtld3d_shaders.bin") ;;
           mw3)  mtld3d_seeds=("$home/cache/iw5/mtld3d_shaders.bin" "$home/cache/steam-mw3/$s_part-mtld3d_shaders.bin" "$home/cache/own-mw3/sp-mtld3d_shaders.bin") ;;
         esac
-        for mtld3d_seed in "${mtld3d_seeds[@]}"; do
+        for mtld3d_seed in ${mtld3d_seeds[@]+"${mtld3d_seeds[@]}"}; do
           if [ "$mtld3d_seed" != "$mtld3d_target" ] && [ -s "$mtld3d_seed" ]; then
             mkdir -p "$(dirname -- "$mtld3d_target")" && cp -f "$mtld3d_seed" "$mtld3d_target" && break
           fi
@@ -3642,13 +3648,14 @@ if [ "$t" = iw4 ]; then
   # Same "did not quit properly / run in safe mode?" marker as Ghosts (IW4's
   # __<exe> files), left by a game stopped from the app or a crash.
   rm -f -- __iw4x __iw4mp __iw4x-sp __iw4sp
-  iw4_args=(--arch x86 --no-shortcuts --game-args -stdout --game-args -nointro)
+  iw4_args=(--arch x86 --no-self-update --no-shortcuts --game-args -stdout --game-args -nointro)
   # GAME_ARGS (e.g. "+devmap mp_rust") are handed to the game too
   # shellcheck disable=SC2206
   for a in ${GAME_ARGS:-}; do iw4_args+=(--game-args "$a"); done
-  # IW4X's launcher updates itself and the game, then starts the 32-bit
-  # client (--arch x86: our patched D3D9 and x87 paths). Without a network it
-  # fails: then the installed client starts directly.
+  # IW4X's launcher verifies and updates all client/rawfiles/DLC components,
+  # then starts the 32-bit client (--arch x86: our patched D3D9 and x87 paths).
+  # Only fall back to launching iw4x.exe directly when offline; when online,
+  # retry once after clearing a potentially stale cache/iw4x.db before failing.
   : > "$log"
   iw4_first=0
   if [ ! -f iw4x.exe ] || [ ! -d iw4x ]; then
@@ -3664,13 +3671,26 @@ if [ "$t" = iw4 ]; then
   if [ -f iw4x-launcher.exe ]; then
     sil_iw4x_watch_log "$log" 1 "$iw4_first"
   fi
-  if [ -f iw4x-launcher.exe ] && "$wine" iw4x-launcher.exe "${iw4_args[@]}" --no-connect-protocol >> "$log" 2>&1; then
+  iw4_ran=0
+  if [ -f iw4x-launcher.exe ]; then
+    if "$wine" iw4x-launcher.exe "${iw4_args[@]}" --no-connect-protocol >> "$log" 2>&1; then
+      iw4_ran=1
+    elif [ "${iw4x_online:-0}" = 1 ] && [ -f "$dir/cache/iw4x.db" ]; then
+      printf '==> %s\n' "Re-verifying IW4X files…"
+      printf '\nRetrying IW4X launcher with a clean cache database.\n' >> "$log"
+      sil_iw4x_clear_db "$dir"
+      if "$wine" iw4x-launcher.exe "${iw4_args[@]}" --no-connect-protocol >> "$log" 2>&1; then
+        iw4_ran=1
+      fi
+    fi
+  fi
+  if [ "$iw4_ran" = 1 ]; then
     sil_iw4x_stop_watch
     printf '==> %s\n' "Starting IW4X…"
-  elif [ -f iw4x.exe ]; then
+  elif [ "${iw4x_online:-0}" = 0 ] && [ -f iw4x.exe ]; then
     sil_iw4x_stop_watch
-    printf '==> %s\n' "Starting IW4X…"
-    printf '\nStarting the installed IW4X client directly.\n' >> "$log"
+    printf '==> %s\n' "Starting IW4X (offline)…"
+    printf '\nOffline: starting the installed IW4X client directly.\n' >> "$log"
     # shellcheck disable=SC2086
     if [ "${prewarm_active:-0}" = 1 ]; then
       "$wine" iw4x.exe -stdout -nointro ${GAME_ARGS:-} >> "$log" 2>&1
@@ -3679,7 +3699,7 @@ if [ "$t" = iw4 ]; then
     fi
   else
     sil_iw4x_stop_watch
-    die "The IW4X launcher failed (see logs/$game-$mode.log)."
+    die "The IW4X launcher could not update or start IW4X (see logs/$game-$mode.log)."
   fi
   wait_wine_exit 'iw4x(-launcher)?\.exe' 1
   exit

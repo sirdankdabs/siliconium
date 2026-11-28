@@ -533,9 +533,10 @@ struct PlutoniumGameView: View {
                 }
                 if game == .iw4 {
                     HStack(spacing: 10) {
+                        Button { state.updateIW4() } label: { Label("Update IW4X", systemImage: "arrow.triangle.2.circlepath") }
                         Button { state.backupIW4Stats() } label: { Label("Back Up Stats…", systemImage: "externaldrive.badge.plus") }
                         Button { state.restoreIW4Stats() } label: { Label("Restore Stats…", systemImage: "arrow.counterclockwise") }
-                        InfoButton(text: "IW4X keeps your stats (XP, level, unlocks and challenges) in players/iw4x.stat inside the game folder. Back Up saves them in a zip you can keep or take to another Mac; Restore puts them back (close IW4X first: the stats it replaces go to the Trash). Your settings (iw4x_config.cfg) are not touched. Keep the zip private: it is your progress.")
+                        InfoButton(text: "Update IW4X checks for the latest IW4X launcher and forces a full verification of IW4X's files (useful if your folder already had an older IW4X build). IW4X keeps your stats (XP, level, unlocks and challenges) in players/iw4x.stat inside the game folder. Back Up saves them in a zip you can keep or take to another Mac; Restore puts them back (close IW4X first: the stats it replaces go to the Trash). Your settings (iw4x_config.cfg) are not touched. Keep the zip private: it is your progress.")
                     }
                     .buttonStyle(.bordered).tint(.white)
                     .disabled(state.running != nil || state.progress != nil)
@@ -858,13 +859,21 @@ struct SteamLibraryView: View {
                     Button { state.openSteamLibrary() } label: {
                         Label("Open Steam", systemImage: "arrow.up.forward.app")
                     }
-                    if SteamTitle.catalog.contains(where: { (state.steamLibrary[$0.id]?.state ?? "missing") == "missing" }) {
+                    Button { state.syncSteamOwnership() } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(state.running != nil || state.progress != nil)
+                    .help("Re-sync owned games with Steam (use after buying, refunding, or switching Steam accounts)")
+                    if SteamTitle.catalog.contains(where: {
+                        let e = state.steamLibrary[$0.id]
+                        return (e?.state ?? "missing") == "missing" && e?.owned != false
+                    }) {
                         Button { state.downloadAllSteamGames() } label: {
                             Label("Download all", systemImage: "arrow.down.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(state.progress != nil)
-                        .help("Asks Steam to download every game here, with its multiplayer, zombies and the DLC you own")
+                        .help("Asks Steam to download every game you own here, with its multiplayer, zombies and DLC")
                     }
                     Text("Downloads keep going while Steam is open in the background.")
                         .font(.system(size: 11)).foregroundStyle(.white.opacity(0.55))
@@ -898,24 +907,33 @@ struct SteamTitleRow: View {
 
     private var entry: AppState.SteamEntry? { state.steamLibrary[title.id] }
     private var gameState: String { entry?.state ?? "missing" }
+    private var notOwned: Bool { gameState == "missing" && entry?.owned == false }
 
     var body: some View {
         // The details and the buttons side by side, or the buttons under the
         // details when the window is too narrow for both (SteamRowLayout)
         SteamRowLayout(spacing: 14) {
-            SteamTile(title: title, size: 44)
+            SteamTile(title: title, size: 44).opacity(notOwned ? 0.55 : 1)
             details
             HStack(spacing: 14) { actions }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+        .background(.white.opacity(notOwned ? 0.03 : 0.05), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var details: some View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(title.title).font(.system(size: 14, weight: .semibold))
+                    Text(title.title).font(.system(size: 14, weight: .semibold)).opacity(notOwned ? 0.7 : 1)
                     Text(title.year).font(.system(size: 11).monospacedDigit()).opacity(0.5)
+                    if entry?.owned == false {
+                        Text("Not owned")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.75))
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .background(.white.opacity(0.10), in: Capsule())
+                            .help("This game was not found in your signed-in Steam account's library")
+                    }
                 }
                 HStack(spacing: 5) {
                     Circle().fill(dotColor).frame(width: 6, height: 6)
@@ -1000,10 +1018,23 @@ struct SteamTitleRow: View {
             case "downloading":
                 Button("Open Steam") { state.openSteamLibrary() }
             default:
-                Button("Store") { state.openSteamStore(title.id) }.disabled(!steamReady)
-                Button("Download") { state.downloadSteamGame(title.id) }
-                    .buttonStyle(.borderedProminent)
+                if notOwned {
+                    Button { state.openSteamStore(title.id) } label: {
+                        Label("View in Store", systemImage: "bag")
+                    }
                     .disabled(!steamReady)
+                    Menu {
+                        Button("Try Download anyway") { state.downloadSteamGame(title.id) }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .disabled(!steamReady)
+                    .help("If you just bought this game or share it via Steam Family Sharing, reopen Steam or try downloading anyway")
+                } else {
+                    Button("Store") { state.openSteamStore(title.id) }.disabled(!steamReady)
+                    Button("Download") { state.downloadSteamGame(title.id) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!steamReady)
+                }
             }
     }
 
@@ -1063,16 +1094,20 @@ struct SteamTitleRow: View {
 
     private var statusText: String {
         switch gameState {
-        case "installed": "Downloaded"
+        case "installed":
+            entry?.owned == false ? "Downloaded · Not in your Steam library" : "Downloaded"
         case "downloading": "Downloading in Steam"
-        default: "Not downloaded"
+        default:
+            if notOwned { "Not in your Steam library" }
+            else if entry?.owned == true { "In your Steam library · Not downloaded" }
+            else { "Not downloaded" }
         }
     }
     private var dotColor: Color {
         switch gameState {
         case "installed": Color(red: 0.30, green: 0.82, blue: 0.48)
         case "downloading": Color(red: 0.35, green: 0.75, blue: 1)
-        default: .white.opacity(0.35)
+        default: notOwned ? .white.opacity(0.20) : .white.opacity(0.35)
         }
     }
 }

@@ -38,9 +38,15 @@
   <img src="docs/assets/bo1-multiplayer.jpg" width="270" alt="Black Ops Multiplayer">
 </p>
 
+<p align="center">
+  <img src="docs/assets/cod2-demolition-mtld3d.jpg" width="270" alt="Call of Duty 2 on Metal (mtld3d, 160 FPS)">
+  <img src="docs/assets/cod1-brecourt-mtld3d.jpg" width="270" alt="Call of Duty (2003) Brecourt on Metal (mtld3d, 160 FPS)">
+  <img src="docs/assets/cod1-berlin-mtld3d.jpg" width="270" alt="Call of Duty (2003) Berlin on Metal (mtld3d, 160 FPS)">
+</p>
+
 ## Why Siliconium
 
-- **Direct-to-Metal graphics:** 32-bit Direct3D 9 translates straight to Metal via [`mtld3d`](https://github.com/athei/mtld3d) (**150–160 FPS** on classics), Direct3D 11 runs on unified tessellation-fixed [`DXMT`](https://github.com/3Shain/dxmt), and CoD 1 / United Offensive use Siliconium's patched GLDirect build.
+- **Direct-to-Metal graphics:** all classic 32-bit Direct3D 9 Call of Duty titles — including CoD 2 and CoD 1 / United Offensive (via patched GLDirect) — translate straight to Metal via [`mtld3d`](https://github.com/athei/mtld3d) (**150–160 FPS** at 1440p), and Direct3D 11 runs on unified tessellation-fixed [`DXMT`](https://github.com/3Shain/dxmt).
 - **Built for Apple silicon:** native ARM x87 acceleration ([`x87sidecar`](https://github.com/athei/x87sidecar)), custom **SSE2 + SIMD 32-bit audio** (`dsound.dll`, **7.1× faster** mixing), pre-warmed Wine launches (~4 s faster), and automatic shader caching.
 - **Native macOS polish:** **macOS Game Mode** on every title, **Smart HiDPI** (zero mode switch on `mtld3d` & BO2), true monitor refresh rates, instant `Cmd+Tab`, fullscreen screenshots/recording (`Cmd+Shift+3/4/5`), and live download speed + ETA.
 - **Plug-and-play controllers:** Xbox, DualSense, DualShock 4, Switch Pro, Joy-Con and 8BitDo (wired or Bluetooth), with built-in gamepad mapping for older PC titles, console aim assist, and one-click community fixes (**IW-Pad v0.1.3**, **IW3SP-MOD**, **T6SP-Mod**, **T4Me**, **Clean Ops**, **Shield**).
@@ -52,9 +58,9 @@ Measured on a **MacBook Pro M1 Pro** (macOS 15+, **2560×1440 @ 160 Hz**). Full 
 
 | Game | Sources & Clients | Performance (1440p) | Notes |
 |---|---|---|---|
-| **Call of Duty** (2003) | Steam Library | **148 FPS** avg | Custom GLDirect renderer |
-| **United Offensive** (2004) | Steam Library | **122 FPS** avg | Installs into CoD 1 folder via Steam |
-| **Call of Duty 2** (2005) | Steam Library | **133–160 FPS** | Fullscreen & controller support |
+| **Call of Duty** (2003) | Steam Library | **159–160 FPS** (`GLDirect → mtld3d`) | Custom GLDirect → Metal renderer |
+| **United Offensive** (2004) | Steam Library | **Up to 160 FPS** (`GLDirect → mtld3d`) | Installs into CoD 1 folder via Steam |
+| **Call of Duty 2** (2005) | Steam Library | **160 FPS** (`mtld3d`, up to 307 uncapped) | Fullscreen & controller support |
 | **Call of Duty 4** (2007) | Steam · **CoD4X** · Offline | **144–160 FPS** (`mtld3d`) | Optional **IW3SP-MOD** for Campaign |
 | **World at War** (2008) | **Plutonium (T4)** · Steam | **143–160 FPS** (`mtld3d`) | Optional **T4Me** for Steam SP/ZM |
 | **Modern Warfare 2** (2009) | **IW4X** · Steam · Offline | **155–160 FPS** (`mtld3d`) | **IW-Pad v0.1.3** (32 & 64-bit) |
@@ -148,4 +154,4 @@ Builds `dist/Siliconium.app`. Engine build scripts live in [`engine/`](engine/),
 
 Siliconium ships **no game files, Steam, or Steam API replacements**; you must own the games you play. Not affiliated with Activision, Blizzard, Treyarch, Infinity Ward, Sledgehammer Games, Aspyr, Valve, CodeWeavers, Plutonium, IW4X, CoD4X, or Ezz. All trademarks belong to their respective owners.
 
-App and scripts are **MIT** ([LICENSE](LICENSE)). Patches follow their upstream licenses (Wine: LGPL-2.1+, mtld3d: MIT, DXVK: zlib, DXMT: upstream license).
+App and scripts are **MIT** ([LICENSE](LICENSE)). Patches follow their upstream licenses (Wine: LGPL-2.1+, mtld3d: Zlib, DXVK: zlib, DXMT: upstream license).

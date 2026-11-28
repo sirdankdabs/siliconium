@@ -119,13 +119,28 @@ steam_args() {   # <width> <height> <hz> <first run: 1|0>
         if [ "$s_api" = gl ]; then s_argv+=(+set r_mode -1 +set r_customwidth "$w" +set r_customheight "$h")
         else s_argv+=(+set r_mode "${w}x$h"); fi
       fi
-      # Call of Duty 2 (Direct3D 9, DXVK): its refresh setting reads "<n> Hz"
-      # and r_swapInterval is its vsync (off: the frame cap paces it)
+      # Call of Duty 2 (Direct3D 9) and Call of Duty / UO (GLDirect 5 -> D3D9):
+      # under mtld3d, let present.maxFps pace at sub-ms precision instead of the
+      # Q3/IW2 integer-ms com_maxfps quantisation (holds 160.0 FPS 1% low flat).
       if [ "$s_api" = d3d9 ]; then
-        [ -n "$hz" ] && s_argv+=(+set r_displayRefresh "$hz Hz" +set com_maxfps "$hz")
+        if [ -n "$hz" ]; then
+          if [ "${mtld3d_active:-0}" = 1 ] && [ "${maxfps:-0}" != 0 ]; then
+            s_argv+=(+set r_displayRefresh "$hz Hz" +set com_maxfps 0)
+          else
+            s_argv+=(+set r_displayRefresh "$hz Hz" +set com_maxfps "$hz")
+          fi
+        fi
         s_argv+=(+set r_swapInterval 0)
+        [ "$first" = 1 ] && s_argv+=(+set r_aaSamples 4 +set r_textureMode trilinear)
       else
-        [ -n "$hz" ] && s_argv+=(+set r_displayRefresh "$hz" +set com_maxfps "$hz")
+        if [ -n "$hz" ]; then
+          if [ "${mtld3d_active:-0}" = 1 ] && [ "${maxfps:-0}" != 0 ]; then
+            s_argv+=(+set r_displayRefresh "$hz" +set com_maxfps 0)
+          else
+            s_argv+=(+set r_displayRefresh "$hz" +set com_maxfps "$hz")
+          fi
+        fi
+        s_argv+=(+set r_swapInterval 0)
       fi ;;
     iw)
       s_argv+=(+set com_recommendedSet 1 +set r_fullscreen 1)
@@ -240,7 +255,8 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
       # Call of Duty 2: the active profile's files (main/players/<profile>,
       # made by the game on its first start); its settings load after the
       # command line, so without this a new profile played at 640x480/60 Hz
-      p=$(tr -d '\r\n' < "$dir/main/players/active.txt" 2>/dev/null)
+      p=
+      [ -f "$dir/main/players/active.txt" ] && p=$(tr -d '\r\n' < "$dir/main/players/active.txt" 2>/dev/null)
       [ -n "$p" ] && [ -d "$dir/main/players/$p" ] || return 0
       files=("$dir/main/players/$p/config.cfg" "$dir/main/players/$p/config_mp.cfg")
       mkdir -p "$marks"
@@ -248,7 +264,7 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
         [ -f "$f" ] || continue
         local m="$marks/.config-cod2-$p-$(basename "$f")" cur cod2_pairs=()
         if [ ! -f "$m" ]; then
-          cod2_pairs+=(r_fullscreen=1 r_textureMode=trilinear r_aaSamples=4)
+          cod2_pairs+=(r_fullscreen=1 r_textureMode=trilinear r_aaSamples=4 r_anisotropy=16 r_aspectRatio=auto)
           [ -n "$w" ] && [ -n "$h" ] && cod2_pairs+=("r_mode=${w}x$h")
           : > "$m"
         fi
@@ -259,7 +275,14 @@ steam_config() {   # <game folder> <width> <height> <hz> <marker dir>
           cur=$(sed -n -E 's/^seta r_mode "([0-9]+)x([0-9]+)".*/\1 \2/p' "$f" | tail -1)
           if [ "${STEAM_SCREEN:-1}" != 0 ] && [ -n "$cur" ] && [ "$cur" != "$w $h" ]; then cod2_pairs+=("r_mode=${w}x$h"); fi
         fi
-        [ -n "$hz" ] && cod2_pairs+=("r_displayRefresh=$hz Hz" "com_maxfps=$hz")
+        if [ -n "$hz" ]; then
+          cod2_pairs+=("r_displayRefresh=$hz Hz")
+          if [ "${mtld3d_active:-0}" = 1 ] && [ "${maxfps:-0}" != 0 ]; then
+            cod2_pairs+=(com_maxfps=0)
+          else
+            cod2_pairs+=("com_maxfps=$hz")
+          fi
+        fi
         cod2_pairs+=(r_swapInterval=0 m_filter=0 cl_mouseAccel=0)
         # Straight to the menu, as with Plutonium (SKIP_INTRO): the logo and
         # intro movies (cinematic IW_logo / cod_intro) froze the game at
@@ -562,7 +585,14 @@ steam_q3_config() {   # <cfg> <width> <height> <hz> <marker dir>
     cur=$(sed -n -E 's/^seta r_customheight "([0-9]+)".*/\1/p' "$f" | tail -1)
     [ -n "$cur" ] && [ "$cur" -gt "$h" ] && q3_pairs+=("r_customheight=$h")
   fi
-  [ -n "$hz" ] && q3_pairs+=("r_displayRefresh=$hz" "com_maxfps=$hz")
+  if [ -n "$hz" ]; then
+    q3_pairs+=("r_displayRefresh=$hz")
+    if [ "${mtld3d_active:-0}" = 1 ] && [ "${maxfps:-0}" != 0 ]; then
+      q3_pairs+=(com_maxfps=0)
+    else
+      q3_pairs+=("com_maxfps=$hz")
+    fi
+  fi
   # no vsync (frame cap paces cleanly) and raw mouse defaults
   q3_pairs+=(r_swapInterval=0 m_filter=0 cl_mouseAccel=0)
   steam_cfg_batch "$f" "${q3_pairs[@]}"

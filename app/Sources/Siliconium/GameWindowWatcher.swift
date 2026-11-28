@@ -420,7 +420,7 @@ struct DisplayInfo: Equatable {
     var whyText: String {
         if !holds { return "Display mode switching is off in Settings (DISPLAY_MODE=0): games use the desktop's mode as it is." }
         if isSmartHiDPI {
-            return "Smart HiDPI is active on your scaled desktop: Direct3D 9 games on mtld3d (CoD4, WaW, BO1, MW2, MW3) and Black Ops II keep your sharp HiDPI desktop at full \(runHz) Hz with no mode switch. Heavy Direct3D 11 games (BO3, AW, IW, WWII, BO4) and DXVK fallback switch to 1x so macOS doesn't render them at \(pixelWidth)×\(pixelHeight); your mode comes back when the game ends."
+            return "Smart HiDPI is active on your scaled desktop: Direct3D 9 games on mtld3d (CoD 1, UO, CoD 2, CoD4, WaW, BO1, MW2, MW3) and Black Ops II keep your sharp HiDPI desktop at full \(runHz) Hz with no mode switch. Heavy Direct3D 11 games (BO3, AW, IW, WWII, BO4) and DXVK fallback switch to 1x so macOS doesn't render them at \(pixelWidth)×\(pixelHeight); your mode comes back when the game ends."
         }
         switch plan {
         case "kept":

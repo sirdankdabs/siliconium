@@ -496,6 +496,8 @@ final class AppState: ObservableObject {
         var parts: [(name: String, state: String)] = []
         var dlc = 0
         var tools: [String: String] = [:]
+        /// nil = unknown (Steam not synced yet), true = owned in Steam, false = not in Steam library
+        var owned: Bool? = nil
     }
     @Published var steamLibrary: [String: SteamEntry] = [:]
     func refreshSteamLibrary() {
@@ -513,7 +515,8 @@ final class AppState: ObservableObject {
                 guard p.count >= 5 else { continue }
                 var tools: [String: String] = [:]
                 if p.count >= 6 { for t in pairs(p[5]) { tools[t.name] = t.state } }
-                d[p[0]] = SteamEntry(state: p[1], folder: p[2], parts: pairs(p[3]), dlc: Int(p[4]) ?? 0, tools: tools)
+                let owned: Bool? = p.count >= 7 ? (p[6] == "yes" ? true : (p[6] == "no" ? false : nil)) : nil
+                d[p[0]] = SteamEntry(state: p[1], folder: p[2], parts: pairs(p[3]), dlc: Int(p[4]) ?? 0, tools: tools, owned: owned)
             }
             let result = d
             await MainActor.run { self.steamLibrary = result }
@@ -523,6 +526,11 @@ final class AppState: ObservableObject {
         runScript("steam.sh", ["setup"], title: "Installing Steam for Windows") { [weak self] in self?.refreshSteamLibrary() }
     }
     func openSteamLibrary() { runScript("steam.sh", ["open"], title: nil) { [weak self] in self?.refreshSteamLibrary() } }
+    func syncSteamOwnership() {
+        runScript("steam.sh", ["sync-ownership"], title: "Syncing Steam library") { [weak self] in
+            self?.refreshSteamLibrary()
+        }
+    }
     func downloadSteamGame(_ id: String) {
         runScript("steam.sh", ["download", id], title: nil) { [weak self] in self?.refreshSteamLibrary() }
     }

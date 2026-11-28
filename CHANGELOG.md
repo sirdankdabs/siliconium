@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.3 — Native Metal for CoD 1, UO & CoD 2, Steam Ownership & Forced IW4X Updates
+
+**New**
+- **Native Metal D3D9 (`mtld3d`) for CoD 2**: patched `mtld3d v0.15.5` for PECompact2 executables with Smart HiDPI and sub-ms pacing — **+31.3% SP** (`233.7 → 306.7 FPS`) and **+10.3% MP** (`191.1 → 210.8 FPS`) uncapped at 1440p 4× MSAA, **locked 160 FPS** (`1% low 63–80 → 160 FPS`, **+100–153%**), **−69% GPU**, **−44–71% CPU**, and **−106–179 MB Metal RAM** (`D3D9_MTLD3D=0` restores DXVK).
+- **Native Metal (`GLDirect → mtld3d`) for CoD 1 & United Offensive**: **locked 160 FPS** at 1440p (`1% low 70–80 → 160 FPS`, **+100%**), **−34–55% GPU**, **−45–69% CPU**, and **−41–60% Metal RAM**, with Smart HiDPI, shared CoD 1/UO shader cache, and GLDirect foliage/fog fixes intact.
+- **Steam Library ownership check**: reads Steam's local `packageinfo.vdf` offline (works with private profiles) to badge unowned games (`Not owned` + **View in Store**) and skip them in **Download all**, automatically refreshing stale caches after purchases, refunds, or account switches (plus a manual **Refresh** button).
+
+**Improved**
+- **Forced IW4X launcher & file updates**: auto-updates missing, outdated, or unverified `iw4x-launcher.exe` to the latest GitHub release, clears stale `cache/iw4x.db` so pre-existing MW2+IW4X folders re-verify all files, and adds a manual **Update IW4X** button.
+
 ## 1.4.2 — Black Ops II Long Path Fix
 
 **Fixed**
